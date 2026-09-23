@@ -1,0 +1,6 @@
+# Test allowances for the workspace lint set. NOTE: clippy uses the nearest clippy.toml
+# walking up from each crate and does not merge, so crates/sim/clippy.toml repeats these.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

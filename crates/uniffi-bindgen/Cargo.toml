@@ -1,0 +1,13 @@
+[package]
+name = "uniffi-bindgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Host-side CLI that generates the Swift bindings from libgame.a (see run.sh).
+[dependencies]
+uniffi = { workspace = true, features = ["cli"] }
+
+[lints]
+workspace = true

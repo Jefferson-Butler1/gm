@@ -1,0 +1,41 @@
+name: GM
+options:
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: 39GU9D2P3G
+    CODE_SIGN_STYLE: Automatic
+targets:
+  GM:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Generated/game.swift
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: GM
+        UILaunchScreen: {}
+        # Required for >60 Hz CADisplayLink on ProMotion iPhones.
+        CADisableMinimumFrameDurationOnPhone: true
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # UIScene lifecycle (mandatory from the iOS 27 SDK).
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeffersonbutler.gm
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/Generated/include
+        LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/../target/aarch64-apple-ios/release
+        OTHER_LDFLAGS: -lgame
+        ENABLE_USER_SCRIPT_SANDBOXING: NO

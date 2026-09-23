@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sim:
+    # Two arches so the committed golden determinism checksum is cross-checked.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain from rust-toolchain.toml
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install || rustup show  # older rustup: `show` installs it
+          rustc --version
+      # Only sim: render and game need wgpu's Metal backend (CAMetalLayer), which does not
+      # build on Linux; they are linted and tested on the Mac.
+      # No -D warnings: every lint that matters is `deny` in Cargo.toml.
+      - run: cargo clippy -p sim --all-targets
+      - run: cargo test -p sim -- --nocapture

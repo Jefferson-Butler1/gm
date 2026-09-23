@@ -1,0 +1,95 @@
+import SwiftUI
+import UIKit
+
+struct GameView: UIViewRepresentable {
+    let model: GameModel
+    func makeUIView(context: Context) -> GameUIView { GameUIView(model: model) }
+    func updateUIView(_ view: GameUIView, context: Context) {}
+}
+
+/// Layer-backed view. Swift owns the lifecycle, display link and touches; Rust owns the
+/// sim and rendering.
+final class GameUIView: UIView {
+    override class var layerClass: AnyClass { CAMetalLayer.self }
+
+    private let model: GameModel
+    private var game: Game?
+    private var link: CADisplayLink?
+    private var lastSeq: UInt64 = 0
+
+    init(model: GameModel) {
+        self.model = model
+        super.init(frame: .zero)
+        isMultipleTouchEnabled = true
+        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.link?.isPaused = true
+            self?.game?.pause()
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.game?.resume()
+            self?.link?.isPaused = false
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if let screen = window?.windowScene?.screen {
+            contentScaleFactor = screen.nativeScale
+            layer.contentsScale = screen.nativeScale
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let s = layer.contentsScale
+        let wPx = UInt32(bounds.width * s), hPx = UInt32(bounds.height * s)
+        let wPt = Float(bounds.width), hPt = Float(bounds.height)
+        guard wPx > 0, hPx > 0 else { return }
+        if let game {
+            game.resize(pixelWidth: wPx, pixelHeight: hPx, pointWidth: wPt, pointHeight: hPt)
+            return
+        }
+        // Rust holds a raw pointer to the layer; this view keeps it alive for the Game's lifetime.
+        let ptr = UInt64(UInt(bitPattern: Unmanaged.passUnretained(layer).toOpaque()))
+        do {
+            game = try Game(layerPtr: ptr, pixelWidth: wPx, pixelHeight: hPx, pointWidth: wPt, pointHeight: hPt)
+        } catch {
+            fputs("[gm] Game init failed: \(error)\n", stderr)
+            return
+        }
+
+        let link = CADisplayLink(target: self, selector: #selector(step))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+        // Low Power Mode and thermal throttling cap the display at 60 Hz; log them to explain fps.
+        let pi = ProcessInfo.processInfo
+        fputs("[gm] display link started, maxFPS=\(window?.windowScene?.screen.maximumFramesPerSecond ?? -1) lowPower=\(pi.isLowPowerModeEnabled) thermal=\(pi.thermalState.rawValue)\n", stderr)
+    }
+
+    @objc private func step(_ link: CADisplayLink) {
+        guard let game else { return }
+        let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
+        // Only touch SwiftUI state when Rust publishes new numbers.
+        if hud.seq != lastSeq {
+            lastSeq = hud.seq
+            model.hud = hud
+        }
+    }
+
+    private func forward(_ touches: Set<UITouch>, _ phase: TouchPhase) {
+        guard let game else { return }
+        for t in touches {
+            let p = t.location(in: self)
+            let id = UInt64(UInt(bitPattern: ObjectIdentifier(t).hashValue))
+            game.touch(id: id, phase: phase, x: Float(p.x), y: Float(p.y))
+        }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { forward(touches, .began) }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { forward(touches, .moved) }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { forward(touches, .ended) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { forward(touches, .ended) }
+}

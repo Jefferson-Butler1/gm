@@ -1,0 +1,6 @@
+# Pinned so nursery-lint churn only arrives on a deliberate upgrade.
+# Homebrew rustc shadows rustup on PATH and has no iOS std: use ~/.cargo/bin (see run.sh).
+[toolchain]
+channel = "1.94.1"
+components = ["clippy", "rustfmt"]
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim"]

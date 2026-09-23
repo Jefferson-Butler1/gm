@@ -1,0 +1,18 @@
+[package]
+name = "game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+# staticlib is linked into the iOS app; lib lets uniffi-bindgen read the metadata.
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+sim.workspace = true
+render.workspace = true
+uniffi.workspace = true
+
+[lints]
+workspace = true
