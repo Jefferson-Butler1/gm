@@ -1,0 +1,14 @@
+# Sim-local config: clippy uses the nearest clippy.toml and does not merge, so this
+# repeats the workspace test allowances (../../clippy.toml) and adds the sim bans.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Determinism: no floats (use Fx), no randomly-seeded std hash containers.
+disallowed-types = [
+    { path = "f32", reason = "sim is fixed-point; use sim::Fx" },
+    { path = "f64", reason = "sim is fixed-point; use sim::Fx" },
+    { path = "std::collections::HashMap", reason = "RandomState iteration order differs per process; use Vec/arena or BTreeMap" },
+    { path = "std::collections::HashSet", reason = "RandomState iteration order differs per process; use Vec/arena or BTreeSet" },
+]
