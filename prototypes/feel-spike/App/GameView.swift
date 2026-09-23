@@ -62,6 +62,13 @@ final class GameUIView: UIView {
         } else {
             g.setStress(count: SpikeModel.stressLevels[model.stressIndex])
         }
+        // SPIKE_SCHEME=A|B|C|D picks the starting control scheme (DEVICECTL_CHILD_SPIKE_SCHEME=C).
+        if let env = ProcessInfo.processInfo.environment["SPIKE_SCHEME"],
+           let i = ["A", "B", "C", "D"].firstIndex(of: env.uppercased()) {
+            model.schemeIndex = i
+        }
+        g.setAssist(strength: SpikeModel.assistLevels[model.assistIndex])
+        g.setScheme(scheme: SpikeModel.schemes[model.schemeIndex].0)
 
         let link = CADisplayLink(target: self, selector: #selector(step))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)

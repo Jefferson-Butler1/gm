@@ -21,7 +21,7 @@ targets:
         CADisableMinimumFrameDurationOnPhone: true
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
     dependencies:
