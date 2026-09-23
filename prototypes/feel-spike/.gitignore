@@ -1,0 +1,5 @@
+rust/target/
+build/
+Generated/
+FeelSpike.xcodeproj/
+App/Info.plist
