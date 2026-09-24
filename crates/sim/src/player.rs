@@ -3,6 +3,7 @@
 //! feel spike (issue #7), combat values are first guesses for tuning (issue #15).
 
 use crate::input::{Buttons, MOVE_BUCKETS, PlayerInput};
+use crate::room::{Body, Tiles};
 use crate::{Fx, FxVec2, trig};
 use serde::{Deserialize, Serialize};
 
@@ -23,13 +24,8 @@ pub const MAX_HP: u8 = 5;
 pub const HURT_TICKS: u8 = 45;
 /// Ticks between shots while fire is held: 8 = 7.5 shots/s.
 pub const FIRE_INTERVAL: u8 = 8;
-/// Hitbox radius of the placeholder player.
+/// Hitbox radius of the placeholder player; also its half-extent against tiles.
 pub const PLAYER_RADIUS: Fx = Fx::from_bits(14 << 32);
-/// Placeholder room until rooms land: 800 x 360 pt centered on the origin.
-pub const ROOM_HALF: FxVec2 = FxVec2 {
-    x: Fx::from_bits(400 << 32),
-    y: Fx::from_bits(180 << 32),
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Player {
@@ -97,9 +93,9 @@ impl Player {
         self.roll_cooldown == 0
     }
 
-    /// One tick of this player's input. `targets` are what aim assist and auto-aim may
-    /// lock onto. Returns the angle of a shot fired this tick.
-    pub fn update(&mut self, input: PlayerInput, targets: &[FxVec2]) -> Option<u16> {
+    /// One tick of this player's input, moving through `tiles`. `targets` are what aim
+    /// assist and auto-aim may lock onto. Returns the angle of a shot fired this tick.
+    pub fn update(&mut self, input: PlayerInput, targets: &[FxVec2], tiles: Tiles) -> Option<u16> {
         let move_angle = (input.move_mag > 0).then(|| bucket_angle(input.move_dir));
 
         self.roll_ticks = self.roll_ticks.saturating_sub(1);
@@ -121,14 +117,7 @@ impl Player {
         } else {
             FxVec2::default()
         };
-        let bound = FxVec2 {
-            x: ROOM_HALF.x.saturating_sub(PLAYER_RADIUS),
-            y: ROOM_HALF.y.saturating_sub(PLAYER_RADIUS),
-        };
-        self.pos = FxVec2 {
-            x: clamp(self.pos.x.saturating_add(velocity.x), bound.x),
-            y: clamp(self.pos.y.saturating_add(velocity.y), bound.y),
-        };
+        self.pos = tiles.slide(self.pos, PLAYER_RADIUS, velocity, Body::Walker);
 
         // No aiming or firing mid-roll (Gungeon-style); the roll owns the facing.
         let mut shot = None;
@@ -207,13 +196,10 @@ pub const fn scale(v: FxVec2, k: Fx) -> FxVec2 {
     }
 }
 
-pub fn clamp(v: Fx, bound: Fx) -> Fx {
-    v.max(bound.saturating_neg()).min(bound)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::room::{CELL, Category, PrototypeRoom, cell_center};
 
     const RIGHT: u16 = 0;
     const DOWN: u16 = 16384;
@@ -247,68 +233,144 @@ mod tests {
         }
     }
 
-    /// Position rounded to whole points.
-    fn at(p: &Player) -> (i64, i64) {
-        (p.pos.x.round().to_num(), p.pos.y.round().to_num())
+    /// 30 x 20 cells of floor inside walls, with a pit strip at x = 2..=3, rows 8..=11.
+    const HALL: PrototypeRoom = PrototypeRoom {
+        name: "test hall",
+        category: Category::Normal,
+        cells: &[
+            "##############################",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#.oo.........................#",
+            "#.oo.........................#",
+            "#.oo.........................#",
+            "#.oo.........................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "#............................#",
+            "##############################",
+        ],
+        exits: &[],
+        base: &[],
+        reinforcements: &[],
+        events: &[],
+    }
+    .valid();
+
+    fn tiles() -> Tiles {
+        Tiles {
+            room: &HALL,
+            sealed: false,
+        }
     }
 
+    /// Mid-hall, at the pit strip's height.
+    fn start() -> FxVec2 {
+        cell_center(15, 10)
+    }
+
+    fn player() -> Player {
+        Player {
+            pos: start(),
+            ..Player::default()
+        }
+    }
+
+    /// Position relative to [`start`], rounded to whole points.
+    fn at(p: &Player) -> (i64, i64) {
+        let s = start();
+        let rel = |v: Fx, s: Fx| v.saturating_sub(s).round().to_num();
+        (rel(p.pos.x, s.x), rel(p.pos.y, s.y))
+    }
+
+    /// A point relative to [`start`].
     fn point(x: i32, y: i32) -> FxVec2 {
+        let s = start();
         FxVec2 {
-            x: Fx::from_num(x),
-            y: Fx::from_num(y),
+            x: s.x.saturating_add(Fx::from_num(x)),
+            y: s.y.saturating_add(Fx::from_num(y)),
         }
     }
 
     #[test]
     fn full_stick_walks_420_pt_per_second_and_faces_the_move() {
-        let mut p = Player::default();
+        let mut p = player();
         for _ in 0..30 {
-            p.update(walk(16), &[]); // bucket 16 of 32 = straight left
+            p.update(walk(16), &[], tiles()); // bucket 16 of 32 = straight left
         }
         assert_eq!(at(&p), (-210, 0));
         assert_eq!(p.facing, LEFT);
     }
 
     #[test]
-    fn walking_stops_at_the_room_edge() {
-        let mut p = Player::default();
+    fn walking_stops_flush_against_a_wall_and_slides_along_it() {
+        let mut p = player();
         for _ in 0..120 {
-            p.update(walk(0), &[]);
+            p.update(walk(0), &[], tiles());
         }
-        assert_eq!(p.pos.x, ROOM_HALF.x.saturating_sub(PLAYER_RADIUS));
+        let wall = CELL.saturating_mul_int(29);
+        assert_eq!(p.pos.x, wall.saturating_sub(PLAYER_RADIUS));
+        // Pushing diagonally into the wall still slides down it.
+        for _ in 0..10 {
+            p.update(walk(4), &[], tiles()); // 45 degrees, down-right
+        }
+        assert_eq!(p.pos.x, wall.saturating_sub(PLAYER_RADIUS));
+        assert!(at(&p).1 > 40, "{:?}", at(&p));
+    }
+
+    #[test]
+    fn pits_stop_walkers() {
+        let mut p = player();
+        for _ in 0..120 {
+            p.update(walk(16), &[], tiles());
+        }
+        assert_eq!(
+            p.pos.x,
+            CELL.saturating_mul_int(4).saturating_add(PLAYER_RADIUS),
+            "flush with the pit's edge"
+        );
     }
 
     #[test]
     fn roll_is_12_ticks_of_iframes_covering_170_pt() {
-        let mut p = Player::default();
-        p.update(dodge(), &[]);
+        let mut p = player();
+        p.update(dodge(), &[], tiles());
         for tick in 1..ROLL_TICKS {
             assert!(p.invulnerable(), "tick {tick}");
-            p.update(PlayerInput::default(), &[]);
+            p.update(PlayerInput::default(), &[], tiles());
         }
         assert!(p.invulnerable());
         assert_eq!(at(&p), (170, 0), "rolls along the facing when idle");
-        p.update(PlayerInput::default(), &[]);
+        p.update(PlayerInput::default(), &[], tiles());
         assert!(!p.rolling() && !p.invulnerable());
         assert_eq!(at(&p), (170, 0));
     }
 
     #[test]
     fn roll_goes_where_the_stick_points_and_ignores_it_mid_roll() {
-        let mut p = Player::default();
-        p.update(with(walk(16), Buttons::DODGE), &[]);
+        let mut p = player();
+        p.update(with(walk(16), Buttons::DODGE), &[], tiles());
         for _ in 1..ROLL_TICKS {
-            p.update(walk(8), &[]);
+            p.update(walk(8), &[], tiles());
         }
         assert_eq!(at(&p), (-170, 0));
     }
 
     #[test]
     fn held_dodge_rolls_again_exactly_when_the_cooldown_ends() {
-        let mut p = Player::default();
+        let mut p = player();
         let starts: Vec<u32> = (0..60)
             .filter(|_| {
-                p.update(dodge(), &[]);
+                p.update(dodge(), &[], tiles());
                 p.roll_ticks == ROLL_TICKS
             })
             .collect();
@@ -317,11 +379,11 @@ mod tests {
 
     #[test]
     fn dodge_during_cooldown_is_dropped() {
-        let mut p = Player::default();
-        p.update(dodge(), &[]);
+        let mut p = player();
+        p.update(dodge(), &[], tiles());
         for tick in 1..ROLL_COOLDOWN_TICKS {
             assert!(!p.can_roll(), "tick {tick}");
-            p.update(dodge(), &[]);
+            p.update(dodge(), &[], tiles());
             assert_ne!(p.roll_ticks, ROLL_TICKS, "tick {tick}");
         }
         assert!(p.can_roll(), "ready once the cooldown has fully elapsed");
@@ -329,8 +391,8 @@ mod tests {
 
     #[test]
     fn fire_faces_the_raw_aim_without_targets_even_with_assist() {
-        let mut p = Player::default();
-        p.update(fire(1234, 255), &[]);
+        let mut p = player();
+        p.update(fire(1234, 255), &[], tiles());
         assert_eq!(p.facing, 1234);
     }
 
@@ -339,12 +401,12 @@ mod tests {
         let target = [point(100, 100)]; // at DOWN_RIGHT
         // 5192 is ~16.5 degrees off the target (inside the cone); 51/255 bends 1/5 of it.
         for (assist, expected) in [(0, 5192), (51, 5792), (255, DOWN_RIGHT)] {
-            let mut p = Player::default();
-            p.update(fire(5192, assist), &target);
+            let mut p = player();
+            p.update(fire(5192, assist), &target, tiles());
             assert_eq!(p.facing, expected, "assist {assist}");
         }
-        let mut p = Player::default();
-        p.update(fire(4192, 255), &target); // ~22 degrees off: outside the cone
+        let mut p = player();
+        p.update(fire(4192, 255), &target, tiles()); // ~22 degrees off: outside the cone
         assert_eq!(p.facing, 4192);
     }
 
@@ -353,26 +415,26 @@ mod tests {
         let auto = with(fire(RIGHT, 0), Buttons::AUTO_AIM);
         let mut p = Player {
             facing: DOWN,
-            ..Player::default()
+            ..player()
         };
-        p.update(auto, &[]);
+        p.update(auto, &[], tiles());
         assert_eq!(p.facing, DOWN);
-        p.update(auto, &[point(-300, 0), point(0, -50)]);
+        p.update(auto, &[point(-300, 0), point(0, -50)], tiles());
         assert_eq!(p.facing, UP);
     }
 
     #[test]
     fn no_aiming_or_firing_mid_roll() {
-        let mut p = Player::default();
-        let shot = p.update(with(fire(DOWN, 0), Buttons::DODGE), &[]);
+        let mut p = player();
+        let shot = p.update(with(fire(DOWN, 0), Buttons::DODGE), &[], tiles());
         assert_eq!((p.roll_dir, p.facing, shot), (RIGHT, RIGHT, None));
     }
 
     #[test]
     fn held_fire_shoots_every_fire_interval() {
-        let mut p = Player::default();
+        let mut p = player();
         let shots: Vec<u32> = (0..20)
-            .filter(|_| p.update(fire(DOWN, 0), &[]) == Some(DOWN))
+            .filter(|_| p.update(fire(DOWN, 0), &[], tiles()) == Some(DOWN))
             .collect();
         assert_eq!(shots, [0, 8, 16]);
     }

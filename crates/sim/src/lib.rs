@@ -15,20 +15,24 @@
 mod arena;
 mod checksum;
 mod combat;
+mod derelict;
+mod encounter;
 mod input;
 mod player;
 mod rng;
+pub mod room;
 pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, FIRST_SPAWN_TICKS, RUSHER_HP,
-    RUSHER_RADIUS, SPAWN_TELEGRAPH_TICKS,
+    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, RUSHER_HP, RUSHER_RADIUS,
+    SPAWN_TELEGRAPH_TICKS,
 };
+pub use derelict::DERELICT;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use player::{
     ASSIST_CONE, FIRE_INTERVAL, HURT_TICKS, MAX_HP, PLAYER_RADIUS, Player, ROLL_COOLDOWN_TICKS,
-    ROLL_TICKS, ROOM_HALF,
+    ROLL_TICKS,
 };
 pub use rng::Rng;
 
@@ -44,13 +48,15 @@ pub const MAX_PLAYERS: usize = 4;
 /// The sim's only numeric type for world math: ±2^31 range, 2^-32 resolution.
 pub type Fx = fixed::types::I32F32;
 
-/// World-space vector. World units are screen points; +y points down.
+/// World-space vector in room-local points: the origin is the room grid's top-left
+/// corner and +y points down (see [`room`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FxVec2 {
     pub x: Fx,
     pub y: Fx,
 }
 
+/// Index into [`DERELICT`]'s rooms.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoomId(pub u16);
 
@@ -66,13 +72,35 @@ pub enum Run {
         doors_locked: bool,
     },
     Dead {
+        /// Where the party fell; presentation keeps drawing it.
+        room: RoomId,
         ticks_until_restart: u32,
     },
     Won,
 }
 
 impl Run {
-    const START: Self = Self::Boarding { room: RoomId(0) };
+    /// The room the party is in; `None` once the run is won.
+    #[must_use]
+    pub const fn room(self) -> Option<RoomId> {
+        match self {
+            Self::Boarding { room } | Self::Encounter { room, .. } | Self::Dead { room, .. } => {
+                Some(room)
+            }
+            Self::Won => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn doors_locked(self) -> bool {
+        matches!(
+            self,
+            Self::Encounter {
+                doors_locked: true,
+                ..
+            }
+        )
+    }
 }
 
 /// Everything that affects simulation results. Nothing outside this struct may.
@@ -86,27 +114,30 @@ pub struct SimState {
     pub run: Run,
     /// `None` = empty slot. An occupied slot with 0 HP is a dead player.
     pub players: [Option<Player>; MAX_PLAYERS],
+    /// Enemies and bullets in the party's current room; leaving a room drops them.
     pub enemies: Arena<Enemy>,
     pub bullets: Arena<Bullet>,
-    /// TEMPORARY (until the Rooms step): ticks until the placeholder spawner may add a
-    /// rusher.
-    pub spawn_cooldown: u16,
+    /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
+    pub cleared: u64,
 }
 
 impl SimState {
-    /// A fresh single-player run.
+    /// A fresh single-player run, standing in the derelict's start room.
     #[must_use]
     pub fn new(seed: u64) -> Self {
-        Self {
+        let (room, at) = DERELICT.start();
+        let mut state = Self {
             tick: 0,
             seed,
             rng: Rng::from_seed(seed),
-            run: Run::START,
+            run: Run::Boarding { room },
             players: [Some(Player::default()), None, None, None],
             enemies: Arena::default(),
             bullets: Arena::default(),
-            spawn_cooldown: FIRST_SPAWN_TICKS,
-        }
+            cleared: 0,
+        };
+        encounter::enter(&mut state, room, at, &mut TickEvents::default());
+        state
     }
 
     /// A fresh run from the next run seed, with the same occupied slots. The tick keeps
@@ -115,10 +146,32 @@ impl SimState {
     pub fn restarted(&self) -> Self {
         let mut fresh = Self::new(Rng::next_seed(self.seed));
         fresh.tick = self.tick;
+        let start = fresh.players[0];
         for (slot, old) in fresh.players.iter_mut().zip(&self.players) {
-            *slot = old.map(|_| Player::default());
+            *slot = old.and(start);
         }
         fresh
+    }
+
+    /// Collision for the party's current room; `None` once the run is won.
+    #[must_use]
+    pub fn tiles(&self) -> Option<room::Tiles> {
+        let room = DERELICT.room(self.run.room()?)?;
+        Some(room::Tiles {
+            room,
+            sealed: self.run.doors_locked(),
+        })
+    }
+
+    #[must_use]
+    pub fn cleared(&self, room: RoomId) -> bool {
+        self.cleared
+            .checked_shr(u32::from(room.0))
+            .is_some_and(|bits| bits & 1 == 1)
+    }
+
+    fn set_cleared(&mut self, room: RoomId) {
+        self.cleared |= 1_u64.checked_shl(u32::from(room.0)).unwrap_or(0);
     }
 
     /// Endianness-pinned hash of the whole state, comparable across machines.
@@ -151,6 +204,18 @@ pub enum Event {
         slot: usize,
     },
     Restarted,
+    /// The party walked through an exit into `room`.
+    RoomEntered {
+        room: RoomId,
+    },
+    /// A reinforcement layer spawned; the base layer is wave 0.
+    WaveStarted {
+        wave: u8,
+    },
+    /// The room's last wave died.
+    RoomCleared {
+        room: RoomId,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -171,6 +236,7 @@ pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
         Run::Boarding { .. } | Run::Encounter { .. } => combat::tick(state, inputs, &mut events),
         Run::Dead {
             ticks_until_restart,
+            ..
         } if *ticks_until_restart > 0 => {
             *ticks_until_restart = ticks_until_restart.saturating_sub(1);
         }

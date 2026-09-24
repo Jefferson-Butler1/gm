@@ -1,21 +1,30 @@
 //! Determinism checks (issue #5): replay, rollback-every-tick, and a committed golden
 //! checksum that CI verifies on both `x86_64` and `aarch64`.
 
-use sim::{Buttons, Event, Player, PlayerInput, Rng, Run, SimState, TickEvents, TickInputs, step};
+use sim::{Buttons, Event, PlayerInput, Rng, RoomId, Run, SimState, TickEvents, TickInputs, step};
+use std::ops::Range;
 
 const SEED: u64 = 0x5EED;
-const TICKS: u64 = 1300;
-/// Both players stand idle through this range so the rushers kill them; random input
-/// (which includes RESTART) resumes afterwards.
-const STAND_STILL: std::ops::Range<u64> = 600..1100;
+const TICKS: u64 = 1500;
+/// Ticks when the party holds only RESTART (the scripted start, then after the death).
+const RESTARTS: [Range<u64>; 2] = [0..40, 900..950];
+/// Ticks when the party walks from the start cell out of the airlock's east exit and into
+/// the cargo hold's encounter: [`WALK_NORTH`] ticks up, then east.
+const WALK_IN: [Range<u64>; 2] = [40..100, 950..1010];
+const WALK_NORTH: u64 = 8;
+/// Both players stand idle through this range so the rushers kill them.
+const STAND_STILL: Range<u64> = 160..900;
+/// Random movement, but fire held with auto-aim, so the second visit clears waves.
+const AUTO_FIGHT: Range<u64> = 1010..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x7643_0391_03cd_51f1;
+const GOLDEN_TRACE: u64 = 0x019f_d6d1_a18d_a2ab;
 
-/// A reproducible input script: pseudo-random sticks, assist and buttons for two players.
-/// Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and walking all show up;
-/// FIRE is held about half the time. See [`STAND_STILL`] for the scripted death.
+/// A reproducible input script for two players: scripted restarts, walks into the cargo
+/// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
+/// and buttons elsewhere. Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and
+/// walking all show up; FIRE is held about half the time.
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
     (0..TICKS)
@@ -36,19 +45,47 @@ fn script() -> Vec<TickInputs> {
                         },
                 };
             }
-            if STAND_STILL.contains(&tick) {
-                inputs = TickInputs::default();
+            let scripted = if STAND_STILL.contains(&tick) {
+                Some(PlayerInput::default())
+            } else if RESTARTS.iter().any(|r| r.contains(&tick)) {
+                Some(PlayerInput {
+                    buttons: Buttons::RESTART,
+                    ..PlayerInput::default()
+                })
+            } else {
+                WALK_IN
+                    .iter()
+                    .find(|r| r.contains(&tick))
+                    .map(|r| PlayerInput {
+                        // Buckets: 24 of 32 = straight up, 0 = straight right.
+                        move_dir: if tick.saturating_sub(r.start) < WALK_NORTH {
+                            24
+                        } else {
+                            0
+                        },
+                        move_mag: u8::MAX,
+                        ..PlayerInput::default()
+                    })
+            };
+            if let Some(input) = scripted {
+                inputs.players[..2].fill(input);
+            }
+            if AUTO_FIGHT.contains(&tick) {
+                for input in &mut inputs.players[..2] {
+                    input.buttons |= Buttons::FIRE | Buttons::AUTO_AIM;
+                }
             }
             inputs
         })
         .collect()
 }
 
-/// Starts dead so the script exercises the restart transition.
+/// Two players, starting dead so the script exercises the restart transition.
 fn start() -> SimState {
     let mut state = SimState::new(SEED);
-    state.players[1] = Some(Player::default());
+    state.players[1] = state.players[0];
     state.run = Run::Dead {
+        room: RoomId(0),
         ticks_until_restart: 30,
     };
     state
@@ -102,29 +139,42 @@ fn golden_trace_matches_committed_value() {
 }
 
 /// Guards the script's purpose: the golden trace must cover walking, rolling, shooting,
-/// kills, player deaths and restarts.
+/// kills, a room transition into a sealed encounter with a second wave, player deaths
+/// and restarts.
 #[test]
-fn script_exercises_movement_dodge_and_combat() {
+fn script_exercises_movement_dodge_combat_and_rooms() {
     let mut state = start();
-    let (mut rolls, mut moved) = (0, false);
+    let start_pos = SimState::new(SEED).players[0].unwrap().pos;
+    let (mut rolls, mut moved, mut sealed) = (0, false, false);
     let mut events = Vec::new();
     for i in script() {
         events.extend(step(&mut state, &i).events);
         if let Some(p) = state.players[0] {
             rolls += usize::from(p.roll_ticks == sim::ROLL_TICKS);
-            moved |= p.pos != Player::default().pos;
+            moved |= p.pos != start_pos;
         }
+        sealed |= state.run.doors_locked();
     }
     let count = |f: fn(&Event) -> bool| events.iter().filter(|e| f(e)).count();
     let shots = count(|e| matches!(e, Event::ShotFired { .. }));
     let kills = count(|e| matches!(e, Event::EnemyKilled { .. }));
     let deaths = count(|e| matches!(e, Event::PlayerDied { .. }));
     let restarts = count(|e| matches!(e, Event::Restarted));
-    println!("rolls={rolls} shots={shots} kills={kills} deaths={deaths} restarts={restarts}");
+    let entries = count(|e| matches!(e, Event::RoomEntered { .. }));
+    let waves = count(|e| matches!(e, Event::WaveStarted { .. }));
+    let cleared = count(|e| matches!(e, Event::RoomCleared { .. }));
+    println!(
+        "rolls={rolls} shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
+         entries={entries} waves={waves} cleared={cleared} sealed={sealed}"
+    );
     assert!(moved && rolls >= 10, "moved={moved} rolls={rolls}");
     // Restarts: the scripted start plus at least one after a full-party death.
     assert!(
         shots >= 50 && kills >= 5 && deaths >= 2 && restarts >= 2,
         "shots={shots} kills={kills} deaths={deaths} restarts={restarts}"
+    );
+    assert!(
+        entries >= 2 && waves >= 1 && cleared >= 1 && sealed,
+        "entries={entries} waves={waves} cleared={cleared} sealed={sealed}"
     );
 }
