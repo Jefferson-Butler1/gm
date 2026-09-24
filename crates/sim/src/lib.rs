@@ -22,11 +22,11 @@ pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    BULLET_HALF, Bullet, DEATH_TICKS, Enemy, EnemyId, FIRST_SPAWN_TICKS, RUSHER_HALF, RUSHER_HP,
+    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, FIRST_SPAWN_TICKS, RUSHER_HP, RUSHER_RADIUS,
 };
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use player::{
-    ASSIST_CONE, FIRE_INTERVAL, HURT_TICKS, MAX_HP, PLAYER_HALF, Player, ROLL_COOLDOWN_TICKS,
+    ASSIST_CONE, FIRE_INTERVAL, HURT_TICKS, MAX_HP, PLAYER_RADIUS, Player, ROLL_COOLDOWN_TICKS,
     ROLL_TICKS, ROOM_HALF,
 };
 pub use rng::Rng;

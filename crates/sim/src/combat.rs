@@ -3,7 +3,7 @@
 //! machine. Tuning values are first guesses for combat tuning (issue #15).
 
 use crate::arena::Id;
-use crate::player::{PLAYER_HALF, Player, ROOM_HALF, clamp, dist_sq, scale};
+use crate::player::{PLAYER_RADIUS, Player, ROOM_HALF, clamp, dist_sq, scale};
 use crate::{Event, Fx, FxVec2, Rng, Run, SimState, TickEvents, TickInputs, trig};
 use serde::{Deserialize, Serialize};
 
@@ -13,11 +13,13 @@ pub type EnemyId = Id<Enemy>;
 const BULLET_SPEED: Fx = Fx::from_bits(15 << 32);
 /// Bullets vanish after 60 ticks = 1 s if they hit nothing.
 const BULLET_TICKS: u8 = 60;
-pub const BULLET_HALF: Fx = Fx::from_bits(4 << 32);
+/// Hitbox radius.
+pub const BULLET_RADIUS: Fx = Fx::from_bits(4 << 32);
 /// Bullets leave the gun this far ahead of the player's center.
 const MUZZLE: Fx = Fx::from_bits(22 << 32);
 
-pub const RUSHER_HALF: Fx = Fx::from_bits(13 << 32);
+/// Hitbox radius.
+pub const RUSHER_RADIUS: Fx = Fx::from_bits(13 << 32);
 pub const RUSHER_HP: u8 = 3;
 /// Rusher chase speed: 3 pt/tick = 180 pt/s (the player runs 420).
 const RUSHER_SPEED: Fx = Fx::from_bits(3 << 32);
@@ -105,7 +107,7 @@ fn bullets(state: &mut SimState, events: &mut TickEvents) {
         if bullet.ticks_left == 0 || !inside_room(bullet.pos) {
             return false;
         }
-        let reach = BULLET_HALF.saturating_add(RUSHER_HALF);
+        let reach = BULLET_RADIUS.saturating_add(RUSHER_RADIUS);
         let Some((enemy, e)) = enemies
             .iter_mut()
             .find(|(_, e)| e.hp > 0 && overlaps(bullet.pos, e.pos, reach))
@@ -140,11 +142,11 @@ fn enemies(state: &mut SimState, events: &mut TickEvents) {
             enemy.pos = FxVec2 {
                 x: clamp(
                     enemy.pos.x.saturating_add(step.x),
-                    ROOM_HALF.x.saturating_sub(RUSHER_HALF),
+                    ROOM_HALF.x.saturating_sub(RUSHER_RADIUS),
                 ),
                 y: clamp(
                     enemy.pos.y.saturating_add(step.y),
-                    ROOM_HALF.y.saturating_sub(RUSHER_HALF),
+                    ROOM_HALF.y.saturating_sub(RUSHER_RADIUS),
                 ),
             };
         }
@@ -152,7 +154,7 @@ fn enemies(state: &mut SimState, events: &mut TickEvents) {
         if enemy.contact_cooldown > 0 {
             continue;
         }
-        let reach = PLAYER_HALF.saturating_add(RUSHER_HALF);
+        let reach = PLAYER_RADIUS.saturating_add(RUSHER_RADIUS);
         for (slot, player) in state.players.iter_mut().enumerate() {
             if let Some(player) = player
                 && overlaps(player.pos, enemy.pos, reach)
@@ -197,8 +199,8 @@ fn spawner(state: &mut SimState) {
 /// A random point on the placeholder room's edge, inset so the rusher fits.
 fn edge_point(rng: &mut Rng) -> FxVec2 {
     let half = FxVec2 {
-        x: ROOM_HALF.x.saturating_sub(RUSHER_HALF),
-        y: ROOM_HALF.y.saturating_sub(RUSHER_HALF),
+        x: ROOM_HALF.x.saturating_sub(RUSHER_RADIUS),
+        y: ROOM_HALF.y.saturating_sub(RUSHER_RADIUS),
     };
     let edge = rng.below(4);
     let mut along = |half: Fx| {
@@ -229,10 +231,10 @@ fn inside_room(p: FxVec2) -> bool {
     p.x.saturating_abs() <= ROOM_HALF.x && p.y.saturating_abs() <= ROOM_HALF.y
 }
 
-/// Axis-aligned boxes whose half-sizes sum to `reach` overlap.
+/// Circles whose radii sum to `reach` overlap.
 fn overlaps(a: FxVec2, b: FxVec2, reach: Fx) -> bool {
-    a.x.saturating_sub(b.x).saturating_abs() < reach
-        && a.y.saturating_sub(b.y).saturating_abs() < reach
+    let reach = i128::from(reach.to_bits());
+    dist_sq(a, b) < reach.saturating_mul(reach)
 }
 
 const fn add(a: FxVec2, b: FxVec2) -> FxVec2 {

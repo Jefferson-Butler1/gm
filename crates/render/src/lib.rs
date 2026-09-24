@@ -281,7 +281,7 @@ impl Renderer {
         self.flashes
             .retain(|&(_, tick)| current.tick < tick.saturating_add(FLASH_TICKS));
         self.push_world([0.0, 0.0], room_half(), ROOM_COLOR, SQUARE);
-        let rusher = sim::RUSHER_HALF.to_num::<f32>();
+        let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
         for (id, e) in current.enemies.iter() {
             let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
             let color = if self.flashing(Flash::Enemy(id)) {
@@ -297,7 +297,7 @@ impl Renderer {
                 self.push_player(lerp(a.pos, b.pos, alpha), b, hurt);
             }
         }
-        let bullet = sim::BULLET_HALF.to_num::<f32>();
+        let bullet = sim::BULLET_RADIUS.to_num::<f32>();
         for (id, b) in current.bullets.iter() {
             let from = prev.bullets.get(id).map_or(b.pos, |p| p.pos);
             self.push_world(
@@ -366,20 +366,20 @@ impl Renderer {
     }
 
     fn push_player(&mut self, [x, y]: [f32; 2], p: &Player, hurt: bool) {
-        let half = sim::PLAYER_HALF.to_num::<f32>();
-        let (half, mut color) = if !p.alive() {
-            (half, DEAD_COLOR)
+        let radius = sim::PLAYER_RADIUS.to_num::<f32>();
+        let (radius, mut color) = if !p.alive() {
+            (radius, DEAD_COLOR)
         } else if p.rolling() {
-            (half * ROLLING_SCALE, ROLLING_COLOR)
+            (radius * ROLLING_SCALE, ROLLING_COLOR)
         } else if hurt {
-            (half, HURT_COLOR)
+            (radius, HURT_COLOR)
         } else {
-            (half, PLAYER_COLOR)
+            (radius, PLAYER_COLOR)
         };
         if p.alive() && (p.hurt_ticks / BLINK_TICKS) % 2 == 1 {
             color[3] *= 0.4;
         }
-        self.push_world([x, y], [half, half], color, SQUARE);
+        self.push_world([x, y], [radius, radius], color, CIRCLE);
         let (sin, cos) = (f32::from(p.facing) / 65536.0 * TAU).sin_cos();
         let nub = [cos.mul_add(NUB_OFFSET, x), sin.mul_add(NUB_OFFSET, y)];
         self.push_world(nub, [NUB_HALF, NUB_HALF], color, SQUARE);

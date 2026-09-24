@@ -23,8 +23,8 @@ pub const MAX_HP: u8 = 5;
 pub const HURT_TICKS: u8 = 45;
 /// Ticks between shots while fire is held: 8 = 7.5 shots/s.
 pub const FIRE_INTERVAL: u8 = 8;
-/// Half-size of the placeholder square player.
-pub const PLAYER_HALF: Fx = Fx::from_bits(14 << 32);
+/// Hitbox radius of the placeholder player.
+pub const PLAYER_RADIUS: Fx = Fx::from_bits(14 << 32);
 /// Placeholder room until rooms land: 800 x 360 pt centered on the origin.
 pub const ROOM_HALF: FxVec2 = FxVec2 {
     x: Fx::from_bits(400 << 32),
@@ -122,8 +122,8 @@ impl Player {
             FxVec2::default()
         };
         let bound = FxVec2 {
-            x: ROOM_HALF.x.saturating_sub(PLAYER_HALF),
-            y: ROOM_HALF.y.saturating_sub(PLAYER_HALF),
+            x: ROOM_HALF.x.saturating_sub(PLAYER_RADIUS),
+            y: ROOM_HALF.y.saturating_sub(PLAYER_RADIUS),
         };
         self.pos = FxVec2 {
             x: clamp(self.pos.x.saturating_add(velocity.x), bound.x),
@@ -275,7 +275,7 @@ mod tests {
         for _ in 0..120 {
             p.update(walk(0), &[]);
         }
-        assert_eq!(p.pos.x, ROOM_HALF.x.saturating_sub(PLAYER_HALF));
+        assert_eq!(p.pos.x, ROOM_HALF.x.saturating_sub(PLAYER_RADIUS));
     }
 
     #[test]
