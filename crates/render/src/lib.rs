@@ -1,7 +1,7 @@
 //! wgpu renderer drawing into a Swift-owned `CAMetalLayer`.
 //!
 //! Reads the previous and current [`SimState`] and interpolates between them; it never
-//! mutates the sim. Hit flashes come from sim [`Event`]s. Placeholder art is flat colored
+//! mutates the sim. Hit flashes, muzzle flashes and death puffs come from sim [`Event`]s. Placeholder art is flat colored
 //! squares, circles and rings, converted to NDC on the CPU so there are no bind groups.
 //! On-screen controls arrive as an [`Overlay`] in view points, since their layout belongs
 //! to `game`.
@@ -33,8 +33,12 @@ const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
 const TELEGRAPH_RING_GROWTH: f32 = 1.5;
 const HIT_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const BULLET_COLOR: [f32; 4] = [1.0, 0.9, 0.35, 1.0];
-/// How long a hit flash lasts, in sim ticks.
-const FLASH_TICKS: u64 = 6;
+const MUZZLE_COLOR: [f32; 4] = [1.0, 0.95, 0.7, 1.0];
+/// Muzzle flash: radius, and distance ahead of the player's center (where bullets spawn).
+const MUZZLE_R: f32 = 9.0;
+const MUZZLE_OFFSET: f32 = 24.0;
+/// A death puff's ring grows to this many radii of the body as it fades.
+const PUFF_GROWTH: f32 = 1.5;
 /// Facing nub: half-size and distance ahead of the player's center, in world units.
 const NUB_HALF: f32 = 4.0;
 const NUB_OFFSET: f32 = 22.0;
@@ -150,14 +154,31 @@ pub struct Renderer {
     /// Screen size in points, for points -> NDC.
     size_pt: [f32; 2],
     quads: Vec<Quad>,
-    /// Active hit flashes and the tick they started.
+    /// Active event effects and the tick they started.
     flashes: Vec<(Flash, u64)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Flash {
+    /// An enemy took a hit.
     Enemy(EnemyId),
+    /// A player took a hit.
     Player(usize),
+    /// A player's gun fired.
+    Muzzle(usize),
+    /// An enemy died here.
+    Puff(FxVec2),
+}
+
+impl Flash {
+    /// Lifetime in sim ticks.
+    const fn ticks(self) -> u16 {
+        match self {
+            Self::Enemy(_) | Self::Player(_) => 6,
+            Self::Muzzle(_) => 3,
+            Self::Puff(_) => 15,
+        }
+    }
 }
 
 impl Renderer {
@@ -244,10 +265,9 @@ impl Renderer {
             let flash = match *event {
                 Event::EnemyHit { enemy } => Flash::Enemy(enemy),
                 Event::PlayerHit { slot } => Flash::Player(slot),
-                Event::ShotFired { .. }
-                | Event::EnemyKilled { .. }
-                | Event::PlayerDied { .. }
-                | Event::Restarted => continue,
+                Event::ShotFired { slot } => Flash::Muzzle(slot),
+                Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
+                Event::PlayerDied { .. } | Event::Restarted => continue,
             };
             if !self.flashes.contains(&(flash, tick)) {
                 self.flashes.push((flash, tick));
@@ -281,7 +301,7 @@ impl Renderer {
         overlay: &Overlay,
     ) -> Option<f64> {
         self.flashes
-            .retain(|&(_, tick)| current.tick < tick.saturating_add(FLASH_TICKS));
+            .retain(|&(flash, tick)| current.tick < tick.saturating_add(u64::from(flash.ticks())));
         self.push_world([0.0, 0.0], room_half(), ROOM_COLOR, SQUARE);
         let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
         for (id, e) in current.enemies.iter() {
@@ -313,6 +333,7 @@ impl Renderer {
                 CIRCLE,
             );
         }
+        self.push_effects(prev, current, alpha);
         self.push_overlay(overlay);
 
         let t0 = Instant::now();
@@ -369,6 +390,41 @@ impl Renderer {
         self.queue.present(frame);
         self.quads.clear();
         Some(acquire)
+    }
+
+    /// Muzzle flashes and death puffs, fading over their lifetimes.
+    fn push_effects(&mut self, prev: &SimState, current: &SimState, alpha: f32) {
+        let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
+        let effects = std::mem::take(&mut self.flashes);
+        for &(flash, start) in &effects {
+            // Life left, 1 -> 0. The event happened during the `prev` -> `current` step.
+            let age = u16::try_from(current.tick.saturating_sub(start)).map_or(f32::MAX, f32::from);
+            let left = (1.0 - (age + alpha) / f32::from(flash.ticks())).clamp(0.0, 1.0);
+            match flash {
+                Flash::Muzzle(slot) => {
+                    let (Some(Some(from)), Some(Some(player))) =
+                        (prev.players.get(slot), current.players.get(slot))
+                    else {
+                        continue;
+                    };
+                    let [x, y] = lerp(from.pos, player.pos, alpha);
+                    let (sin, cos) = (f32::from(player.facing) / 65536.0 * TAU).sin_cos();
+                    let at = [cos.mul_add(MUZZLE_OFFSET, x), sin.mul_add(MUZZLE_OFFSET, y)];
+                    let radius = MUZZLE_R * left.mul_add(0.5, 0.5);
+                    self.push_world(at, [radius, radius], MUZZLE_COLOR, CIRCLE);
+                }
+                Flash::Puff(pos) => {
+                    let at = [pos.x.to_num(), pos.y.to_num()];
+                    let [r, g, b, _] = RUSHER_COLOR;
+                    let ring = rusher * (1.0 - left).mul_add(PUFF_GROWTH, 1.0);
+                    self.push_world(at, [ring, ring], [r, g, b, left], RING);
+                    let core = rusher * left;
+                    self.push_world(at, [core, core], [1.0, 1.0, 1.0, 0.6 * left], CIRCLE);
+                }
+                Flash::Enemy(_) | Flash::Player(_) => {}
+            }
+        }
+        self.flashes = effects;
     }
 
     /// Spawn warning: a ring closing in on the spot while the body fades in.
