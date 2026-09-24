@@ -9,7 +9,7 @@ mod stats;
 
 use controls::{Controls, Scheme, Viewport};
 use render::Renderer;
-use sim::{SimState, TICK_HZ, TickInputs};
+use sim::{MAX_HP, Run, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -29,8 +29,9 @@ pub enum TouchPhase {
     Ended,
 }
 
-/// What `SwiftUI` renders over the game. Refreshed a few times a second; `seq` bumps on
-/// change so Swift only touches view state when needed.
+/// What `SwiftUI` renders over the game. Perf numbers refresh a few times a second; HP
+/// and run state publish the frame they change. `seq` bumps on any change so Swift only
+/// touches view state when needed.
 #[derive(uniffi::Record, Clone, Default)]
 pub struct HudData {
     pub seq: u64,
@@ -40,6 +41,36 @@ pub struct HudData {
     /// Whole `frame()` call: sim steps, render and drawable acquire.
     pub rust_ms_avg: f64,
     pub tick: u64,
+    /// Slot 0's HP.
+    pub hp: u8,
+    pub max_hp: u8,
+    pub run: RunState,
+}
+
+/// The run as the HUD needs it.
+#[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RunState {
+    #[default]
+    Playing,
+    /// `can_restart` flips once the death pause is over; a tap then restarts.
+    Dead {
+        can_restart: bool,
+    },
+    Won,
+}
+
+impl RunState {
+    const fn of(run: Run) -> Self {
+        match run {
+            Run::Boarding { .. } | Run::Encounter { .. } => Self::Playing,
+            Run::Dead {
+                ticks_until_restart,
+            } => Self::Dead {
+                can_restart: ticks_until_restart == 0,
+            },
+            Run::Won => Self::Won,
+        }
+    }
 }
 
 #[derive(Debug, uniffi::Error)]
@@ -108,7 +139,8 @@ impl Game {
         }
         .map_err(GameError::Render)?;
         eprintln!("[gm] Game::new {viewport:?}");
-        // The session seed arrives with run setup; nothing draws from the RNG yet.
+        // The session seed arrives with run setup; fixed for now, so every run spawns the
+        // same rushers.
         let state = SimState::new(0);
         Ok(Arc::new(Self {
             inner: Mutex::new(Inner {
@@ -150,6 +182,12 @@ impl Game {
     pub fn set_assist_strength(&self, strength: f32) {
         eprintln!("[gm] assist={strength}");
         self.lock().controls.set_assist(strength);
+    }
+
+    /// Tap to restart: sends RESTART on the next tick. The sim ignores it unless the run
+    /// is over and the death pause has elapsed.
+    pub fn restart(&self) {
+        self.lock().controls.request_restart();
     }
 
     /// Touch in view points.
@@ -194,8 +232,8 @@ impl Game {
             let mut inputs = TickInputs::default();
             inputs.players[0] = g.controls.next_input();
             g.prev.clone_from(&g.current);
-            // Events will drive render effects; nothing consumes them yet.
-            let _events = sim::step(&mut g.current, &inputs);
+            let events = sim::step(&mut g.current, &inputs);
+            g.renderer.note_events(g.current.tick, &events.events);
             clock += dt;
         }
         g.sim_clock = Some(clock);
@@ -209,6 +247,11 @@ impl Game {
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)
             .is_some();
+        g.stats.set_status(
+            g.current.players[0].map_or(0, |p| p.hp),
+            MAX_HP,
+            RunState::of(g.current.run),
+        );
         g.stats.record(
             timestamp,
             started.elapsed().as_secs_f64(),

@@ -46,6 +46,11 @@ final class GameModel {
         game.setAssistStrength(strength: assist)
     }
 
+    /// Tap-to-restart; Rust turns it into the sim's RESTART input.
+    func restart() {
+        game?.restart()
+    }
+
     private static func loadScheme() -> Scheme {
         let key = UserDefaults.standard.string(forKey: schemeKey)
         return schemes.first { $0.key == key }?.scheme ?? .fixedSticks
@@ -60,14 +65,26 @@ struct ContentView: View {
         ZStack {
             GameView(model: model).ignoresSafeArea()
             if let hud = model.hud {
-                Text("fps \(String(format: "%.1f", hud.fps))")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.green)
-                    .padding(6)
-                    .background(.black.opacity(0.5))
-                    .allowsHitTesting(false)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.leading, 8)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("fps \(String(format: "%.1f", hud.fps))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.green)
+                        .padding(6)
+                        .background(.black.opacity(0.5))
+                    HStack(spacing: 3) {
+                        ForEach(0..<Int(hud.maxHp), id: \.self) { i in
+                            Image(systemName: i < Int(hud.hp) ? "heart.fill" : "heart")
+                        }
+                    }
+                    .font(.system(size: 16))
+                    .foregroundStyle(.red)
+                }
+                .allowsHitTesting(false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, 8)
+                if case .dead(let canRestart) = hud.run {
+                    DeadOverlay(canRestart: canRestart) { model.restart() }
+                }
             }
             Button { showingControls = true } label: {
                 Image(systemName: "gearshape.fill")
@@ -83,6 +100,25 @@ struct ContentView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .sheet(isPresented: $showingControls) { ControlsSettings(model: model) }
+    }
+}
+
+/// Covers the game while dead. Taps restart once the sim's death pause is over.
+struct DeadOverlay: View {
+    let canRestart: Bool
+    let restart: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("You died").font(.largeTitle.bold())
+            Text("Tap to restart").font(.title3).opacity(canRestart ? 1 : 0)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.black.opacity(0.55))
+        .contentShape(Rectangle())
+        .onTapGesture { if canRestart { restart() } }
+        .ignoresSafeArea()
     }
 }
 

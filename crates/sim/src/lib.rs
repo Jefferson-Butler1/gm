@@ -72,12 +72,6 @@ pub enum Run {
 
 impl Run {
     const START: Self = Self::Boarding { room: RoomId(0) };
-
-    /// Players act and combat runs; otherwise the world is frozen.
-    #[must_use]
-    pub const fn live(&self) -> bool {
-        matches!(self, Self::Boarding { .. } | Self::Encounter { .. })
-    }
 }
 
 /// Everything that affects simulation results. Nothing outside this struct may.
@@ -170,6 +164,7 @@ pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
         .players
         .iter()
         .any(|input| input.buttons.contains(Buttons::RESTART));
+    // Only a live run simulates; the world stays frozen while Dead or Won.
     match &mut state.run {
         Run::Boarding { .. } | Run::Encounter { .. } => combat::tick(state, inputs, &mut events),
         Run::Dead {

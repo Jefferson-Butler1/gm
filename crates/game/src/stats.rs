@@ -1,6 +1,7 @@
 //! Frame pacing stats, published to [`HudData`] and logged (visible via `run.sh --console`).
+//! Also carries the HUD's game status, since this owns the published [`HudData`].
 
-use crate::HudData;
+use crate::{HudData, RunState};
 
 /// How often the HUD and log refresh, in seconds.
 const WINDOW_SECS: f64 = 0.5;
@@ -21,6 +22,15 @@ pub struct Stats {
 impl Stats {
     pub fn hud(&self) -> HudData {
         self.hud.clone()
+    }
+
+    /// Publishes immediately (bumps `seq`) when anything changed.
+    pub fn set_status(&mut self, hp: u8, max_hp: u8, run: RunState) {
+        let h = &mut self.hud;
+        if (h.hp, h.max_hp, h.run) != (hp, max_hp, run) {
+            (h.hp, h.max_hp, h.run) = (hp, max_hp, run);
+            h.seq = h.seq.wrapping_add(1);
+        }
     }
 
     pub fn record(

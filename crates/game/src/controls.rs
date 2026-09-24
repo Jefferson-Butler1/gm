@@ -137,6 +137,8 @@ pub struct Controls {
     layout: Layout,
     sticks: [Option<Stick>; 2],
     dodge: Option<Dodge>,
+    /// A restart tap waiting for the next sim tick.
+    restart: bool,
 }
 
 impl Controls {
@@ -147,7 +149,12 @@ impl Controls {
             layout: Layout::new(viewport),
             sticks: [None, None],
             dodge: None,
+            restart: false,
         }
+    }
+
+    pub const fn request_restart(&mut self) {
+        self.restart = true;
     }
 
     /// Stick origins belong to the old layout; rotation cancels the touches anyway.
@@ -223,10 +230,13 @@ impl Controls {
         }
     }
 
-    /// Input for the next sim tick. A pending dodge goes out once, on the first tick that
-    /// actually runs.
+    /// Input for the next sim tick. A pending dodge or restart goes out once, on the first
+    /// tick that actually runs.
     pub fn next_input(&mut self) -> PlayerInput {
         let mut input = PlayerInput::default();
+        if std::mem::take(&mut self.restart) {
+            input.buttons |= Buttons::RESTART;
+        }
         let [left, right] = &self.sticks;
         if let Some((t, mag)) = left.as_ref().map(Stick::polar)
             && mag > MOVE_DEADZONE
@@ -358,6 +368,14 @@ mod tests {
         c.touch(1, TouchPhase::Began, x, y);
         assert!(c.next_input().buttons.contains(Buttons::DODGE));
         assert!(!c.next_input().buttons.contains(Buttons::DODGE));
+    }
+
+    #[test]
+    fn restart_tap_sends_one_restart() {
+        let mut c = controls(Scheme::FixedSticks);
+        c.request_restart();
+        assert!(c.next_input().buttons.contains(Buttons::RESTART));
+        assert!(!c.next_input().buttons.contains(Buttons::RESTART));
     }
 
     #[test]

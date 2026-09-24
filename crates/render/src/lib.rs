@@ -1,12 +1,13 @@
 //! wgpu renderer drawing into a Swift-owned `CAMetalLayer`.
 //!
 //! Reads the previous and current [`SimState`] and interpolates between them; it never
-//! mutates the sim. Placeholder art is flat colored squares, circles and rings, converted
-//! to NDC on the CPU so there are no bind groups. On-screen controls arrive as an
-//! [`Overlay`] in view points, since their layout belongs to `game`.
+//! mutates the sim. Hit flashes come from sim [`Event`]s. Placeholder art is flat colored
+//! squares, circles and rings, converted to NDC on the CPU so there are no bind groups.
+//! On-screen controls arrive as an [`Overlay`] in view points, since their layout belongs
+//! to `game`.
 
 use bytemuck::{Pod, Zeroable};
-use sim::{Fx, FxVec2, Player, SimState};
+use sim::{EnemyId, Event, Fx, FxVec2, Player, SimState};
 use std::f32::consts::TAU;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -23,6 +24,15 @@ const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
 const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
 const ROLLING_SCALE: f32 = 0.6;
+const DEAD_COLOR: [f32; 4] = [0.35, 0.35, 0.4, 1.0];
+const HURT_COLOR: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
+/// Post-hit invulnerability blinks the player: half alpha every other `BLINK_TICKS`.
+const BLINK_TICKS: u8 = 4;
+const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
+const HIT_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+const BULLET_COLOR: [f32; 4] = [1.0, 0.9, 0.35, 1.0];
+/// How long a hit flash lasts, in sim ticks.
+const FLASH_TICKS: u64 = 6;
 /// Facing nub: half-size and distance ahead of the player's center, in world units.
 const NUB_HALF: f32 = 4.0;
 const NUB_OFFSET: f32 = 22.0;
@@ -138,6 +148,14 @@ pub struct Renderer {
     /// Screen size in points, for points -> NDC.
     size_pt: [f32; 2],
     quads: Vec<Quad>,
+    /// Active hit flashes and the tick they started.
+    flashes: Vec<(Flash, u64)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flash {
+    Enemy(EnemyId),
+    Player(usize),
 }
 
 impl Renderer {
@@ -213,7 +231,30 @@ impl Renderer {
             capacity,
             size_pt,
             quads: Vec::new(),
+            flashes: Vec::new(),
         })
+    }
+
+    /// Feeds one sim step's events; `tick` is the state's tick after that step. A re-run
+    /// tick (rollback) repeats events, so duplicates are dropped.
+    pub fn note_events(&mut self, tick: u64, events: &[Event]) {
+        for event in events {
+            let flash = match *event {
+                Event::EnemyHit { enemy } => Flash::Enemy(enemy),
+                Event::PlayerHit { slot } => Flash::Player(slot),
+                Event::ShotFired { .. }
+                | Event::EnemyKilled { .. }
+                | Event::PlayerDied { .. }
+                | Event::Restarted => continue,
+            };
+            if !self.flashes.contains(&(flash, tick)) {
+                self.flashes.push((flash, tick));
+            }
+        }
+    }
+
+    fn flashing(&self, flash: Flash) -> bool {
+        self.flashes.iter().any(|&(f, _)| f == flash)
     }
 
     pub fn resize(&mut self, width_px: u32, height_px: u32, size_pt: [f32; 2]) {
@@ -237,11 +278,34 @@ impl Renderer {
         alpha: f32,
         overlay: &Overlay,
     ) -> Option<f64> {
+        self.flashes
+            .retain(|&(_, tick)| current.tick < tick.saturating_add(FLASH_TICKS));
         self.push_world([0.0, 0.0], room_half(), ROOM_COLOR, SQUARE);
-        for (a, b) in prev.players.iter().zip(&current.players) {
+        let rusher = sim::RUSHER_HALF.to_num::<f32>();
+        for (id, e) in current.enemies.iter() {
+            let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
+            let color = if self.flashing(Flash::Enemy(id)) {
+                HIT_COLOR
+            } else {
+                RUSHER_COLOR
+            };
+            self.push_world(lerp(from, e.pos, alpha), [rusher, rusher], color, CIRCLE);
+        }
+        for (slot, (a, b)) in prev.players.iter().zip(&current.players).enumerate() {
             if let (Some(a), Some(b)) = (a, b) {
-                self.push_player(lerp(a.pos, b.pos, alpha), b);
+                let hurt = self.flashing(Flash::Player(slot));
+                self.push_player(lerp(a.pos, b.pos, alpha), b, hurt);
             }
+        }
+        let bullet = sim::BULLET_HALF.to_num::<f32>();
+        for (id, b) in current.bullets.iter() {
+            let from = prev.bullets.get(id).map_or(b.pos, |p| p.pos);
+            self.push_world(
+                lerp(from, b.pos, alpha),
+                [bullet, bullet],
+                BULLET_COLOR,
+                CIRCLE,
+            );
         }
         self.push_overlay(overlay);
 
@@ -301,13 +365,20 @@ impl Renderer {
         Some(acquire)
     }
 
-    fn push_player(&mut self, [x, y]: [f32; 2], p: &Player) {
+    fn push_player(&mut self, [x, y]: [f32; 2], p: &Player, hurt: bool) {
         let half = sim::PLAYER_HALF.to_num::<f32>();
-        let (half, color) = if p.rolling() {
+        let (half, mut color) = if !p.alive() {
+            (half, DEAD_COLOR)
+        } else if p.rolling() {
             (half * ROLLING_SCALE, ROLLING_COLOR)
+        } else if hurt {
+            (half, HURT_COLOR)
         } else {
             (half, PLAYER_COLOR)
         };
+        if p.alive() && (p.hurt_ticks / BLINK_TICKS) % 2 == 1 {
+            color[3] *= 0.4;
+        }
         self.push_world([x, y], [half, half], color, SQUARE);
         let (sin, cos) = (f32::from(p.facing) / 65536.0 * TAU).sin_cos();
         let nub = [cos.mul_add(NUB_OFFSET, x), sin.mul_add(NUB_OFFSET, y)];
