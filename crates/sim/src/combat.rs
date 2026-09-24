@@ -26,6 +26,20 @@ const RUSHER_SPEED: Fx = Fx::from_bits(3 << 32);
 /// Ticks after a rusher lands a contact hit before it can land another: 0.5 s.
 const CONTACT_COOLDOWN: u8 = 30;
 
+/// Active enemies' centers are kept this far apart: they touch but never stack.
+const ENEMY_SPACING: Fx = Fx::from_bits(RUSHER_RADIUS.to_bits().saturating_mul(2));
+/// ...and this far from a living player's: pressed 3 pt into contact reach, so contact
+/// still lands but a crowd rings the player instead of piling onto it.
+const PLAYER_SPACING: Fx = Fx::from_bits(
+    PLAYER_RADIUS
+        .to_bits()
+        .saturating_add(RUSHER_RADIUS.to_bits())
+        .saturating_sub(3 << 32),
+);
+/// Separation passes per tick; each pass shrinks what a crowd's pressure leaves over.
+const SEPARATION_PASSES: u8 = 8;
+const HALF: Fx = Fx::from_bits(1 << 31);
+
 /// Spawn telegraph: a new enemy spends 30 ticks = 0.5 s as a warning marker. Meanwhile
 /// it is inert: it doesn't move, hurt, push or get pushed, and it can't be targeted or
 /// hit (bullets pass through).
@@ -81,8 +95,8 @@ impl Enemy {
     }
 }
 
-/// One live tick of combat, in order: players (move, fire), bullets, enemies, death check,
-/// spawner.
+/// One live tick of combat, in order: players (move, fire), bullets, enemies (chase,
+/// separate, contact, telegraph countdown), death check, spawner.
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
     players(state, inputs, events);
     bullets(state, events);
@@ -146,11 +160,7 @@ fn bullets(state: &mut SimState, events: &mut TickEvents) {
 }
 
 fn enemies(state: &mut SimState, events: &mut TickEvents) {
-    for (_, enemy) in state.enemies.iter_mut() {
-        if !enemy.active() {
-            enemy.spawn_ticks = enemy.spawn_ticks.saturating_sub(1);
-            continue;
-        }
+    for (_, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
         enemy.contact_cooldown = enemy.contact_cooldown.saturating_sub(1);
         // Nearest living player; `min_by_key` keeps the first, so ties go to the lower slot.
         let target = state
@@ -164,22 +174,22 @@ fn enemies(state: &mut SimState, events: &mut TickEvents) {
             .and_then(|p| trig::angle_of(sub(p.pos, enemy.pos)))
             .map(|a| scale(trig::unit(a), RUSHER_SPEED))
         {
-            enemy.pos = FxVec2 {
-                x: clamp(
-                    enemy.pos.x.saturating_add(step.x),
-                    ROOM_HALF.x.saturating_sub(RUSHER_RADIUS),
-                ),
-                y: clamp(
-                    enemy.pos.y.saturating_add(step.y),
-                    ROOM_HALF.y.saturating_sub(RUSHER_RADIUS),
-                ),
-            };
+            enemy.pos = add(enemy.pos, step);
         }
+    }
 
+    separate(state);
+
+    let reach = PLAYER_RADIUS.saturating_add(RUSHER_RADIUS);
+    for (_, enemy) in state.enemies.iter_mut() {
+        if !enemy.active() {
+            // Counted down last, so a telegraph of N ticks is inert for exactly N.
+            enemy.spawn_ticks = enemy.spawn_ticks.saturating_sub(1);
+            continue;
+        }
         if enemy.contact_cooldown > 0 {
             continue;
         }
-        let reach = PLAYER_RADIUS.saturating_add(RUSHER_RADIUS);
         for (slot, player) in state.players.iter_mut().enumerate() {
             if let Some(player) = player
                 && overlaps(player.pos, enemy.pos, reach)
@@ -194,6 +204,77 @@ fn enemies(state: &mut SimState, events: &mut TickEvents) {
             }
         }
     }
+}
+
+/// Resolves overlaps among active enemies: pushes them apart, out of living players, and
+/// back inside the room. Pairs resolve in slot order, each pass building on the last, so
+/// the result is deterministic, and a crowd pressing on a player settles into a still
+/// ring around it instead of stacking.
+fn separate(state: &mut SimState) {
+    let players: Vec<FxVec2> = state
+        .players
+        .iter()
+        .flatten()
+        .filter(|p| p.alive())
+        .map(|p| p.pos)
+        .collect();
+    let mut bodies: Vec<FxVec2> = state
+        .enemies
+        .iter()
+        .filter(|(_, e)| e.active())
+        .map(|(_, e)| e.pos)
+        .collect();
+    let bound = FxVec2 {
+        x: ROOM_HALF.x.saturating_sub(RUSHER_RADIUS),
+        y: ROOM_HALF.y.saturating_sub(RUSHER_RADIUS),
+    };
+    for _ in 0..SEPARATION_PASSES {
+        let mut rest = bodies.as_mut_slice();
+        while let Some((a, tail)) = rest.split_first_mut() {
+            for b in tail.iter_mut() {
+                // Each side of the pair takes half the correction.
+                let push = scale(push_out(*a, *b, ENEMY_SPACING), HALF);
+                *a = sub(*a, push);
+                *b = add(*b, push);
+            }
+            rest = tail;
+        }
+        for body in &mut bodies {
+            // Players don't budge.
+            for &player in &players {
+                *body = add(*body, push_out(player, *body, PLAYER_SPACING));
+            }
+            *body = FxVec2 {
+                x: clamp(body.x, bound.x),
+                y: clamp(body.y, bound.y),
+            };
+        }
+    }
+    let active = state.enemies.iter_mut().filter(|(_, e)| e.active());
+    for ((_, enemy), body) in active.zip(bodies) {
+        enemy.pos = body;
+    }
+}
+
+/// How far `b` must move directly away from `a` for their centers to be `spacing`
+/// apart; zero if they already are. Coincident centers part along +x.
+fn push_out(a: FxVec2, b: FxVec2, spacing: Fx) -> FxVec2 {
+    let spacing_bits = i128::from(spacing.to_bits());
+    let gap_sq = dist_sq(a, b);
+    if gap_sq >= spacing_bits.saturating_mul(spacing_bits) {
+        return FxVec2::default();
+    }
+    // `dist_sq` is in squared raw bits, so its root is in raw bits.
+    let gap = Fx::from_bits(i64::try_from(gap_sq.unsigned_abs().isqrt()).unwrap_or(i64::MAX));
+    let offset = sub(b, a);
+    let dir = match (offset.x.checked_div(gap), offset.y.checked_div(gap)) {
+        (Some(x), Some(y)) => FxVec2 { x, y },
+        _ => FxVec2 {
+            x: Fx::ONE,
+            y: Fx::ZERO,
+        },
+    };
+    scale(dir, spacing.saturating_sub(gap))
 }
 
 /// TEMPORARY: see [`RUSHERS_ALIVE`].
