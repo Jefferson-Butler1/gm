@@ -7,6 +7,7 @@
 //! to `game`.
 
 use bytemuck::{Pod, Zeroable};
+use sim::room::{Cell, PrototypeRoom};
 use sim::{Enemy, EnemyId, Event, Fx, FxVec2, Player, SimState};
 use std::f32::consts::TAU;
 use std::ffi::c_void;
@@ -19,7 +20,12 @@ const CLEAR: wgpu::Color = wgpu::Color {
     b: 0.06,
     a: 1.0,
 };
-const ROOM_COLOR: [f32; 4] = [0.08, 0.09, 0.13, 1.0];
+const FLOOR_COLOR: [f32; 4] = [0.08, 0.09, 0.13, 1.0];
+const WALL_COLOR: [f32; 4] = [0.22, 0.25, 0.33, 1.0];
+/// Darker than the clear color, so pits read as holes in the floor.
+const PIT_COLOR: [f32; 4] = [0.0, 0.0, 0.01, 1.0];
+const DOOR_OPEN_COLOR: [f32; 4] = [0.1, 0.3, 0.2, 1.0];
+const DOOR_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
 const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
@@ -153,6 +159,8 @@ pub struct Renderer {
     capacity: usize,
     /// Screen size in points, for points -> NDC.
     size_pt: [f32; 2],
+    /// Room-space point at the screen center; set each frame from the room and player.
+    camera: [f32; 2],
     quads: Vec<Quad>,
     /// Active event effects and the tick they started.
     flashes: Vec<(Flash, u64)>,
@@ -253,6 +261,7 @@ impl Renderer {
             instances,
             capacity,
             size_pt,
+            camera: [0.0, 0.0],
             quads: Vec::new(),
             flashes: Vec::new(),
         })
@@ -267,7 +276,11 @@ impl Renderer {
                 Event::PlayerHit { slot } => Flash::Player(slot),
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
-                Event::PlayerDied { .. } | Event::Restarted => continue,
+                Event::PlayerDied { .. }
+                | Event::Restarted
+                | Event::RoomEntered { .. }
+                | Event::WaveStarted { .. }
+                | Event::RoomCleared { .. } => continue,
             };
             if !self.flashes.contains(&(flash, tick)) {
                 self.flashes.push((flash, tick));
@@ -302,38 +315,7 @@ impl Renderer {
     ) -> Option<f64> {
         self.flashes
             .retain(|&(flash, tick)| current.tick < tick.saturating_add(u64::from(flash.ticks())));
-        self.push_world([0.0, 0.0], room_half(), ROOM_COLOR, SQUARE);
-        let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
-        for (id, e) in current.enemies.iter() {
-            if !e.active() {
-                self.push_telegraph(e, rusher, alpha);
-                continue;
-            }
-            let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
-            let color = if self.flashing(Flash::Enemy(id)) {
-                HIT_COLOR
-            } else {
-                RUSHER_COLOR
-            };
-            self.push_world(lerp(from, e.pos, alpha), [rusher, rusher], color, CIRCLE);
-        }
-        for (slot, (a, b)) in prev.players.iter().zip(&current.players).enumerate() {
-            if let (Some(a), Some(b)) = (a, b) {
-                let hurt = self.flashing(Flash::Player(slot));
-                self.push_player(lerp(a.pos, b.pos, alpha), b, hurt);
-            }
-        }
-        let bullet = sim::BULLET_RADIUS.to_num::<f32>();
-        for (id, b) in current.bullets.iter() {
-            let from = prev.bullets.get(id).map_or(b.pos, |p| p.pos);
-            self.push_world(
-                lerp(from, b.pos, alpha),
-                [bullet, bullet],
-                BULLET_COLOR,
-                CIRCLE,
-            );
-        }
-        self.push_effects(prev, current, alpha);
+        self.push_scene(prev, current, alpha);
         self.push_overlay(overlay);
 
         let t0 = Instant::now();
@@ -392,22 +374,78 @@ impl Renderer {
         Some(acquire)
     }
 
-    /// Muzzle flashes and death puffs, fading over their lifetimes.
-    fn push_effects(&mut self, prev: &SimState, current: &SimState, alpha: f32) {
+    /// The world through the camera: room tiles, enemies, players, bullets.
+    fn push_scene(&mut self, prev: &SimState, current: &SimState, alpha: f32) {
+        // Across a room change (or restart into another room) positions jump; don't
+        // smear them between two rooms' coordinates.
+        let lerp_from = |a: FxVec2, b: FxVec2| {
+            if prev.run.room() == current.run.room() {
+                a
+            } else {
+                b
+            }
+        };
+        let players: Vec<_> = prev
+            .players
+            .iter()
+            .zip(&current.players)
+            .map(|(a, b)| {
+                a.zip(*b)
+                    .map(|(a, b)| (lerp(lerp_from(a.pos, b.pos), b.pos, alpha), b))
+            })
+            .collect();
+        if let Some(room) = current.run.room().and_then(|id| sim::DERELICT.room(id)) {
+            let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
+            self.camera = self.camera_for(room, focus);
+            self.push_room(room, current.run.doors_locked());
+        }
+        let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
+        for (id, e) in current.enemies.iter() {
+            if !e.active() {
+                self.push_telegraph(e, rusher, alpha);
+                continue;
+            }
+            let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
+            let color = if self.flashing(Flash::Enemy(id)) {
+                HIT_COLOR
+            } else {
+                RUSHER_COLOR
+            };
+            self.push_world(lerp(from, e.pos, alpha), [rusher, rusher], color, CIRCLE);
+        }
+        for (slot, player) in players.iter().enumerate() {
+            if let Some((pos, p)) = player {
+                let hurt = self.flashing(Flash::Player(slot));
+                self.push_player(*pos, p, hurt);
+            }
+        }
+        let bullet = sim::BULLET_RADIUS.to_num::<f32>();
+        for (id, b) in current.bullets.iter() {
+            let from = prev.bullets.get(id).map_or(b.pos, |p| p.pos);
+            self.push_world(
+                lerp(from, b.pos, alpha),
+                [bullet, bullet],
+                BULLET_COLOR,
+                CIRCLE,
+            );
+        }
+        self.push_effects(&players, current.tick, alpha);
+    }
+
+    /// Muzzle flashes and death puffs, fading over their lifetimes. `players` are the
+    /// frame's interpolated positions (as [`Self::push_scene`] draws them) and states.
+    fn push_effects(&mut self, players: &[Option<([f32; 2], Player)>], tick: u64, alpha: f32) {
         let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
         let effects = std::mem::take(&mut self.flashes);
         for &(flash, start) in &effects {
             // Life left, 1 -> 0. The event happened during the `prev` -> `current` step.
-            let age = u16::try_from(current.tick.saturating_sub(start)).map_or(f32::MAX, f32::from);
+            let age = u16::try_from(tick.saturating_sub(start)).map_or(f32::MAX, f32::from);
             let left = (1.0 - (age + alpha) / f32::from(flash.ticks())).clamp(0.0, 1.0);
             match flash {
                 Flash::Muzzle(slot) => {
-                    let (Some(Some(from)), Some(Some(player))) =
-                        (prev.players.get(slot), current.players.get(slot))
-                    else {
+                    let Some(&Some(([x, y], player))) = players.get(slot) else {
                         continue;
                     };
-                    let [x, y] = lerp(from.pos, player.pos, alpha);
                     let (sin, cos) = (f32::from(player.facing) / 65536.0 * TAU).sin_cos();
                     let at = [cos.mul_add(MUZZLE_OFFSET, x), sin.mul_add(MUZZLE_OFFSET, y)];
                     let radius = MUZZLE_R * left.mul_add(0.5, 0.5);
@@ -477,15 +515,60 @@ impl Renderer {
         }
     }
 
-    /// World origin is the screen center, +y down. One world unit is one point, scaled
-    /// down only when the room does not fit (portrait).
+    /// Where the screen center sits in room space: on the focus (the player), clamped so
+    /// the view stays inside the room. An axis where the room fits on screen centers it.
+    fn camera_for(&self, room: &PrototypeRoom, focus: [f32; 2]) -> [f32; 2] {
+        let cell = sim::room::CELL.to_num::<f32>();
+        let extent = |cells: usize| f32::from(u16::try_from(cells).unwrap_or(u16::MAX)) * cell;
+        let axis = |room: f32, screen: f32, focus: f32| {
+            if room <= screen {
+                room / 2.0
+            } else {
+                focus.clamp(screen / 2.0, room - screen / 2.0)
+            }
+        };
+        let [w, h] = self.size_pt;
+        [
+            axis(extent(room.width()), w, focus[0]),
+            axis(extent(room.height()), h, focus[1]),
+        ]
+    }
+
+    /// One quad per non-void cell. Exit gaps draw as doors: open or sealed.
+    fn push_room(&mut self, room: &PrototypeRoom, sealed: bool) {
+        let half = sim::room::CELL.to_num::<f32>() / 2.0;
+        for y in 0..room.height() {
+            for x in 0..room.width() {
+                let (Ok(cx), Ok(cy)) = (i32::try_from(x), i32::try_from(y)) else {
+                    continue;
+                };
+                // Tiles are inset a hair so the grid reads; pits a bit more, as holes.
+                let (color, inset) = match (room.cell(cx, cy), room.exit_at(cx, cy), sealed) {
+                    (_, Some(_), true) => (DOOR_SEALED_COLOR, 0.5),
+                    (_, Some(_), false) => (DOOR_OPEN_COLOR, 0.5),
+                    (Cell::Floor, None, _) => (FLOOR_COLOR, 0.5),
+                    (Cell::Wall, None, _) => (WALL_COLOR, 0.5),
+                    (Cell::Pit, None, _) => (PIT_COLOR, 3.0),
+                    (Cell::Void, None, _) => continue,
+                };
+                let center = sim::room::cell_center(x, y);
+                self.push_world(
+                    [center.x.to_num(), center.y.to_num()],
+                    [half - inset, half - inset],
+                    color,
+                    SQUARE,
+                );
+            }
+        }
+    }
+
+    /// Room space (points, +y down) through the camera: one world unit is one view point.
     fn push_world(&mut self, [x, y]: [f32; 2], [hx, hy]: [f32; 2], color: [f32; 4], shape: f32) {
         let [w, h] = self.size_pt;
-        let [rx, ry] = room_half();
-        let scale = (w / (2.0 * rx)).min(h / (2.0 * ry)).min(1.0);
-        let [sx, sy] = [2.0 * scale / w, 2.0 * scale / h];
+        let [cx, cy] = self.camera;
+        let [sx, sy] = [2.0 / w, 2.0 / h];
         self.quads.push(Quad {
-            center: [x * sx, -y * sy],
+            center: [(x - cx) * sx, -(y - cy) * sy],
             half: [hx * sx, hy * sy],
             color,
             shape,
@@ -502,10 +585,6 @@ impl Renderer {
             shape,
         });
     }
-}
-
-fn room_half() -> [f32; 2] {
-    [sim::ROOM_HALF.x.to_num(), sim::ROOM_HALF.y.to_num()]
 }
 
 fn lerp(a: FxVec2, b: FxVec2, t: f32) -> [f32; 2] {

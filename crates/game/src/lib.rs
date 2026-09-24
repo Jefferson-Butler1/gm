@@ -65,6 +65,7 @@ impl RunState {
             Run::Boarding { .. } | Run::Encounter { .. } => Self::Playing,
             Run::Dead {
                 ticks_until_restart,
+                ..
             } => Self::Dead {
                 can_restart: ticks_until_restart == 0,
             },
