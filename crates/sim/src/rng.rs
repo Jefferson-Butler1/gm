@@ -32,6 +32,12 @@ impl Rng {
         self.s = [s0, s1, s2 ^ t, s3.rotate_left(45)];
         result
     }
+
+    /// Uniform-enough integer in `0..n` (0 when `n` is 0): the top 32 bits scaled by `n`.
+    pub fn below(&mut self, n: u32) -> u32 {
+        let scaled = (self.next_u64() >> 32).wrapping_mul(u64::from(n)) >> 32;
+        u32::try_from(scaled).unwrap_or(0)
+    }
 }
 
 const fn splitmix64(state: &mut u64) -> u64 {

@@ -1,5 +1,6 @@
-//! Player movement, dodge roll and aim. Tuning is in ticks at [`TICK_HZ`](crate::TICK_HZ)
-//! and world units (points); values come from the feel spike (issue #7).
+//! Player movement, dodge roll, aim, gun and HP. Tuning is in ticks at
+//! [`TICK_HZ`](crate::TICK_HZ) and world units (points); movement values come from the
+//! feel spike (issue #7), combat values are first guesses for tuning (issue #15).
 
 use crate::input::{Buttons, MOVE_BUCKETS, PlayerInput};
 use crate::{Fx, FxVec2, trig};
@@ -16,6 +17,12 @@ const ROLL_SPEED: Fx = Fx::from_bits((170 << 32) / 12);
 pub const ROLL_COOLDOWN_TICKS: u8 = 24;
 /// Aim assist only bends toward targets within this half-angle of the aim: ±20°.
 pub const ASSIST_CONE: i16 = 3641;
+/// Hits a fresh player can take.
+pub const MAX_HP: u8 = 5;
+/// Invulnerability after taking a hit: 45 ticks = 0.75 s.
+pub const HURT_TICKS: u8 = 45;
+/// Ticks between shots while fire is held: 8 = 7.5 shots/s.
+pub const FIRE_INTERVAL: u8 = 8;
 /// Half-size of the placeholder square player.
 pub const PLAYER_HALF: Fx = Fx::from_bits(14 << 32);
 /// Placeholder room until rooms land: 800 x 360 pt centered on the origin.
@@ -24,7 +31,7 @@ pub const ROOM_HALF: FxVec2 = FxVec2 {
     y: Fx::from_bits(180 << 32),
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Player {
     pub pos: FxVec2,
     /// Move direction while moving, overridden by the resolved aim while firing; one
@@ -35,6 +42,27 @@ pub struct Player {
     pub roll_dir: u16,
     /// Ticks until the next roll may start.
     pub roll_cooldown: u8,
+    /// 0 = dead. A dead player keeps its slot but no longer acts or takes hits.
+    pub hp: u8,
+    /// Post-hit invulnerability left.
+    pub hurt_ticks: u8,
+    /// Ticks until the gun may fire again.
+    pub fire_cooldown: u8,
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            pos: FxVec2::default(),
+            facing: 0,
+            roll_ticks: 0,
+            roll_dir: 0,
+            roll_cooldown: 0,
+            hp: MAX_HP,
+            hurt_ticks: 0,
+            fire_cooldown: 0,
+        }
+    }
 }
 
 impl Player {
@@ -43,10 +71,25 @@ impl Player {
         self.roll_ticks > 0
     }
 
-    /// Damage is ignored while this is set. Nothing deals damage yet (Combat step).
+    #[must_use]
+    pub const fn alive(&self) -> bool {
+        self.hp > 0
+    }
+
+    /// Damage is ignored while this is set: dodge i-frames and post-hit invulnerability.
     #[must_use]
     pub const fn invulnerable(&self) -> bool {
-        self.rolling()
+        self.rolling() || self.hurt_ticks > 0
+    }
+
+    /// Takes one hit unless invulnerable or already dead. Returns whether it landed.
+    pub const fn hurt(&mut self) -> bool {
+        if !self.alive() || self.invulnerable() {
+            return false;
+        }
+        self.hp = self.hp.saturating_sub(1);
+        self.hurt_ticks = HURT_TICKS;
+        true
     }
 
     #[must_use]
@@ -55,8 +98,8 @@ impl Player {
     }
 
     /// One tick of this player's input. `targets` are what aim assist and auto-aim may
-    /// lock onto.
-    pub fn update(&mut self, input: PlayerInput, targets: &[FxVec2]) {
+    /// lock onto. Returns the angle of a shot fired this tick.
+    pub fn update(&mut self, input: PlayerInput, targets: &[FxVec2]) -> Option<u16> {
         let move_angle = (input.move_mag > 0).then(|| bucket_angle(input.move_dir));
 
         self.roll_ticks = self.roll_ticks.saturating_sub(1);
@@ -87,12 +130,20 @@ impl Player {
             y: clamp(self.pos.y.saturating_add(velocity.y), bound.y),
         };
 
-        // No aiming mid-roll (Gungeon-style); the roll owns the facing.
+        // No aiming or firing mid-roll (Gungeon-style); the roll owns the facing.
+        let mut shot = None;
         if !self.rolling() && input.buttons.contains(Buttons::FIRE) {
             self.facing = self.resolve_aim(input, targets);
+            if self.fire_cooldown == 0 {
+                self.fire_cooldown = FIRE_INTERVAL;
+                shot = Some(self.facing);
+            }
         }
 
         self.roll_cooldown = self.roll_cooldown.saturating_sub(1);
+        self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
+        self.hurt_ticks = self.hurt_ticks.saturating_sub(1);
+        shot
     }
 
     /// Where a shot fired this tick would go. Assist and auto-aim fall back to the raw aim
@@ -129,12 +180,15 @@ impl Player {
 
     /// Closest target; ties go to the earliest, so order must be deterministic.
     fn nearest(&self, targets: impl Iterator<Item = FxVec2>) -> Option<FxVec2> {
-        targets.min_by_key(|t| {
-            let d = |a: Fx, b: Fx| i128::from(a.to_bits()).saturating_sub(i128::from(b.to_bits()));
-            let (dx, dy) = (d(t.x, self.pos.x), d(t.y, self.pos.y));
-            dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
-        })
+        targets.min_by_key(|&t| dist_sq(t, self.pos))
     }
+}
+
+/// Squared distance in raw `Fx` bits; exact, for comparisons only.
+pub fn dist_sq(a: FxVec2, b: FxVec2) -> i128 {
+    let d = |a: Fx, b: Fx| i128::from(a.to_bits()).saturating_sub(i128::from(b.to_bits()));
+    let (dx, dy) = (d(a.x, b.x), d(a.y, b.y));
+    dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
 }
 
 /// Angle of the center of a move bucket.
@@ -146,14 +200,14 @@ fn bucket_angle(bucket: u8) -> u16 {
     u16::try_from(turns).unwrap_or(0)
 }
 
-const fn scale(v: FxVec2, k: Fx) -> FxVec2 {
+pub const fn scale(v: FxVec2, k: Fx) -> FxVec2 {
     FxVec2 {
         x: v.x.saturating_mul(k),
         y: v.y.saturating_mul(k),
     }
 }
 
-fn clamp(v: Fx, bound: Fx) -> Fx {
+pub fn clamp(v: Fx, bound: Fx) -> Fx {
     v.max(bound.saturating_neg()).min(bound)
 }
 
@@ -308,9 +362,18 @@ mod tests {
     }
 
     #[test]
-    fn no_aiming_mid_roll() {
+    fn no_aiming_or_firing_mid_roll() {
         let mut p = Player::default();
-        p.update(with(fire(DOWN, 0), Buttons::DODGE), &[]);
-        assert_eq!((p.roll_dir, p.facing), (RIGHT, RIGHT));
+        let shot = p.update(with(fire(DOWN, 0), Buttons::DODGE), &[]);
+        assert_eq!((p.roll_dir, p.facing, shot), (RIGHT, RIGHT, None));
+    }
+
+    #[test]
+    fn held_fire_shoots_every_fire_interval() {
+        let mut p = Player::default();
+        let shots: Vec<u32> = (0..20)
+            .filter(|_| p.update(fire(DOWN, 0), &[]) == Some(DOWN))
+            .collect();
+        assert_eq!(shots, [0, 8, 16]);
     }
 }
