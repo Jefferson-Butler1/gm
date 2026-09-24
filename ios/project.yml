@@ -22,7 +22,8 @@ targets:
         CADisableMinimumFrameDurationOnPhone: true
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # Landscape is the primary layout target (issue #7); portrait still works.
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationPortrait]
         # UIScene lifecycle (mandatory from the iOS 27 SDK).
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
