@@ -12,8 +12,10 @@ pub struct PlayerInput {
     pub move_dir: u8,
     /// Stick deflection: 0 = none, 255 = full.
     pub move_mag: u8,
-    /// Aim angle from +x toward +y; one full turn = 65536.
+    /// Aim angle from +x toward +y; one full turn = 65536. Ignored under `AUTO_AIM`.
     pub aim: u16,
+    /// Aim-assist strength: 0 = raw aim, 255 = snap to the target in the assist cone.
+    pub assist: u8,
     pub buttons: Buttons,
 }
 
@@ -26,6 +28,8 @@ impl Buttons {
     pub const DODGE: Self = Self(1 << 1);
     pub const INTERACT: Self = Self(1 << 2);
     pub const RESTART: Self = Self(1 << 3);
+    /// With `FIRE`: aim at the nearest target instead of along `aim`.
+    pub const AUTO_AIM: Self = Self(1 << 4);
 
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {

@@ -14,9 +14,12 @@
 
 mod checksum;
 mod input;
+mod player;
 mod rng;
+pub mod trig;
 
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
+pub use player::{ASSIST_CONE, PLAYER_HALF, Player, ROLL_COOLDOWN_TICKS, ROLL_TICKS, ROOM_HALF};
 pub use rng::Rng;
 
 use serde::{Deserialize, Serialize};
@@ -40,13 +43,6 @@ pub struct FxVec2 {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoomId(pub u16);
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Player {
-    pub pos: FxVec2,
-    /// Last aim angle while firing; one full turn = 65536.
-    pub facing: u16,
-}
 
 /// The run's state machine. Each variant owns its data; transitions happen only in [`step`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -113,11 +109,13 @@ pub struct TickEvents {
 pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
     let mut events = TickEvents::default();
 
-    for (player, input) in state.players.iter_mut().zip(&inputs.players) {
-        if let Some(player) = player
-            && input.buttons.contains(Buttons::FIRE)
-        {
-            player.facing = input.aim;
+    // Players act only while the run is live. Nothing is targetable until enemies land
+    // (Combat step), so assist and auto-aim fall back to raw aim.
+    if matches!(state.run, Run::Boarding { .. } | Run::Encounter { .. }) {
+        for (player, input) in state.players.iter_mut().zip(&inputs.players) {
+            if let Some(player) = player {
+                player.update(*input, &[]);
+            }
         }
     }
 
