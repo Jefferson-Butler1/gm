@@ -65,7 +65,7 @@ final class GameUIView: UIView {
         // Rust holds a raw pointer to the layer; this view keeps it alive for the Game's lifetime.
         let ptr = UInt64(UInt(bitPattern: Unmanaged.passUnretained(layer).toOpaque()))
         do {
-            let game = try Game(layerPtr: ptr, viewport: viewport)
+            let game = try Game(layerPtr: ptr, viewport: viewport, seed: UInt64.random(in: .min ... .max))
             model.attach(game)
             self.game = game
         } catch {

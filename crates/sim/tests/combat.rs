@@ -2,8 +2,8 @@
 //! death -> restart.
 
 use sim::{
-    Buttons, DEATH_TICKS, Enemy, Event, Fx, FxVec2, MAX_HP, PlayerInput, RUSHER_HP, RUSHER_RADIUS,
-    Run, SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, step,
+    Buttons, DEATH_TICKS, Enemy, Event, FIRST_SPAWN_TICKS, Fx, FxVec2, MAX_HP, PlayerInput,
+    RUSHER_HP, RUSHER_RADIUS, Rng, Run, SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, step,
 };
 
 const SEED: u64 = 7;
@@ -114,9 +114,41 @@ fn death_goes_to_dead_and_restart_starts_a_fresh_run() {
     assert!(events.is_empty(), "{events:?}");
 
     assert_eq!(run(&mut state, 1, &restart), [Event::Restarted]);
-    let mut fresh = SimState::new(SEED);
+    let mut fresh = SimState::new(Rng::next_seed(SEED));
     fresh.tick = state.tick;
     assert_eq!(state, fresh);
+}
+
+fn restart_now(state: &mut SimState) {
+    state.run = Run::Dead {
+        ticks_until_restart: 0,
+    };
+    assert_eq!(run(state, 1, &press(Buttons::RESTART)), [Event::Restarted]);
+}
+
+/// Where this run's spawner puts its first rusher.
+fn first_spawn(state: &SimState) -> Option<FxVec2> {
+    let mut state = state.clone();
+    run(
+        &mut state,
+        usize::from(FIRST_SPAWN_TICKS),
+        &TickInputs::default(),
+    );
+    state.enemies.iter().next().map(|(_, e)| e.pos)
+}
+
+#[test]
+fn each_restart_derives_the_next_run_seed() {
+    let mut state = SimState::new(SEED);
+    let first = first_spawn(&state);
+    restart_now(&mut state);
+    let second_seed = state.seed;
+    assert_eq!(second_seed, Rng::next_seed(SEED));
+    let second = first_spawn(&state);
+    restart_now(&mut state);
+    assert_eq!(state.seed, Rng::next_seed(second_seed));
+    assert!(first.is_some());
+    assert_ne!(first, second, "a new seed plays a different run");
 }
 
 #[test]

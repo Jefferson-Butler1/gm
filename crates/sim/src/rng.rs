@@ -21,6 +21,14 @@ impl Rng {
         }
     }
 
+    /// The seed of the run after one seeded with `seed`: one `SplitMix64` step, so a
+    /// session's run seeds are a fixed sequence from its first.
+    #[must_use]
+    pub const fn next_seed(seed: u64) -> u64 {
+        let mut state = seed;
+        splitmix64(&mut state)
+    }
+
     pub const fn next_u64(&mut self) -> u64 {
         let [s0, s1, s2, s3] = self.s;
         let result = s1.wrapping_mul(5).rotate_left(7).wrapping_mul(9);

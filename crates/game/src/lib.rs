@@ -118,11 +118,13 @@ impl Game {
 #[uniffi::export]
 impl Game {
     /// `layer_ptr` is a `CAMetalLayer*` that Swift keeps alive for the Game's lifetime.
+    /// `seed` seeds the session's first run (Swift picks it at random); restarts derive
+    /// the next run's seed inside the sim.
     ///
     /// # Errors
     /// If the pointer is null or wgpu cannot set up rendering on the layer.
     #[uniffi::constructor]
-    pub fn new(layer_ptr: u64, viewport: Viewport) -> Result<Arc<Self>, GameError> {
+    pub fn new(layer_ptr: u64, viewport: Viewport, seed: u64) -> Result<Arc<Self>, GameError> {
         let addr = usize::try_from(layer_ptr).map_err(|_| GameError::NullLayer)?;
         let layer = NonNull::new(std::ptr::with_exposed_provenance_mut::<c_void>(addr))
             .ok_or(GameError::NullLayer)?;
@@ -138,10 +140,8 @@ impl Game {
             )
         }
         .map_err(GameError::Render)?;
-        eprintln!("[gm] Game::new {viewport:?}");
-        // The session seed arrives with run setup; fixed for now, so every run spawns the
-        // same rushers.
-        let state = SimState::new(0);
+        eprintln!("[gm] Game::new {viewport:?} seed={seed:#018x}");
+        let state = SimState::new(seed);
         Ok(Arc::new(Self {
             inner: Mutex::new(Inner {
                 renderer,

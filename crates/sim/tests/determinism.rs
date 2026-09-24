@@ -11,7 +11,7 @@ const STAND_STILL: std::ops::Range<u64> = 600..1100;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x9b3a_e16f_1713_0884;
+const GOLDEN_TRACE: u64 = 0x7643_0391_03cd_51f1;
 
 /// A reproducible input script: pseudo-random sticks, assist and buttons for two players.
 /// Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and walking all show up;

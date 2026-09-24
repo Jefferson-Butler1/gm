@@ -79,7 +79,8 @@ impl Run {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SimState {
     pub tick: u64,
-    /// The run seed; restart re-seeds from it.
+    /// The run seed. The first comes from the host (random per session); each restart
+    /// derives the next with [`Rng::next_seed`], so replays stay deterministic.
     pub seed: u64,
     pub rng: Rng,
     pub run: Run,
@@ -108,11 +109,11 @@ impl SimState {
         }
     }
 
-    /// A fresh run from the same seed with the same occupied slots. The tick keeps
+    /// A fresh run from the next run seed, with the same occupied slots. The tick keeps
     /// counting: it is session time, and presentation keys effects by it.
     #[must_use]
     pub fn restarted(&self) -> Self {
-        let mut fresh = Self::new(self.seed);
+        let mut fresh = Self::new(Rng::next_seed(self.seed));
         fresh.tick = self.tick;
         for (slot, old) in fresh.players.iter_mut().zip(&self.players) {
             *slot = old.map(|_| Player::default());
