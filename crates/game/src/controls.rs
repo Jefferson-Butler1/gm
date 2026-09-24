@@ -163,6 +163,12 @@ impl Controls {
         self.sticks = [None, None];
     }
 
+    /// Drops held sticks and a pending dodge (pause); a pending restart survives.
+    pub const fn release(&mut self) {
+        self.sticks = [None, None];
+        self.dodge = None;
+    }
+
     pub const fn set_scheme(&mut self, scheme: Scheme) {
         self.scheme = scheme;
         self.sticks = [None, None];

@@ -37,13 +37,26 @@ final class GameModel {
             game?.setAssistStrength(strength: assist)
         }
     }
+    /// The game pauses while either holds; pause lives outside the sim (Rust stops stepping).
+    var settingsOpen = false { didSet { syncPause() } }
+    var appActive = true { didSet { syncPause() } }
     @ObservationIgnored private var game: Game?
+    @ObservationIgnored private var paused = false
 
     /// Pushes the persisted settings into a freshly created game.
     func attach(_ game: Game) {
         self.game = game
         game.setScheme(scheme: scheme)
         game.setAssistStrength(strength: assist)
+        if paused { game.pause() }
+    }
+
+    /// Only acts on transitions: `resume` resyncs the sim clock.
+    private func syncPause() {
+        let shouldPause = settingsOpen || !appActive
+        guard shouldPause != paused else { return }
+        paused = shouldPause
+        if paused { game?.pause() } else { game?.resume() }
     }
 
     /// Tap-to-restart; Rust turns it into the sim's RESTART input.
@@ -59,7 +72,6 @@ final class GameModel {
 
 struct ContentView: View {
     @Bindable var model: GameModel
-    @State private var showingControls = false
 
     var body: some View {
         ZStack {
@@ -86,7 +98,7 @@ struct ContentView: View {
                     DeadOverlay(canRestart: canRestart) { model.restart() }
                 }
             }
-            Button { showingControls = true } label: {
+            Button { model.settingsOpen = true } label: {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 18))
                     .padding(10)
@@ -99,7 +111,7 @@ struct ContentView: View {
         .background(.black)
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .sheet(isPresented: $showingControls) { ControlsSettings(model: model) }
+        .sheet(isPresented: $model.settingsOpen) { ControlsSettings(model: model) }
     }
 }
 

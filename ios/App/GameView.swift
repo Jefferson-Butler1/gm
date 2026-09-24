@@ -23,10 +23,10 @@ final class GameUIView: UIView {
         isMultipleTouchEnabled = true
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.link?.isPaused = true
-            self?.game?.pause()
+            self?.model.appActive = false
         }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.game?.resume()
+            self?.model.appActive = true
             self?.link?.isPaused = false
         }
     }

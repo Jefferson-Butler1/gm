@@ -195,9 +195,13 @@ impl Game {
         self.lock().controls.touch(id, phase, x, y);
     }
 
-    /// Stop stepping and drawing (app backgrounded). Pause lives outside the sim.
+    /// Stop stepping the sim (settings open, app inactive); frames keep drawing the frozen
+    /// state. Pause lives outside the sim. Held sticks and a pending dodge are dropped:
+    /// their touches may never report an end.
     pub fn pause(&self) {
-        self.lock().paused = true;
+        let mut g = self.lock();
+        g.paused = true;
+        g.controls.release();
     }
 
     /// Resume without replaying the time spent paused.
@@ -214,33 +218,36 @@ impl Game {
         let started = Instant::now();
         let mut guard = self.lock();
         let g = &mut *guard;
-        if g.paused {
-            return g.stats.hud();
-        }
 
         let dt = 1.0 / f64::from(TICK_HZ);
-        let mut clock = match g.sim_clock {
-            Some(c) if target_timestamp - c <= MAX_CATCH_UP_SECS => c,
-            _ => {
-                g.prev.clone_from(&g.current);
-                target_timestamp
-            }
-        };
-        // Fixed-step accumulator; the float comparison is the point.
-        #[allow(clippy::while_float)]
-        while clock + dt <= target_timestamp {
-            let mut inputs = TickInputs::default();
-            inputs.players[0] = g.controls.next_input();
+        let alpha = if g.paused {
+            // Frozen on `current`; `resume` resyncs the clock so nothing fast-forwards.
             g.prev.clone_from(&g.current);
-            let events = sim::step(&mut g.current, &inputs);
-            g.renderer.note_events(g.current.tick, &events.events);
-            clock += dt;
-        }
-        g.sim_clock = Some(clock);
-
-        // No From<f64> for f32; precision loss is fine for an interpolation factor.
-        #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-        let alpha = ((target_timestamp - clock) / dt).clamp(0.0, 1.0) as f32;
+            1.0
+        } else {
+            let mut clock = match g.sim_clock {
+                Some(c) if target_timestamp - c <= MAX_CATCH_UP_SECS => c,
+                _ => {
+                    g.prev.clone_from(&g.current);
+                    target_timestamp
+                }
+            };
+            // Fixed-step accumulator; the float comparison is the point.
+            #[allow(clippy::while_float)]
+            while clock + dt <= target_timestamp {
+                let mut inputs = TickInputs::default();
+                inputs.players[0] = g.controls.next_input();
+                g.prev.clone_from(&g.current);
+                let events = sim::step(&mut g.current, &inputs);
+                g.renderer.note_events(g.current.tick, &events.events);
+                clock += dt;
+            }
+            g.sim_clock = Some(clock);
+            // No From<f64> for f32; precision loss is fine for an interpolation factor.
+            #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+            let alpha = ((target_timestamp - clock) / dt).clamp(0.0, 1.0) as f32;
+            alpha
+        };
         let roll_ready = g.current.players[0].is_none_or(|p| p.can_roll());
         let overlay = g.controls.overlay(roll_ready);
         let presented = g
