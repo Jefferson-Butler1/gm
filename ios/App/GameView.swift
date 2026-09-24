@@ -41,20 +41,33 @@ final class GameUIView: UIView {
         }
     }
 
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        setNeedsLayout()
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let s = layer.contentsScale
-        let wPx = UInt32(bounds.width * s), hPx = UInt32(bounds.height * s)
-        let wPt = Float(bounds.width), hPt = Float(bounds.height)
-        guard wPx > 0, hPx > 0 else { return }
+        // The view ignores the safe area (full-bleed rendering), so read the insets from the
+        // window; Rust keeps the dodge button inside them.
+        let inset = window?.safeAreaInsets ?? .zero
+        let viewport = Viewport(
+            pixelWidth: UInt32(bounds.width * s), pixelHeight: UInt32(bounds.height * s),
+            pointWidth: Float(bounds.width), pointHeight: Float(bounds.height),
+            safeTop: Float(inset.top), safeLeft: Float(inset.left),
+            safeBottom: Float(inset.bottom), safeRight: Float(inset.right))
+        guard viewport.pixelWidth > 0, viewport.pixelHeight > 0 else { return }
         if let game {
-            game.resize(pixelWidth: wPx, pixelHeight: hPx, pointWidth: wPt, pointHeight: hPt)
+            game.resize(viewport: viewport)
             return
         }
         // Rust holds a raw pointer to the layer; this view keeps it alive for the Game's lifetime.
         let ptr = UInt64(UInt(bitPattern: Unmanaged.passUnretained(layer).toOpaque()))
         do {
-            game = try Game(layerPtr: ptr, pixelWidth: wPx, pixelHeight: hPx, pointWidth: wPt, pointHeight: hPt)
+            let game = try Game(layerPtr: ptr, viewport: viewport)
+            model.attach(game)
+            self.game = game
         } catch {
             fputs("[gm] Game init failed: \(error)\n", stderr)
             return

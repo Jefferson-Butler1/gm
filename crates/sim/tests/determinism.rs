@@ -8,9 +8,10 @@ const TICKS: u64 = 600;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xbb21_bd70_33a3_05f7;
+const GOLDEN_TRACE: u64 = 0xd748_3c7a_9784_830b;
 
-/// A reproducible input script: pseudo-random sticks and buttons for two players.
+/// A reproducible input script: pseudo-random sticks, assist and buttons for two players.
+/// Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and walking all show up.
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
     (0..TICKS)
@@ -22,7 +23,13 @@ fn script() -> Vec<TickInputs> {
                     move_dir: bits[0] % sim::MOVE_BUCKETS,
                     move_mag: bits[1],
                     aim: u16::from_le_bytes([bits[2], bits[3]]),
-                    buttons: Buttons(bits[4] & 0b1111),
+                    assist: bits[5],
+                    buttons: Buttons(bits[4] & !Buttons::DODGE.0 & 0b1_1111)
+                        | if bits[6] < 32 {
+                            Buttons::DODGE
+                        } else {
+                            Buttons::default()
+                        },
                 };
             }
             inputs
@@ -85,4 +92,18 @@ fn golden_trace_matches_committed_value() {
         .fold(0_u64, |acc, (checksum, _)| acc.rotate_left(5) ^ checksum);
     println!("golden trace = {trace:#018x}");
     assert_eq!(trace, GOLDEN_TRACE, "got {trace:#018x}");
+}
+
+/// Guards the script's purpose: the golden trace must cover walking and rolling.
+#[test]
+fn script_exercises_movement_and_dodge() {
+    let mut state = start();
+    let (mut rolls, mut moved) = (0, false);
+    for i in script() {
+        step(&mut state, &i);
+        let p = state.players[0].unwrap();
+        rolls += usize::from(p.roll_ticks == sim::ROLL_TICKS);
+        moved |= p.pos != Player::default().pos;
+    }
+    assert!(moved && rolls >= 10, "moved={moved} rolls={rolls}");
 }
