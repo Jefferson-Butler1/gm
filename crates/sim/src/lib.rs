@@ -22,7 +22,8 @@ pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, FIRST_SPAWN_TICKS, RUSHER_HP, RUSHER_RADIUS,
+    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, FIRST_SPAWN_TICKS, RUSHER_HP,
+    RUSHER_RADIUS, SPAWN_TELEGRAPH_TICKS,
 };
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use player::{

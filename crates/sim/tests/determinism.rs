@@ -4,14 +4,14 @@
 use sim::{Buttons, Event, Player, PlayerInput, Rng, Run, SimState, TickEvents, TickInputs, step};
 
 const SEED: u64 = 0x5EED;
-const TICKS: u64 = 1200;
+const TICKS: u64 = 1300;
 /// Both players stand idle through this range so the rushers kill them; random input
 /// (which includes RESTART) resumes afterwards.
-const STAND_STILL: std::ops::Range<u64> = 600..1000;
+const STAND_STILL: std::ops::Range<u64> = 600..1100;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xb811_c5ee_54a5_11cb;
+const GOLDEN_TRACE: u64 = 0xbf18_240b_d885_9fcf;
 
 /// A reproducible input script: pseudo-random sticks, assist and buttons for two players.
 /// Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and walking all show up;

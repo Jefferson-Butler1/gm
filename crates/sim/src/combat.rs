@@ -26,6 +26,11 @@ const RUSHER_SPEED: Fx = Fx::from_bits(3 << 32);
 /// Ticks after a rusher lands a contact hit before it can land another: 0.5 s.
 const CONTACT_COOLDOWN: u8 = 30;
 
+/// Spawn telegraph: a new enemy spends 30 ticks = 0.5 s as a warning marker. Meanwhile
+/// it is inert: it doesn't move, hurt, push or get pushed, and it can't be targeted or
+/// hit (bullets pass through).
+pub const SPAWN_TELEGRAPH_TICKS: u8 = 30;
+
 /// Ticks from all players dying until restart is accepted: 0.75 s, so a panicked tap
 /// doesn't skip the death.
 pub const DEATH_TICKS: u32 = 45;
@@ -52,16 +57,27 @@ pub struct Enemy {
     pub pos: FxVec2,
     pub hp: u8,
     pub contact_cooldown: u8,
+    /// Spawn telegraph left; nonzero = inert (see [`SPAWN_TELEGRAPH_TICKS`]).
+    pub spawn_ticks: u8,
 }
 
 impl Enemy {
+    /// A rusher arriving at `pos`. Every spawn starts in the telegraph, so any spawner
+    /// just inserts this.
     #[must_use]
     pub const fn rusher(pos: FxVec2) -> Self {
         Self {
             pos,
             hp: RUSHER_HP,
             contact_cooldown: 0,
+            spawn_ticks: SPAWN_TELEGRAPH_TICKS,
         }
+    }
+
+    /// Past the spawn telegraph: moves, hurts, and can be targeted and hit.
+    #[must_use]
+    pub const fn active(&self) -> bool {
+        self.spawn_ticks == 0
     }
 }
 
@@ -81,7 +97,12 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
 }
 
 fn players(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
-    let targets: Vec<FxVec2> = state.enemies.iter().map(|(_, e)| e.pos).collect();
+    let targets: Vec<FxVec2> = state
+        .enemies
+        .iter()
+        .filter(|(_, e)| e.active())
+        .map(|(_, e)| e.pos)
+        .collect();
     for (slot, (player, input)) in state.players.iter_mut().zip(&inputs.players).enumerate() {
         let Some(player) = player.as_mut().filter(|p| p.alive()) else {
             continue;
@@ -110,7 +131,7 @@ fn bullets(state: &mut SimState, events: &mut TickEvents) {
         let reach = BULLET_RADIUS.saturating_add(RUSHER_RADIUS);
         let Some((enemy, e)) = enemies
             .iter_mut()
-            .find(|(_, e)| e.hp > 0 && overlaps(bullet.pos, e.pos, reach))
+            .find(|(_, e)| e.hp > 0 && e.active() && overlaps(bullet.pos, e.pos, reach))
         else {
             return true;
         };
@@ -126,6 +147,10 @@ fn bullets(state: &mut SimState, events: &mut TickEvents) {
 
 fn enemies(state: &mut SimState, events: &mut TickEvents) {
     for (_, enemy) in state.enemies.iter_mut() {
+        if !enemy.active() {
+            enemy.spawn_ticks = enemy.spawn_ticks.saturating_sub(1);
+            continue;
+        }
         enemy.contact_cooldown = enemy.contact_cooldown.saturating_sub(1);
         // Nearest living player; `min_by_key` keeps the first, so ties go to the lower slot.
         let target = state

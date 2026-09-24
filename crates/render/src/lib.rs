@@ -7,7 +7,7 @@
 //! to `game`.
 
 use bytemuck::{Pod, Zeroable};
-use sim::{EnemyId, Event, Fx, FxVec2, Player, SimState};
+use sim::{Enemy, EnemyId, Event, Fx, FxVec2, Player, SimState};
 use std::f32::consts::TAU;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -29,6 +29,8 @@ const HURT_COLOR: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
 /// Post-hit invulnerability blinks the player: half alpha every other `BLINK_TICKS`.
 const BLINK_TICKS: u8 = 4;
 const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
+/// The spawn telegraph's ring starts this many radii beyond the body.
+const TELEGRAPH_RING_GROWTH: f32 = 1.5;
 const HIT_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const BULLET_COLOR: [f32; 4] = [1.0, 0.9, 0.35, 1.0];
 /// How long a hit flash lasts, in sim ticks.
@@ -283,6 +285,10 @@ impl Renderer {
         self.push_world([0.0, 0.0], room_half(), ROOM_COLOR, SQUARE);
         let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
         for (id, e) in current.enemies.iter() {
+            if !e.active() {
+                self.push_telegraph(e, rusher, alpha);
+                continue;
+            }
             let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
             let color = if self.flashing(Flash::Enemy(id)) {
                 HIT_COLOR
@@ -363,6 +369,19 @@ impl Renderer {
         self.queue.present(frame);
         self.quads.clear();
         Some(acquire)
+    }
+
+    /// Spawn warning: a ring closing in on the spot while the body fades in.
+    fn push_telegraph(&mut self, e: &Enemy, radius: f32, alpha: f32) {
+        // Telegraph left, 1 -> 0, interpolated like positions (`spawn_ticks` drops 1/tick).
+        let left = ((f32::from(e.spawn_ticks) + 1.0 - alpha)
+            / f32::from(sim::SPAWN_TELEGRAPH_TICKS))
+        .clamp(0.0, 1.0);
+        let pos = [e.pos.x.to_num(), e.pos.y.to_num()];
+        let ring = radius * left.mul_add(TELEGRAPH_RING_GROWTH, 1.0);
+        let [r, g, b, _] = RUSHER_COLOR;
+        self.push_world(pos, [ring, ring], [r, g, b, 0.9], RING);
+        self.push_world(pos, [radius, radius], [r, g, b, 0.3 * (1.0 - left)], CIRCLE);
     }
 
     fn push_player(&mut self, [x, y]: [f32; 2], p: &Player, hurt: bool) {
