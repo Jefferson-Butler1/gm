@@ -1,11 +1,13 @@
 //! wgpu renderer drawing into a Swift-owned `CAMetalLayer`.
 //!
 //! Reads the previous and current [`SimState`] and interpolates between them; it never
-//! mutates the sim. Placeholder art is flat colored quads, converted to NDC on the CPU so
-//! there are no bind groups.
+//! mutates the sim. Placeholder art is flat colored squares, circles and rings, converted
+//! to NDC on the CPU so there are no bind groups. On-screen controls arrive as an
+//! [`Overlay`] in view points, since their layout belongs to `game`.
 
 use bytemuck::{Pod, Zeroable};
-use sim::{Fx, FxVec2, SimState};
+use sim::{Fx, FxVec2, Player, SimState};
+use std::f32::consts::TAU;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::time::Instant;
@@ -16,30 +18,55 @@ const CLEAR: wgpu::Color = wgpu::Color {
     b: 0.06,
     a: 1.0,
 };
+const ROOM_COLOR: [f32; 4] = [0.08, 0.09, 0.13, 1.0];
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
-/// Placeholder player half-size, in points.
-const PLAYER_HALF: f32 = 14.0;
+/// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
+const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
+const ROLLING_SCALE: f32 = 0.6;
+/// Facing nub: half-size and distance ahead of the player's center, in world units.
+const NUB_HALF: f32 = 4.0;
+const NUB_OFFSET: f32 = 22.0;
+const STICK_KNOB_R: f32 = 22.0;
+const DODGE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
+const DODGE_READY_ALPHA: f32 = 0.35;
+const DODGE_COOLDOWN_ALPHA: f32 = 0.1;
+
+const SQUARE: f32 = 0.0;
+const CIRCLE: f32 = 1.0;
+const RING: f32 = 2.0;
 
 const SHADER: &str = r"
 struct Inst {
     @location(0) center: vec2f,
     @location(1) half_size: vec2f,
     @location(2) color: vec4f,
+    @location(3) shape: f32,
 };
 struct VOut {
     @builtin(position) pos: vec4f,
-    @location(0) color: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) color: vec4f,
+    @location(2) shape: f32,
 };
 @vertex fn vs(@builtin(vertex_index) vi: u32, i: Inst) -> VOut {
     var corners = array<vec2f, 6>(
         vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
         vec2f(-1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0));
+    let c = corners[vi];
     var o: VOut;
-    o.pos = vec4f(i.center + corners[vi] * i.half_size, 0.0, 1.0);
+    o.pos = vec4f(i.center + c * i.half_size, 0.0, 1.0);
+    o.uv = c;
     o.color = i.color;
+    o.shape = i.shape;
     return o;
 }
+// shape: 0 = square, 1 = filled circle, 2 = ring.
 @fragment fn fs(v: VOut) -> @location(0) vec4f {
+    if (v.shape > 0.5) {
+        let d = length(v.uv);
+        if (d > 1.0) { discard; }
+        if (v.shape > 1.5 && d < 0.88) { discard; }
+    }
     return v.color;
 }
 ";
@@ -51,6 +78,32 @@ struct Quad {
     center: [f32; 2],
     half: [f32; 2],
     color: [f32; 4],
+    shape: f32,
+}
+
+/// On-screen controls, in view points (origin top-left).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Overlay {
+    pub sticks: [Option<StickView>; 2],
+    pub dodge: Option<DodgeView>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct StickView {
+    pub base: [f32; 2],
+    pub radius: f32,
+    /// Knob center, already clamped to the stick's travel.
+    pub knob: [f32; 2],
+    /// Idle fixed sticks draw fainter.
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DodgeView {
+    pub center: [f32; 2],
+    pub radius: f32,
+    /// Dimmed while the roll is on cooldown.
+    pub ready: bool,
 }
 
 #[derive(Debug)]
@@ -177,13 +230,20 @@ impl Renderer {
 
     /// Draws `prev` -> `current` interpolated by `alpha` in `0..=1`. Returns seconds spent
     /// blocked acquiring the drawable, or `None` if nothing was presented.
-    pub fn draw(&mut self, prev: &SimState, current: &SimState, alpha: f32) -> Option<f64> {
+    pub fn draw(
+        &mut self,
+        prev: &SimState,
+        current: &SimState,
+        alpha: f32,
+        overlay: &Overlay,
+    ) -> Option<f64> {
+        self.push_world([0.0, 0.0], room_half(), ROOM_COLOR, SQUARE);
         for (a, b) in prev.players.iter().zip(&current.players) {
             if let (Some(a), Some(b)) = (a, b) {
-                let [x, y] = lerp(a.pos, b.pos, alpha);
-                self.push(x, y, PLAYER_HALF, PLAYER_COLOR);
+                self.push_player(lerp(a.pos, b.pos, alpha), b);
             }
         }
+        self.push_overlay(overlay);
 
         let t0 = Instant::now();
         let frame = match self.surface.get_current_texture() {
@@ -241,16 +301,65 @@ impl Renderer {
         Some(acquire)
     }
 
-    /// Queues a square centered at world point (`x`, `y`). The world origin is the screen
-    /// center and one world unit is one point.
-    fn push(&mut self, x: f32, y: f32, half: f32, color: [f32; 4]) {
+    fn push_player(&mut self, [x, y]: [f32; 2], p: &Player) {
+        let half = sim::PLAYER_HALF.to_num::<f32>();
+        let (half, color) = if p.rolling() {
+            (half * ROLLING_SCALE, ROLLING_COLOR)
+        } else {
+            (half, PLAYER_COLOR)
+        };
+        self.push_world([x, y], [half, half], color, SQUARE);
+        let (sin, cos) = (f32::from(p.facing) / 65536.0 * TAU).sin_cos();
+        let nub = [cos.mul_add(NUB_OFFSET, x), sin.mul_add(NUB_OFFSET, y)];
+        self.push_world(nub, [NUB_HALF, NUB_HALF], color, SQUARE);
+    }
+
+    fn push_overlay(&mut self, overlay: &Overlay) {
+        for s in overlay.sticks.iter().flatten() {
+            let a = if s.active { 1.0 } else { 0.6 };
+            self.push_screen(s.base, s.radius, [1.0, 1.0, 1.0, 0.25 * a], RING);
+            self.push_screen(s.knob, STICK_KNOB_R, [1.0, 1.0, 1.0, 0.35 * a], CIRCLE);
+        }
+        if let Some(d) = overlay.dodge {
+            let [r, g, b] = DODGE_COLOR;
+            let a = if d.ready {
+                DODGE_READY_ALPHA
+            } else {
+                DODGE_COOLDOWN_ALPHA
+            };
+            self.push_screen(d.center, d.radius, [r, g, b, a], CIRCLE);
+        }
+    }
+
+    /// World origin is the screen center, +y down. One world unit is one point, scaled
+    /// down only when the room does not fit (portrait).
+    fn push_world(&mut self, [x, y]: [f32; 2], [hx, hy]: [f32; 2], color: [f32; 4], shape: f32) {
         let [w, h] = self.size_pt;
+        let [rx, ry] = room_half();
+        let scale = (w / (2.0 * rx)).min(h / (2.0 * ry)).min(1.0);
+        let [sx, sy] = [2.0 * scale / w, 2.0 * scale / h];
         self.quads.push(Quad {
-            center: [x / w * 2.0, -y / h * 2.0],
-            half: [half / w * 2.0, half / h * 2.0],
+            center: [x * sx, -y * sy],
+            half: [hx * sx, hy * sy],
             color,
+            shape,
         });
     }
+
+    /// View points, origin top-left.
+    fn push_screen(&mut self, [x, y]: [f32; 2], radius: f32, color: [f32; 4], shape: f32) {
+        let [w, h] = self.size_pt;
+        self.quads.push(Quad {
+            center: [(x / w).mul_add(2.0, -1.0), (y / h).mul_add(-2.0, 1.0)],
+            half: [radius / w * 2.0, radius / h * 2.0],
+            color,
+            shape,
+        });
+    }
+}
+
+fn room_half() -> [f32; 2] {
+    [sim::ROOM_HALF.x.to_num(), sim::ROOM_HALF.y.to_num()]
 }
 
 fn lerp(a: FxVec2, b: FxVec2, t: f32) -> [f32; 2] {
@@ -281,7 +390,8 @@ fn make_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Re
         bind_group_layouts: &[],
         immediate_size: 0,
     });
-    let attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+    let attrs =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("quad"),
         layout: Some(&layout),

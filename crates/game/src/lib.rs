@@ -7,7 +7,7 @@
 mod controls;
 mod stats;
 
-use controls::Controls;
+use controls::{Controls, Scheme, Viewport};
 use render::Renderer;
 use sim::{SimState, TICK_HZ, TickInputs};
 use stats::Stats;
@@ -64,6 +64,7 @@ struct Inner {
     renderer: Renderer,
     prev: SimState,
     current: SimState,
+    viewport: Viewport,
     controls: Controls,
     /// Display-link time that `current` corresponds to; `None` resyncs on the next frame.
     sim_clock: Option<f64>,
@@ -90,13 +91,7 @@ impl Game {
     /// # Errors
     /// If the pointer is null or wgpu cannot set up rendering on the layer.
     #[uniffi::constructor]
-    pub fn new(
-        layer_ptr: u64,
-        pixel_width: u32,
-        pixel_height: u32,
-        point_width: f32,
-        point_height: f32,
-    ) -> Result<Arc<Self>, GameError> {
+    pub fn new(layer_ptr: u64, viewport: Viewport) -> Result<Arc<Self>, GameError> {
         let addr = usize::try_from(layer_ptr).map_err(|_| GameError::NullLayer)?;
         let layer = NonNull::new(std::ptr::with_exposed_provenance_mut::<c_void>(addr))
             .ok_or(GameError::NullLayer)?;
@@ -106,13 +101,13 @@ impl Game {
         let renderer = unsafe {
             Renderer::new(
                 layer,
-                pixel_width,
-                pixel_height,
-                [point_width, point_height],
+                viewport.pixel_width,
+                viewport.pixel_height,
+                [viewport.point_width, viewport.point_height],
             )
         }
         .map_err(GameError::Render)?;
-        eprintln!("[gm] Game::new {pixel_width}x{pixel_height}px {point_width}x{point_height}pt");
+        eprintln!("[gm] Game::new {viewport:?}");
         // The session seed arrives with run setup; nothing draws from the RNG yet.
         let state = SimState::new(0);
         Ok(Arc::new(Self {
@@ -120,7 +115,8 @@ impl Game {
                 renderer,
                 prev: state.clone(),
                 current: state,
-                controls: Controls::new(point_width),
+                viewport,
+                controls: Controls::new(&viewport),
                 sim_clock: None,
                 paused: false,
                 stats: Stats::default(),
@@ -128,13 +124,32 @@ impl Game {
         }))
     }
 
-    pub fn resize(&self, pixel_width: u32, pixel_height: u32, point_width: f32, point_height: f32) {
-        eprintln!("[gm] resize {pixel_width}x{pixel_height}px {point_width}x{point_height}pt");
+    /// Called on every layout pass; only acts when the viewport actually changed, so
+    /// held sticks survive unrelated layouts.
+    pub fn resize(&self, viewport: Viewport) {
         let mut g = self.lock();
-        g.renderer
-            .resize(pixel_width, pixel_height, [point_width, point_height]);
-        // Stick origins belong to the old layout; rotation cancels the touches anyway.
-        g.controls = Controls::new(point_width);
+        if g.viewport == viewport {
+            return;
+        }
+        eprintln!("[gm] resize {viewport:?}");
+        g.renderer.resize(
+            viewport.pixel_width,
+            viewport.pixel_height,
+            [viewport.point_width, viewport.point_height],
+        );
+        g.controls.set_viewport(&viewport);
+        g.viewport = viewport;
+    }
+
+    pub fn set_scheme(&self, scheme: Scheme) {
+        eprintln!("[gm] scheme={scheme:?}");
+        self.lock().controls.set_scheme(scheme);
+    }
+
+    /// Aim assist strength for [`Scheme::AimAssist`], `0..=1`.
+    pub fn set_assist_strength(&self, strength: f32) {
+        eprintln!("[gm] assist={strength}");
+        self.lock().controls.set_assist(strength);
     }
 
     /// Touch in view points.
@@ -173,11 +188,11 @@ impl Game {
                 target_timestamp
             }
         };
-        let mut inputs = TickInputs::default();
-        inputs.players[0] = g.controls.input();
         // Fixed-step accumulator; the float comparison is the point.
         #[allow(clippy::while_float)]
         while clock + dt <= target_timestamp {
+            let mut inputs = TickInputs::default();
+            inputs.players[0] = g.controls.next_input();
             g.prev.clone_from(&g.current);
             // Events will drive render effects; nothing consumes them yet.
             let _events = sim::step(&mut g.current, &inputs);
@@ -188,7 +203,12 @@ impl Game {
         // No From<f64> for f32; precision loss is fine for an interpolation factor.
         #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
         let alpha = ((target_timestamp - clock) / dt).clamp(0.0, 1.0) as f32;
-        let presented = g.renderer.draw(&g.prev, &g.current, alpha).is_some();
+        let roll_ready = g.current.players[0].is_none_or(|p| p.can_roll());
+        let overlay = g.controls.overlay(roll_ready);
+        let presented = g
+            .renderer
+            .draw(&g.prev, &g.current, alpha, &overlay)
+            .is_some();
         g.stats.record(
             timestamp,
             started.elapsed().as_secs_f64(),
