@@ -13,6 +13,7 @@
 )]
 
 mod arena;
+pub mod camera;
 mod checksum;
 mod combat;
 mod config;

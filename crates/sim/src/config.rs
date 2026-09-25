@@ -102,9 +102,6 @@ pub struct Tuning {
     pub regen_charge_ticks: u16,
     /// The pattern experiment: some waves field spread shooters instead of shooters.
     pub spread_shooter: bool,
-    /// An unaware enemy notices a player this close, pt, with a clear line of sight
-    /// (walls block it, pits don't).
-    pub sight_radius: u16,
     /// A player's shot alerts every enemy this close, pt, walls or not.
     pub hearing_radius: u16,
     /// An enemy hunting a player alerts unaware allies this close, pt, that it can see.
@@ -139,8 +136,7 @@ impl Tuning {
         regen_delay_ticks: 36,
         regen_charge_ticks: 24,
         spread_shooter: true,
-        // 7, 5 and 4 cells of 32 pt; 3 s.
-        sight_radius: 224,
+        // 5 and 4 cells of 32 pt; 3 s.
         hearing_radius: 160,
         alert_radius: 128,
         forget_ticks: 180,
@@ -189,7 +185,6 @@ impl RunConfig {
                 regen_delay_ticks: t.regen_delay_ticks.clamp(1, 600),
                 regen_charge_ticks: t.regen_charge_ticks.clamp(1, 600),
                 spread_shooter: t.spread_shooter,
-                sight_radius: t.sight_radius.min(2048),
                 hearing_radius: t.hearing_radius.min(2048),
                 alert_radius: t.alert_radius.min(2048),
                 forget_ticks: t.forget_ticks.clamp(1, 3600),

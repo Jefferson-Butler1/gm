@@ -1,6 +1,7 @@
 //! Determinism checks (issue #5): replay, rollback-every-tick, and a committed golden
 //! checksum that CI verifies on both `x86_64` and `aarch64`.
 
+use sim::camera::View;
 use sim::{
     Buttons, Event, PlayerInput, Rng, RoomId, Run, RunConfig, SimState, TickEvents, TickInputs,
     Tuning, step,
@@ -25,10 +26,16 @@ const STAND_STILL: Range<u64> = 130..1200;
 const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
 const AUTO_FIGHT: Range<u64> = 1335..TICKS;
+/// Both players' screens show the whole room, so the idle party still draws the cargo
+/// hold's fight (on a phone-sized screen it would stand unnoticed at the entrance).
+const WHOLE_ROOM: View = View {
+    width: u16::MAX,
+    height: u16::MAX,
+};
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x57ab_d9d8_7c77_b2d6;
+const GOLDEN_TRACE: u64 = 0xaccc_ba01_e2e8_69b2;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -59,6 +66,7 @@ fn script() -> Vec<TickInputs> {
                         } else {
                             Buttons::default()
                         },
+                    view: WHOLE_ROOM,
                 };
             }
             let scripted = if STAND_STILL.contains(&tick) {
@@ -97,7 +105,10 @@ fn script() -> Vec<TickInputs> {
                     })
             };
             if let Some(input) = scripted {
-                inputs.players[..2].fill(input);
+                inputs.players[..2].fill(PlayerInput {
+                    view: WHOLE_ROOM,
+                    ..input
+                });
             }
             if AUTO_FIGHT.contains(&tick) {
                 for input in &mut inputs.players[..2] {
@@ -109,18 +120,9 @@ fn script() -> Vec<TickInputs> {
         .collect()
 }
 
-/// Two players, starting dead so the script exercises the restart transition. Enemies
-/// see across the whole room, so the idle party still draws the cargo hold's fight (at
-/// Normal's sight radius it would stand unnoticed at the entrance).
+/// Two players, starting dead so the script exercises the restart transition.
 fn start() -> SimState {
-    let config = RunConfig {
-        tuning: Tuning {
-            sight_radius: u16::MAX,
-            ..Tuning::NORMAL
-        },
-        ..RunConfig::default()
-    };
-    let mut state = SimState::new(SEED, config);
+    let mut state = SimState::new(SEED, RunConfig::default());
     state.players[1] = state.players[0];
     state.run = Run::Dead {
         room: RoomId(0),
