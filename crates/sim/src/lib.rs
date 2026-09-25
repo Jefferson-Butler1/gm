@@ -25,8 +25,8 @@ pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, RUSHER_HP, RUSHER_RADIUS,
-    SPAWN_TELEGRAPH_TICKS,
+    BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS, Enemy,
+    EnemyId, RUSHER_HP, SHOOTER_AIM_TICKS, SHOOTER_HP, SHOOTER_RELOAD, SPAWN_TELEGRAPH_TICKS,
 };
 pub use derelict::DERELICT;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
@@ -76,18 +76,21 @@ pub enum Run {
         room: RoomId,
         ticks_until_restart: u32,
     },
-    Won,
+    /// Extracted from `room` (the exit room), which presentation keeps drawing.
+    Won {
+        room: RoomId,
+    },
 }
 
 impl Run {
-    /// The room the party is in; `None` once the run is won.
+    /// The room the party is in (or ended the run in).
     #[must_use]
-    pub const fn room(self) -> Option<RoomId> {
+    pub const fn room(self) -> RoomId {
         match self {
-            Self::Boarding { room } | Self::Encounter { room, .. } | Self::Dead { room, .. } => {
-                Some(room)
-            }
-            Self::Won => None,
+            Self::Boarding { room }
+            | Self::Encounter { room, .. }
+            | Self::Dead { room, .. }
+            | Self::Won { room } => room,
         }
     }
 
@@ -116,7 +119,9 @@ pub struct SimState {
     pub players: [Option<Player>; MAX_PLAYERS],
     /// Enemies and bullets in the party's current room; leaving a room drops them.
     pub enemies: Arena<Enemy>,
+    /// The players' bullets.
     pub bullets: Arena<Bullet>,
+    pub enemy_bullets: Arena<Bullet>,
     /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
     pub cleared: u64,
 }
@@ -134,6 +139,7 @@ impl SimState {
             players: [Some(Player::default()), None, None, None],
             enemies: Arena::default(),
             bullets: Arena::default(),
+            enemy_bullets: Arena::default(),
             cleared: 0,
         };
         encounter::enter(&mut state, room, at, &mut TickEvents::default());
@@ -153,10 +159,10 @@ impl SimState {
         fresh
     }
 
-    /// Collision for the party's current room; `None` once the run is won.
+    /// Collision for the party's current room.
     #[must_use]
     pub fn tiles(&self) -> Option<room::Tiles> {
-        let room = DERELICT.room(self.run.room()?)?;
+        let room = DERELICT.room(self.run.room())?;
         Some(room::Tiles {
             room,
             sealed: self.run.doors_locked(),
@@ -216,6 +222,8 @@ pub enum Event {
     RoomCleared {
         room: RoomId,
     },
+    /// A player reached the extraction pad: the run is won.
+    Won,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -246,11 +254,11 @@ pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
         } if *ticks_until_restart > 0 => {
             *ticks_until_restart = ticks_until_restart.saturating_sub(1);
         }
-        Run::Dead { .. } | Run::Won if restart_pressed => {
+        Run::Dead { .. } | Run::Won { .. } if restart_pressed => {
             *state = state.restarted();
             events.events.push(Event::Restarted);
         }
-        Run::Dead { .. } | Run::Won => {}
+        Run::Dead { .. } | Run::Won { .. } => {}
     }
 
     state.tick = state.tick.wrapping_add(1);

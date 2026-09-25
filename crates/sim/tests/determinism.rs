@@ -14,14 +14,15 @@ const RESTARTS: [Range<u64>; 2] = [0..40, 900..950];
 /// the cargo hold's encounter: [`WALK_NORTH`] ticks up, then east.
 const WALK_IN: [Range<u64>; 2] = [40..100, 950..1010];
 const WALK_NORTH: u64 = 8;
-/// Both players stand idle through this range so the rushers kill them.
-const STAND_STILL: Range<u64> = 160..900;
+/// Both players stand idle from just after entering the cargo hold, so its shooter lives
+/// long enough to fire and the rushers kill them.
+const STAND_STILL: Range<u64> = 110..900;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
 const AUTO_FIGHT: Range<u64> = 1010..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x80ad_7fa5_cb33_803a;
+const GOLDEN_TRACE: u64 = 0x80e5_3197_ee84_df4c;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -145,13 +146,14 @@ fn golden_trace_matches_committed_value() {
 }
 
 /// Guards the script's purpose: the golden trace must cover walking, rolling, shooting,
-/// kills, a room transition into a sealed encounter with a second wave, player deaths
-/// and restarts.
+/// kills, a room transition into a sealed encounter with a second wave, shooters firing,
+/// player deaths and restarts.
 #[test]
 fn script_exercises_movement_dodge_combat_and_rooms() {
     let mut state = start();
     let start_pos = SimState::new(SEED).players[0].unwrap().pos;
     let (mut rolls, mut moved, mut sealed) = (0, false, false);
+    let (mut enemy_shots, mut enemy_bullets) = (0, 0);
     let mut events = Vec::new();
     for i in script() {
         events.extend(step(&mut state, &i).events);
@@ -160,6 +162,8 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
             moved |= p.pos != start_pos;
         }
         sealed |= state.run.doors_locked();
+        enemy_shots += usize::from(state.enemy_bullets.len() > enemy_bullets);
+        enemy_bullets = state.enemy_bullets.len();
     }
     let count = |f: fn(&Event) -> bool| events.iter().filter(|e| f(e)).count();
     let shots = count(|e| matches!(e, Event::ShotFired { .. }));
@@ -171,7 +175,8 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     let cleared = count(|e| matches!(e, Event::RoomCleared { .. }));
     println!(
         "rolls={rolls} shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
-         entries={entries} waves={waves} cleared={cleared} sealed={sealed}"
+         entries={entries} waves={waves} cleared={cleared} sealed={sealed} \
+         enemy_shots={enemy_shots}"
     );
     assert!(moved && rolls >= 10, "moved={moved} rolls={rolls}");
     // Restarts: the scripted start plus at least one after a full-party death.
@@ -183,4 +188,6 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
         entries >= 2 && waves >= 1 && cleared >= 1 && sealed,
         "entries={entries} waves={waves} cleared={cleared} sealed={sealed}"
     );
+    // The cargo hold's second wave brings a shooter.
+    assert!(enemy_shots >= 2, "enemy_shots={enemy_shots}");
 }

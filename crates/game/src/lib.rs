@@ -9,7 +9,7 @@ mod stats;
 
 use controls::{Controls, Scheme, Viewport};
 use render::Renderer;
-use sim::{MAX_HP, Run, SimState, TICK_HZ, TickInputs};
+use sim::{Run, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -45,6 +45,12 @@ pub struct HudData {
     pub hp: u8,
     pub max_hp: u8,
     pub run: RunState,
+    /// The room the party is in.
+    pub room: String,
+    /// The room's fight: wave `wave` of `waves`, 1-based. `wave` is 0 while no fight is
+    /// on; `waves` is 0 in a room without enemies.
+    pub wave: u8,
+    pub waves: u8,
 }
 
 /// The run as the HUD needs it.
@@ -53,9 +59,8 @@ pub enum RunState {
     #[default]
     Playing,
     /// `can_restart` flips once the death pause is over; a tap then restarts.
-    Dead {
-        can_restart: bool,
-    },
+    Dead { can_restart: bool },
+    /// Extracted: the derelict is cleared. A tap starts a new run.
     Won,
 }
 
@@ -69,7 +74,7 @@ impl RunState {
             } => Self::Dead {
                 can_restart: ticks_until_restart == 0,
             },
-            Run::Won => Self::Won,
+            Run::Won { .. } => Self::Won,
         }
     }
 }
@@ -255,11 +260,7 @@ impl Game {
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)
             .is_some();
-        g.stats.set_status(
-            g.current.players[0].map_or(0, |p| p.hp),
-            MAX_HP,
-            RunState::of(g.current.run),
-        );
+        g.stats.set_status(&g.current);
         g.stats.record(
             timestamp,
             started.elapsed().as_secs_f64(),

@@ -2,6 +2,7 @@
 //! Also carries the HUD's game status, since this owns the published [`HudData`].
 
 use crate::{HudData, RunState};
+use sim::{DERELICT, MAX_HP, Run, SimState};
 
 /// How often the HUD and log refresh, in seconds.
 const WINDOW_SECS: f64 = 0.5;
@@ -24,11 +25,30 @@ impl Stats {
         self.hud.clone()
     }
 
-    /// Publishes immediately (bumps `seq`) when anything changed.
-    pub fn set_status(&mut self, hp: u8, max_hp: u8, run: RunState) {
+    /// Reads slot 0's HP, the run state, and the room and wave from `state`. Publishes
+    /// immediately (bumps `seq`) when anything changed.
+    pub fn set_status(&mut self, state: &SimState) {
+        let room = DERELICT.room(state.run.room());
+        let hp = state.players[0].map_or(0, |p| p.hp);
+        let run = RunState::of(state.run);
+        let name = room.map_or("", |r| r.name);
+        // Base layer plus reinforcements; a room without enemies has no waves.
+        let waves = room.filter(|r| r.has_enemies()).map_or(0, |r| {
+            u8::try_from(r.reinforcements.len())
+                .unwrap_or(u8::MAX)
+                .saturating_add(1)
+        });
+        let wave = if let Run::Encounter { wave, .. } = state.run {
+            wave.saturating_add(1)
+        } else {
+            0
+        };
         let h = &mut self.hud;
-        if (h.hp, h.max_hp, h.run) != (hp, max_hp, run) {
-            (h.hp, h.max_hp, h.run) = (hp, max_hp, run);
+        if (h.hp, h.max_hp, h.run, h.wave, h.waves) != (hp, MAX_HP, run, wave, waves)
+            || h.room != name
+        {
+            (h.hp, h.max_hp, h.run, h.wave, h.waves) = (hp, MAX_HP, run, wave, waves);
+            name.clone_into(&mut h.room);
             h.seq = h.seq.wrapping_add(1);
         }
     }

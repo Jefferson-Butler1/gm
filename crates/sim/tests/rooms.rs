@@ -40,6 +40,7 @@ const BOX: PrototypeRoom = PrototypeRoom {
         (RoomTrigger::OnEnterWithEnemies, RoomAction::Seal),
         (RoomTrigger::OnEnemiesCleared, RoomAction::Unseal),
     ],
+    extraction: None,
 };
 
 fn exit(dir: Dir, x: usize, y: usize, width: usize) -> &'static [Exit] {
@@ -163,7 +164,14 @@ fn connections_must_link_facing_exits_exactly_once() {
             width: 1,
             kind: ExitKind::Either,
         }],
+        category: Category::Exit,
+        extraction: Some((2, 2)),
         ..BOX
+    };
+    const NORMAL_WEST_BOX: PrototypeRoom = PrototypeRoom {
+        category: Category::Normal,
+        extraction: None,
+        ..WEST_BOX
     };
     const RAGGED_BOX: PrototypeRoom = PrototypeRoom {
         cells: &["#####", "#...#", "#...", "#...#", "#####"],
@@ -211,6 +219,34 @@ fn connections_must_link_facing_exits_exactly_once() {
             error: RoomError::RaggedRow { row: 2 }
         })
     );
+    assert_eq!(
+        derelict(&[BOX, NORMAL_WEST_BOX], BOX_TO_WEST_BOX).validate(),
+        Err(DerelictError::NoExitRoom),
+        "nowhere to win"
+    );
+}
+
+#[test]
+fn exit_rooms_and_only_exit_rooms_have_an_extraction_pad_on_floor() {
+    let exit_room = |extraction| PrototypeRoom {
+        category: Category::Exit,
+        extraction,
+        ..BOX
+    };
+    assert_eq!(exit_room(Some((1, 1))).validate(), Ok(()));
+    assert_eq!(
+        exit_room(None).validate(),
+        Err(RoomError::ExtractionMismatch)
+    );
+    assert_eq!(
+        exit_room(Some((0, 0))).validate(),
+        Err(RoomError::ExtractionOffFloor)
+    );
+    let stray = PrototypeRoom {
+        extraction: Some((1, 1)),
+        ..BOX
+    };
+    assert_eq!(stray.validate(), Err(RoomError::ExtractionMismatch));
 }
 
 // --- play ---------------------------------------------------------------------------
@@ -288,7 +324,7 @@ fn walking_through_an_exit_enters_the_linked_room_and_seals_it() {
 fn sealed_doors_stop_players_and_bullets() {
     let (mut state, _) = enter_cargo_hold();
     run(&mut state, 30, &walk(WEST));
-    assert_eq!(state.run.room(), Some(RoomId(1)), "still inside");
+    assert_eq!(state.run.room(), RoomId(1), "still inside");
     assert_eq!(
         state.players[0].unwrap().pos.x,
         CELL.saturating_add(PLAYER_RADIUS),

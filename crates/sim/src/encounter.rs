@@ -1,8 +1,9 @@
-//! Rooms in play: walking through exits, room events (seal/unseal), and waves from object
-//! layers. Drives `Run::Boarding` <-> `Run::Encounter`.
+//! Rooms in play: walking through exits, room events (seal/unseal), waves from object
+//! layers, and extraction. Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
-use crate::combat::Enemy;
+use crate::combat::{Enemy, SHOOTER_STAGGER};
 use crate::derelict::DERELICT;
+use crate::player::PLAYER_RADIUS;
 use crate::room::{
     EnemyKind, LayerTrigger, Placement, PrototypeRoom, RoomAction, RoomTrigger, cell_center,
     cell_of,
@@ -15,6 +16,7 @@ use crate::{Event, FxVec2, RoomId, Run, SimState, TickEvents};
 pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEvents) {
     state.enemies.retain(|_, _| false);
     state.bullets.retain(|_, _| false);
+    state.enemy_bullets.retain(|_, _| false);
     for player in state.players.iter_mut().flatten() {
         player.pos = at;
     }
@@ -35,8 +37,8 @@ pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEven
     };
 }
 
-/// After combat: advance waves or finish the room, then take any open exit a living
-/// player stands in.
+/// After combat: advance waves or finish the room, then win if a living player touches
+/// a clear room's extraction pad, else take any open exit a living player stands in.
 pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     if let Run::Encounter {
         room: id,
@@ -55,14 +57,22 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     if tiles.sealed {
         return;
     }
+    let mut living = state.players.iter().flatten().filter(|p| p.alive());
+    if let Run::Boarding { room } = state.run
+        && living.any(|p| tiles.room.on_extraction(p.pos, PLAYER_RADIUS))
+    {
+        state.run = Run::Won { room };
+        events.events.push(Event::Won);
+        return;
+    }
     let exit = state
         .players
         .iter()
         .flatten()
         .filter(|p| p.alive())
         .find_map(|p| tiles.room.exit_at(cell_of(p.pos.x), cell_of(p.pos.y)));
-    if let Some(from) = state.run.room()
-        && let Some(exit) = exit
+    let from = state.run.room();
+    if let Some(exit) = exit
         && let Some((to, to_exit)) = DERELICT.link(from, exit)
         && let Some(arrival) = DERELICT
             .room(to)
@@ -100,6 +110,8 @@ fn next_wave(
         return;
     }
     let doors_locked = react(room, RoomTrigger::OnEnemiesCleared, doors_locked);
+    // Gungeon-style: clearing the room clears its enemy fire too.
+    state.enemy_bullets.retain(|_, _| false);
     state.set_cleared(id);
     events.events.push(Event::RoomCleared { room: id });
     state.run = if doors_locked {
@@ -130,6 +142,10 @@ fn spawn(state: &mut SimState, placements: &[Placement]) {
         let pos = cell_center(placement.x, placement.y);
         state.enemies.insert(match placement.kind {
             EnemyKind::Rusher => Enemy::rusher(pos),
+            EnemyKind::Shooter => {
+                let delay = state.rng.below(SHOOTER_STAGGER);
+                Enemy::shooter(pos, u8::try_from(delay).unwrap_or(0))
+            }
         });
     }
 }

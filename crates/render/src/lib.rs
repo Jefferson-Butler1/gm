@@ -8,7 +8,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use sim::room::{Cell, PrototypeRoom};
-use sim::{Enemy, EnemyId, Event, Fx, FxVec2, Player, SimState};
+use sim::{Behavior, Enemy, EnemyId, Event, Fx, FxVec2, Player, SimState};
 use std::f32::consts::TAU;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -26,6 +26,7 @@ const WALL_COLOR: [f32; 4] = [0.22, 0.25, 0.33, 1.0];
 const PIT_COLOR: [f32; 4] = [0.0, 0.0, 0.01, 1.0];
 const DOOR_OPEN_COLOR: [f32; 4] = [0.1, 0.3, 0.2, 1.0];
 const DOOR_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
+const PAD_COLOR: [f32; 4] = [0.3, 1.0, 0.6, 1.0];
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
 const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
@@ -35,6 +36,10 @@ const HURT_COLOR: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
 /// Post-hit invulnerability blinks the player: half alpha every other `BLINK_TICKS`.
 const BLINK_TICKS: u8 = 4;
 const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
+const SHOOTER_COLOR: [f32; 4] = [0.7, 0.4, 1.0, 1.0];
+/// A shooter's aim telegraph: a white core swelling to this fraction of its body.
+const AIM_CORE: f32 = 0.7;
+const ENEMY_BULLET_COLOR: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
 /// The spawn telegraph's ring starts this many radii beyond the body.
 const TELEGRAPH_RING_GROWTH: f32 = 1.5;
 const HIT_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -280,7 +285,8 @@ impl Renderer {
                 | Event::Restarted
                 | Event::RoomEntered { .. }
                 | Event::WaveStarted { .. }
-                | Event::RoomCleared { .. } => continue,
+                | Event::RoomCleared { .. }
+                | Event::Won => continue,
             };
             if !self.flashes.contains(&(flash, tick)) {
                 self.flashes.push((flash, tick));
@@ -394,24 +400,33 @@ impl Renderer {
                     .map(|(a, b)| (lerp(lerp_from(a.pos, b.pos), b.pos, alpha), b))
             })
             .collect();
-        if let Some(room) = current.run.room().and_then(|id| sim::DERELICT.room(id)) {
+        if let Some(room) = sim::DERELICT.room(current.run.room()) {
             let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
             self.camera = self.camera_for(room, focus);
-            self.push_room(room, current.run.doors_locked());
+            let pad_live = !matches!(current.run, sim::Run::Encounter { .. });
+            self.push_room(room, current.run.doors_locked(), pad_live);
         }
-        let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
+        let radius = sim::ENEMY_RADIUS.to_num::<f32>();
         for (id, e) in current.enemies.iter() {
             if !e.active() {
-                self.push_telegraph(e, rusher, alpha);
+                self.push_telegraph(e, radius, alpha);
                 continue;
             }
             let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
+            let pos = lerp(from, e.pos, alpha);
             let color = if self.flashing(Flash::Enemy(id)) {
                 HIT_COLOR
             } else {
-                RUSHER_COLOR
+                enemy_color(e)
             };
-            self.push_world(lerp(from, e.pos, alpha), [rusher, rusher], color, CIRCLE);
+            self.push_world(pos, [radius, radius], color, CIRCLE);
+            if let Some(left) = e.aiming() {
+                // 0 -> 1 over the telegraph, interpolated like `push_telegraph`.
+                let aimed = (1.0 - (f32::from(left) - alpha) / f32::from(sim::SHOOTER_AIM_TICKS))
+                    .clamp(0.0, 1.0);
+                let core = radius * AIM_CORE * aimed;
+                self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
+            }
         }
         for (slot, player) in players.iter().enumerate() {
             if let Some((pos, p)) = player {
@@ -429,13 +444,26 @@ impl Renderer {
                 CIRCLE,
             );
         }
+        let enemy_bullet = sim::ENEMY_BULLET_RADIUS.to_num::<f32>();
+        for (id, b) in current.enemy_bullets.iter() {
+            let from = prev.enemy_bullets.get(id).map_or(b.pos, |p| p.pos);
+            let pos = lerp(from, b.pos, alpha);
+            self.push_world(
+                pos,
+                [enemy_bullet, enemy_bullet],
+                ENEMY_BULLET_COLOR,
+                CIRCLE,
+            );
+            let core = enemy_bullet * 0.45;
+            self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
+        }
         self.push_effects(&players, current.tick, alpha);
     }
 
     /// Muzzle flashes and death puffs, fading over their lifetimes. `players` are the
     /// frame's interpolated positions (as [`Self::push_scene`] draws them) and states.
     fn push_effects(&mut self, players: &[Option<([f32; 2], Player)>], tick: u64, alpha: f32) {
-        let rusher = sim::RUSHER_RADIUS.to_num::<f32>();
+        let rusher = sim::ENEMY_RADIUS.to_num::<f32>();
         let effects = std::mem::take(&mut self.flashes);
         for &(flash, start) in &effects {
             // Life left, 1 -> 0. The event happened during the `prev` -> `current` step.
@@ -473,7 +501,7 @@ impl Renderer {
         .clamp(0.0, 1.0);
         let pos = [e.pos.x.to_num(), e.pos.y.to_num()];
         let ring = radius * left.mul_add(TELEGRAPH_RING_GROWTH, 1.0);
-        let [r, g, b, _] = RUSHER_COLOR;
+        let [r, g, b, _] = enemy_color(e);
         self.push_world(pos, [ring, ring], [r, g, b, 0.9], RING);
         self.push_world(pos, [radius, radius], [r, g, b, 0.3 * (1.0 - left)], CIRCLE);
     }
@@ -534,8 +562,9 @@ impl Renderer {
         ]
     }
 
-    /// One quad per non-void cell. Exit gaps draw as doors: open or sealed.
-    fn push_room(&mut self, room: &PrototypeRoom, sealed: bool) {
+    /// One quad per non-void cell. Exit gaps draw as doors: open or sealed. The extraction
+    /// pad, if any, is dim until `pad_live`.
+    fn push_room(&mut self, room: &PrototypeRoom, sealed: bool, pad_live: bool) {
         let half = sim::room::CELL.to_num::<f32>() / 2.0;
         for y in 0..room.height() {
             for x in 0..room.width() {
@@ -559,6 +588,16 @@ impl Renderer {
                     SQUARE,
                 );
             }
+        }
+        if let Some((x, y)) = room.extraction {
+            // The ring marks the pad's reach: touching the cell with any part of the body.
+            let center = sim::room::cell_center(x, y);
+            let at = [center.x.to_num(), center.y.to_num()];
+            let [r, g, b, _] = PAD_COLOR;
+            let alpha = if pad_live { 1.0 } else { 0.3 };
+            self.push_world(at, [half, half], [r, g, b, alpha], SQUARE);
+            let reach = half + sim::PLAYER_RADIUS.to_num::<f32>();
+            self.push_world(at, [reach, reach], [r, g, b, alpha * 0.8], RING);
         }
     }
 
@@ -584,6 +623,13 @@ impl Renderer {
             color,
             shape,
         });
+    }
+}
+
+const fn enemy_color(e: &Enemy) -> [f32; 4] {
+    match e.behavior {
+        Behavior::Rusher { .. } => RUSHER_COLOR,
+        Behavior::Shooter { .. } => SHOOTER_COLOR,
     }
 }
 
