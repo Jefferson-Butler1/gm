@@ -6,6 +6,7 @@
 
 use crate::arena::{Arena, Id};
 use crate::config::{RunConfig, per_tick};
+use crate::path::{FlowField, walk_clear};
 use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
 use crate::room::{Body, Tiles};
 use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
@@ -334,6 +335,7 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         .filter(|p| p.targetable())
         .map(|p| p.pos)
         .collect();
+    let field = FlowField::toward(tiles, &players);
     for (_, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
         // Nearest targetable player; `min_by_key` keeps the first, so ties go to the lower
         // slot. With none (all falling or dead), enemies hold still, timers paused.
@@ -344,10 +346,11 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         let Some(angle) = trig::angle_of(sub(target, enemy.pos)) else {
             continue;
         };
+        let pursue = |pos, speed, side: &mut i8| chase(tiles, &field, pos, target, speed, side);
         match &mut enemy.behavior {
             Behavior::Rusher { contact_cooldown } => {
                 *contact_cooldown = contact_cooldown.saturating_sub(1);
-                enemy.pos = steer(tiles, enemy.pos, angle, rusher_speed, &mut enemy.steer);
+                enemy.pos = pursue(enemy.pos, rusher_speed, &mut enemy.steer);
             }
             Behavior::Shooter {
                 pattern,
@@ -376,7 +379,7 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
                     *shot_timer = shot_timer.saturating_sub(1);
                 }
                 enemy.pos = if !clear || !overlaps(enemy.pos, target, SHOOTER_FAR) {
-                    steer(tiles, enemy.pos, angle, SHOOTER_SPEED, &mut enemy.steer)
+                    pursue(enemy.pos, SHOOTER_SPEED, &mut enemy.steer)
                 } else if overlaps(enemy.pos, target, SHOOTER_NEAR) {
                     let away = angle.wrapping_add(HALF_TURN);
                     steer(tiles, enemy.pos, away, SHOOTER_SPEED, &mut enemy.steer)
@@ -470,9 +473,36 @@ fn progressed(from: FxVec2, to: FxVec2, speed: Fx) -> bool {
     dist_sq(from, to) >= half.saturating_mul(half)
 }
 
-/// A step toward `angle` that detours around whatever blocks it, without pathfinding.
-/// Walking already slides along walls, so this only matters when the way is blocked
-/// nearly head-on: then it tries 45° and 90° off to one side, then the other. The side
+/// One step of an enemy at `pos` closing in on `target`.
+///
+/// Straight at it while its body fits the whole way, else toward the next cell along
+/// `field` (around walls, pits and pockets; `field` may lead to a different player when
+/// another is nearer by path). Either way [`steer`] detours around what the heading
+/// clips. `side` is [`Enemy::steer`].
+#[must_use]
+pub fn chase(
+    tiles: Tiles,
+    field: &FlowField,
+    pos: FxVec2,
+    target: FxVec2,
+    speed: Fx,
+    side: &mut i8,
+) -> FxVec2 {
+    let toward = if walk_clear(tiles, pos, target, ENEMY_RADIUS) {
+        target
+    } else {
+        field.next(pos).unwrap_or(target)
+    };
+    let Some(angle) = trig::angle_of(sub(toward, pos)) else {
+        return pos;
+    };
+    steer(tiles, pos, angle, speed, side)
+}
+
+/// A step toward `angle` that detours around whatever blocks it, locally ([`chase`]
+/// picks the heading, from the flow field when the way isn't clear). Walking already
+/// slides along walls, so this only matters when the way is blocked nearly head-on:
+/// then it tries 45° and 90° off to one side, then the other. The side
 /// that works is kept in `side` while the direct way stays blocked, so a body follows a
 /// pillar's face around its corner instead of dithering. The first side tried is the one
 /// the blocked step drifted toward.
