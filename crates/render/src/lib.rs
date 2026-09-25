@@ -1,7 +1,8 @@
 //! wgpu renderer drawing into a Swift-owned `CAMetalLayer`.
 //!
 //! Reads the previous and current [`SimState`] and interpolates between them; it never
-//! mutates the sim. Hit flashes, muzzle flashes and death puffs come from sim [`Event`]s. Placeholder art is flat colored
+//! mutates the sim. Hit flashes, muzzle flashes, death puffs and the "!" over an enemy
+//! that notices the party come from sim [`Event`]s. Placeholder art is flat colored
 //! squares, circles and rings, converted to NDC on the CPU so there are no bind groups.
 //! On-screen controls arrive as an [`Overlay`] in view points, since their layout belongs
 //! to `game`.
@@ -40,6 +41,13 @@ const SHOOTER_COLOR: [f32; 4] = [0.7, 0.4, 1.0, 1.0];
 const SPREAD_SHOOTER_COLOR: [f32; 4] = [1.0, 0.35, 0.75, 1.0];
 /// A shooter's aim telegraph: a white core swelling to this fraction of its body.
 const AIM_CORE: f32 = 0.7;
+/// The "!" over an enemy that just noticed the party: a bar over a dot, their centers
+/// this far above the body's top edge, in world pt.
+const ALERT_COLOR: [f32; 4] = [1.0, 0.85, 0.2, 1.0];
+const ALERT_HALF_WIDTH: f32 = 2.5;
+const ALERT_BAR_HALF_HEIGHT: f32 = 6.0;
+const ALERT_DOT_RISE: f32 = 5.0;
+const ALERT_BAR_RISE: f32 = 16.0;
 const ENEMY_BULLET_COLOR: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
 /// The spawn telegraph's ring starts this many radii beyond the body.
 const TELEGRAPH_RING_GROWTH: f32 = 1.5;
@@ -179,6 +187,8 @@ pub struct Renderer {
 enum Flash {
     /// An enemy took a hit.
     Enemy(EnemyId),
+    /// An enemy noticed the party: a "!" over it.
+    Alert(EnemyId),
     /// A player took a hit.
     Player(usize),
     /// A player's gun fired.
@@ -192,6 +202,7 @@ impl Flash {
     const fn ticks(self) -> u16 {
         match self {
             Self::Enemy(_) | Self::Player(_) => 6,
+            Self::Alert(_) => 40,
             Self::Muzzle(_) => 3,
             Self::Puff(_) => 15,
         }
@@ -285,8 +296,8 @@ impl Renderer {
                 Event::PlayerHit { slot } | Event::PlayerFell { slot } => Flash::Player(slot),
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
-                Event::EnemyAlerted { .. }
-                | Event::PlayerDied { .. }
+                Event::EnemyAlerted { enemy } => Flash::Alert(enemy),
+                Event::PlayerDied { .. }
                 | Event::Restarted
                 | Event::RoomEntered { .. }
                 | Event::WaveStarted { .. }
@@ -433,6 +444,14 @@ impl Renderer {
                 enemy_color(e)
             };
             self.push_world(pos, [radius, radius], color, CIRCLE);
+            if self.flashing(Flash::Alert(id)) {
+                let [x, top] = [pos[0], pos[1] - radius];
+                let dot = [x, top - ALERT_DOT_RISE];
+                let bar = [x, top - ALERT_BAR_RISE];
+                let half = ALERT_HALF_WIDTH;
+                self.push_world(dot, [half, half], ALERT_COLOR, SQUARE);
+                self.push_world(bar, [half, ALERT_BAR_HALF_HEIGHT], ALERT_COLOR, SQUARE);
+            }
             if let Some(left) = e.aiming(telegraph) {
                 // 0 -> 1 over the telegraph, interpolated like `push_telegraph`.
                 let aimed =
@@ -505,7 +524,7 @@ impl Renderer {
                     let core = rusher * left;
                     self.push_world(at, [core, core], [1.0, 1.0, 1.0, 0.6 * left], CIRCLE);
                 }
-                Flash::Enemy(_) | Flash::Player(_) => {}
+                Flash::Enemy(_) | Flash::Player(_) | Flash::Alert(_) => {}
             }
         }
         self.flashes = effects;
