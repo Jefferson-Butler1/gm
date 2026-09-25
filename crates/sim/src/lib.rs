@@ -18,6 +18,7 @@ mod combat;
 mod config;
 mod derelict;
 mod encounter;
+mod gun;
 mod input;
 mod player;
 mod rng;
@@ -31,6 +32,7 @@ pub use combat::{
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use derelict::DERELICT;
+pub use gun::{PhasePistol, REGEN_DELAY, REGEN_TICKS};
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
 pub use rng::Rng;
@@ -142,7 +144,7 @@ impl SimState {
             seed,
             rng: Rng::from_seed(seed),
             run: Run::Boarding { room },
-            players: [Some(Player::default()), None, None, None],
+            players: [Some(Player::new(&config.tuning)), None, None, None],
             enemies: Arena::default(),
             bullets: Arena::default(),
             enemy_bullets: Arena::default(),

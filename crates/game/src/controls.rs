@@ -3,7 +3,7 @@
 //! are sim rules.
 
 use crate::TouchPhase;
-use render::{DodgeView, Overlay, StickView};
+use render::{ButtonView, Overlay, StickView};
 use sim::{Buttons, MOVE_BUCKETS, PlayerInput};
 use std::f32::consts::TAU;
 use std::time::{Duration, Instant};
@@ -20,6 +20,11 @@ const DODGE_HIT_RADIUS: f32 = DODGE_RADIUS * 1.3;
 /// Dodge button offset from the right stick base: up and toward the edge, clear of the
 /// stick's travel.
 const DODGE_OFFSET: [f32; 2] = [56.0, -110.0];
+const VENT_RADIUS: f32 = 26.0;
+const VENT_HIT_RADIUS: f32 = VENT_RADIUS * 1.3;
+/// Vent button offset from the right stick base: up and inward, clear of the dodge
+/// button and the stick's travel.
+const VENT_OFFSET: [f32; 2] = [-50.0, -130.0];
 const MOVE_DEADZONE: f32 = 0.1;
 const AIM_DEADZONE: f32 = 0.2;
 /// Scheme C: a right-half swipe this far within [`FLICK_TIME`] rolls in its direction.
@@ -59,6 +64,7 @@ struct Layout {
     width: f32,
     bases: [[f32; 2]; 2],
     dodge: [f32; 2],
+    vent: [f32; 2],
 }
 
 impl Layout {
@@ -69,6 +75,7 @@ impl Layout {
             width: v.point_width,
             bases: [[v.safe_left + BASE_INSET, y], right],
             dodge: [right[0] + DODGE_OFFSET[0], right[1] + DODGE_OFFSET[1]],
+            vent: [right[0] + VENT_OFFSET[0], right[1] + VENT_OFFSET[1]],
         }
     }
 }
@@ -137,6 +144,8 @@ pub struct Controls {
     layout: Layout,
     sticks: [Option<Stick>; 2],
     dodge: Option<Dodge>,
+    /// A vent tap waiting for the next sim tick.
+    vent: bool,
     /// A restart tap waiting for the next sim tick.
     restart: bool,
 }
@@ -149,6 +158,7 @@ impl Controls {
             layout: Layout::new(viewport),
             sticks: [None, None],
             dodge: None,
+            vent: false,
             restart: false,
         }
     }
@@ -163,10 +173,11 @@ impl Controls {
         self.sticks = [None, None];
     }
 
-    /// Drops held sticks and a pending dodge (pause); a pending restart survives.
+    /// Drops held sticks and a pending dodge or vent (pause); a pending restart survives.
     pub const fn release(&mut self) {
         self.sticks = [None, None];
         self.dodge = None;
+        self.vent = false;
     }
 
     pub const fn set_scheme(&mut self, scheme: Scheme) {
@@ -213,6 +224,10 @@ impl Controls {
     }
 
     fn begin(&mut self, id: u64, p: [f32; 2]) {
+        if dist(p, self.layout.vent) < VENT_HIT_RADIUS {
+            self.vent = true;
+            return;
+        }
         if self.scheme != Scheme::AutoAim && dist(p, self.layout.dodge) < DODGE_HIT_RADIUS {
             self.dodge = Some(Dodge::Button);
             return;
@@ -236,12 +251,15 @@ impl Controls {
         }
     }
 
-    /// Input for the next sim tick. A pending dodge or restart goes out once, on the first
-    /// tick that actually runs.
+    /// Input for the next sim tick. A pending dodge, vent or restart goes out once, on the
+    /// first tick that actually runs.
     pub fn next_input(&mut self) -> PlayerInput {
         let mut input = PlayerInput::default();
         if std::mem::take(&mut self.restart) {
             input.buttons |= Buttons::RESTART;
+        }
+        if std::mem::take(&mut self.vent) {
+            input.buttons |= Buttons::VENT;
         }
         let [left, right] = &self.sticks;
         if let Some((t, mag)) = left.as_ref().map(Stick::polar)
@@ -282,7 +300,7 @@ impl Controls {
         input
     }
 
-    pub fn overlay(&self, roll_ready: bool) -> Overlay {
+    pub fn overlay(&self, roll_ready: bool, vent_ready: bool) -> Overlay {
         let mut overlay = Overlay::default();
         for ((view, stick), &base) in overlay
             .sticks
@@ -306,10 +324,15 @@ impl Controls {
                 None => None,
             };
         }
-        overlay.dodge = (self.scheme != Scheme::AutoAim).then_some(DodgeView {
+        overlay.dodge = (self.scheme != Scheme::AutoAim).then_some(ButtonView {
             center: self.layout.dodge,
             radius: DODGE_RADIUS,
             ready: roll_ready,
+        });
+        overlay.vent = Some(ButtonView {
+            center: self.layout.vent,
+            radius: VENT_RADIUS,
+            ready: vent_ready,
         });
         overlay
     }
@@ -374,6 +397,22 @@ mod tests {
         c.touch(1, TouchPhase::Began, x, y);
         assert!(c.next_input().buttons.contains(Buttons::DODGE));
         assert!(!c.next_input().buttons.contains(Buttons::DODGE));
+    }
+
+    #[test]
+    fn vent_button_sends_one_vent_in_every_scheme() {
+        for scheme in [Scheme::FixedSticks, Scheme::AutoAim] {
+            let mut c = controls(scheme);
+            let [x, y] = c.layout.vent;
+            c.touch(1, TouchPhase::Began, x, y);
+            let input = c.next_input();
+            assert!(input.buttons.contains(Buttons::VENT), "{scheme:?}");
+            assert!(
+                !input.buttons.contains(Buttons::FIRE),
+                "{scheme:?}: not a stick"
+            );
+            assert!(!c.next_input().buttons.contains(Buttons::VENT));
+        }
     }
 
     #[test]

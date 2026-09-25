@@ -90,6 +90,22 @@ struct ContentView: View {
                     }
                     .font(.system(size: 16))
                     .foregroundStyle(.red)
+                    // Phase pistol: a pip per charge; while venting, the refill's progress.
+                    HStack(spacing: 3) {
+                        ForEach(0..<Int(hud.maxCharges), id: \.self) { i in
+                            Capsule()
+                                .fill(i < Int(hud.charges) ? Color.cyan : Color.white.opacity(0.2))
+                                .frame(width: 5, height: 12)
+                        }
+                        if hud.venting {
+                            ProgressView(value: Double(hud.ventProgress))
+                                .tint(.orange)
+                                .frame(width: 44)
+                            Text("VENT")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.orange)
+                        }
+                    }
                     // Room, and the wave while a fight is on.
                     Text(hud.wave > 0 ? "\(hud.room.capitalized) · wave \(hud.wave)/\(hud.waves)" : hud.room.capitalized)
                         .font(.system(size: 13, weight: .semibold))

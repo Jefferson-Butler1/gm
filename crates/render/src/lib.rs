@@ -55,8 +55,9 @@ const NUB_HALF: f32 = 4.0;
 const NUB_OFFSET: f32 = 22.0;
 const STICK_KNOB_R: f32 = 22.0;
 const DODGE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
-const DODGE_READY_ALPHA: f32 = 0.35;
-const DODGE_COOLDOWN_ALPHA: f32 = 0.1;
+const VENT_COLOR: [f32; 3] = [1.0, 0.75, 0.25];
+const BUTTON_READY_ALPHA: f32 = 0.35;
+const BUTTON_UNREADY_ALPHA: f32 = 0.1;
 
 const SQUARE: f32 = 0.0;
 const CIRCLE: f32 = 1.0;
@@ -112,7 +113,8 @@ struct Quad {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Overlay {
     pub sticks: [Option<StickView>; 2],
-    pub dodge: Option<DodgeView>,
+    pub dodge: Option<ButtonView>,
+    pub vent: Option<ButtonView>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,10 +128,11 @@ pub struct StickView {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct DodgeView {
+pub struct ButtonView {
     pub center: [f32; 2],
     pub radius: f32,
-    /// Dimmed while a roll is in progress (a new one can't start).
+    /// Dimmed while pressing it would do nothing (dodge: mid-roll; vent: full or
+    /// already venting).
     pub ready: bool,
 }
 
@@ -534,12 +537,15 @@ impl Renderer {
             self.push_screen(s.base, s.radius, [1.0, 1.0, 1.0, 0.25 * a], RING);
             self.push_screen(s.knob, STICK_KNOB_R, [1.0, 1.0, 1.0, 0.35 * a], CIRCLE);
         }
-        if let Some(d) = overlay.dodge {
-            let [r, g, b] = DODGE_COLOR;
+        let buttons = [(overlay.dodge, DODGE_COLOR), (overlay.vent, VENT_COLOR)];
+        for (button, [r, g, b]) in buttons {
+            let Some(d) = button else {
+                continue;
+            };
             let a = if d.ready {
-                DODGE_READY_ALPHA
+                BUTTON_READY_ALPHA
             } else {
-                DODGE_COOLDOWN_ALPHA
+                BUTTON_UNREADY_ALPHA
             };
             self.push_screen(d.center, d.radius, [r, g, b, a], CIRCLE);
         }

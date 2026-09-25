@@ -27,12 +27,14 @@ const AUTO_FIGHT: Range<u64> = 1335..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x9cef_54bd_fcf7_3cd4;
+const GOLDEN_TRACE: u64 = 0x51d0_c05d_1d51_55aa;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
-/// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is pressed on ~1 tick in 32 so rolls, dropped dodges and
-/// walking all show up; FIRE is held about half the time.
+/// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is
+/// pressed on ~1 tick in 32 so rolls, dropped dodges and walking all show up; FIRE is held
+/// about half the time, so the pistol empties and auto-vents; VENT is pressed on ~1 tick
+/// in 256 for manual vents.
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
     (0..TICKS)
@@ -48,6 +50,11 @@ fn script() -> Vec<TickInputs> {
                     buttons: Buttons(bits[4] & !Buttons::DODGE.0 & !Buttons::RESTART.0 & 0b1_1111)
                         | if bits[6] < 8 {
                             Buttons::DODGE
+                        } else {
+                            Buttons::default()
+                        }
+                        | if bits[7] == 0 {
+                            Buttons::VENT
                         } else {
                             Buttons::default()
                         },
@@ -158,7 +165,8 @@ fn golden_trace_matches_committed_value() {
 }
 
 /// Guards the script's purpose: the golden trace must cover walking, rolling (dropped
-/// mid-roll dodges, a hit on a vulnerable landing), shooting,
+/// mid-roll dodges, a hit on a vulnerable landing), shooting, venting (auto and manual,
+/// and the refills),
 /// kills, a room transition into a sealed encounter with a second wave, shooters firing,
 /// player deaths and restarts.
 #[test]
@@ -169,11 +177,22 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
         .pos;
     let (mut rolls, mut moved, mut sealed) = (0, false, false);
     let (mut dropped_dodges, mut landing_hits) = (0, 0);
+    let (mut auto_vents, mut manual_vents, mut refills) = (0, 0, 0);
     let (mut enemy_shots, mut enemy_bullets) = (0, 0);
     let mut events = Vec::new();
     for i in script() {
         let was_rolling = state.players[0].is_some_and(|p| p.rolling());
+        let was_venting = state.players[0].is_some_and(|p| p.gun.venting());
         let stepped = step(&mut state, &i).events;
+        if let Some(p) = state.players[0] {
+            let started = !was_venting && p.gun.venting();
+            if started && stepped.contains(&Event::ShotFired { slot: 0 }) {
+                auto_vents += 1;
+            } else if started {
+                manual_vents += 1;
+            }
+            refills += usize::from(was_venting && !p.gun.venting());
+        }
         if let Some(p) = state.players[0] {
             rolls += usize::from(p.roll_ticks == Tuning::NORMAL.roll_ticks);
             moved |= p.pos != start_pos;
@@ -207,6 +226,11 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
          shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
          entries={entries} waves={waves} cleared={cleared} sealed={sealed} \
          enemy_shots={enemy_shots}"
+    );
+    println!("auto_vents={auto_vents} manual_vents={manual_vents} refills={refills}");
+    assert!(
+        auto_vents >= 3 && manual_vents >= 1 && refills >= 5,
+        "auto_vents={auto_vents} manual_vents={manual_vents} refills={refills}"
     );
     assert!(
         moved && rolls >= 10 && dropped_dodges >= 5 && landing_hits >= 1,

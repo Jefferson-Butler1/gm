@@ -51,6 +51,13 @@ pub struct HudData {
     /// on; `waves` is 0 in a room without enemies.
     pub wave: u8,
     pub waves: u8,
+    /// Slot 0's phase pistol: charges left of `max_charges` (for pips).
+    pub charges: u8,
+    pub max_charges: u8,
+    /// Venting: can't fire until every charge is back. `vent_progress` runs 0 -> 1 over
+    /// the vent (0 when not venting).
+    pub venting: bool,
+    pub vent_progress: f32,
 }
 
 /// The run as the HUD needs it.
@@ -254,8 +261,11 @@ impl Game {
             let alpha = ((target_timestamp - clock) / dt).clamp(0.0, 1.0) as f32;
             alpha
         };
-        let roll_ready = g.current.players[0].is_none_or(|p| p.can_roll());
-        let overlay = g.controls.overlay(roll_ready);
+        let player = g.current.players[0];
+        let roll_ready = player.is_none_or(|p| p.can_roll());
+        let max_charges = g.current.config.tuning.charges;
+        let vent_ready = player.is_some_and(|p| !p.gun.venting() && p.gun.charges < max_charges);
+        let overlay = g.controls.overlay(roll_ready, vent_ready);
         let presented = g
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)

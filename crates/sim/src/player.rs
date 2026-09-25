@@ -2,6 +2,7 @@
 //! [`Tuning`] (issue #15); the rest are fixed here.
 
 use crate::config::{Tuning, per_tick};
+use crate::gun::PhasePistol;
 use crate::input::{Buttons, MOVE_BUCKETS, PlayerInput};
 use crate::room::{Body, Tiles};
 use crate::{Fx, FxVec2, trig};
@@ -31,26 +32,28 @@ pub struct Player {
     pub hp: u8,
     /// Post-hit invulnerability left.
     pub hurt_ticks: u16,
-    /// Ticks until the gun may fire again.
-    pub fire_cooldown: u16,
+    pub gun: PhasePistol,
 }
 
-impl Default for Player {
-    fn default() -> Self {
+impl Player {
+    /// A fresh player at the origin: full HP, gun fully charged.
+    #[must_use]
+    pub const fn new(tuning: &Tuning) -> Self {
         Self {
-            pos: FxVec2::default(),
+            pos: FxVec2 {
+                x: Fx::ZERO,
+                y: Fx::ZERO,
+            },
             facing: 0,
             roll_ticks: 0,
             roll_iframes: 0,
             roll_dir: 0,
             hp: MAX_HP,
             hurt_ticks: 0,
-            fire_cooldown: 0,
+            gun: PhasePistol::new(tuning),
         }
     }
-}
 
-impl Player {
     #[must_use]
     pub const fn rolling(&self) -> bool {
         self.roll_ticks > 0
@@ -120,17 +123,15 @@ impl Player {
         };
         self.pos = tiles.slide(self.pos, PLAYER_RADIUS, velocity, Body::Walker);
 
-        // No aiming or firing mid-roll (Gungeon-style); the roll owns the facing.
-        let mut shot = None;
-        if !self.rolling() && input.buttons.contains(Buttons::FIRE) {
+        // No aiming or firing mid-roll (Gungeon-style); the roll owns the facing. Venting
+        // carries on through a roll.
+        let trigger = !self.rolling() && input.buttons.contains(Buttons::FIRE);
+        if trigger {
             self.facing = self.resolve_aim(input, targets);
-            if self.fire_cooldown == 0 {
-                self.fire_cooldown = tuning.fire_interval;
-                shot = Some(self.facing);
-            }
         }
+        let vent = input.buttons.contains(Buttons::VENT);
+        let shot = self.gun.tick(tuning, trigger, vent).then_some(self.facing);
 
-        self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
         self.hurt_ticks = self.hurt_ticks.saturating_sub(1);
         shot
     }
@@ -318,7 +319,7 @@ mod tests {
     fn player() -> Player {
         Player {
             pos: start(),
-            ..Player::default()
+            ..Player::new(&Tuning::NORMAL)
         }
     }
 
