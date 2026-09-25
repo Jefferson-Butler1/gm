@@ -285,7 +285,8 @@ impl Renderer {
                 Event::PlayerHit { slot } | Event::PlayerFell { slot } => Flash::Player(slot),
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
-                Event::PlayerDied { .. }
+                Event::EnemyAlerted { .. }
+                | Event::PlayerDied { .. }
                 | Event::Restarted
                 | Event::RoomEntered { .. }
                 | Event::WaveStarted { .. }

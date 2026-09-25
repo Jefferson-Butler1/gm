@@ -1,11 +1,11 @@
-//! Enemy pathfinding: a flow field over the room's cells toward the targetable players.
+//! Enemy pathfinding: flow fields over the room's cells toward where enemies are headed.
 //!
 //! Dijkstra from every goal cell at once over the cells a walker may enter, 8-way, with
 //! diagonal steps only where both orthogonal cells are open too (no cutting a wall's
 //! corner). Each cell then holds its path cost to the nearest goal, and an enemy walks
-//! to whichever neighbor is cheapest. Rooms are at most `MAX_SIDE` squared cells, so the
-//! field is rebuilt every tick (when some enemy needs it) rather than cached: it is
-//! derived state, never stored.
+//! to whichever neighbor is cheapest. Rooms are at most `MAX_SIDE` squared cells, so
+//! fields are rebuilt every tick (one per goal, when some enemy needs it) rather than
+//! cached: they are derived state, never stored.
 //! Costs, heap order and neighbor order are all integer and fixed, so every machine
 //! builds the same field and picks the same steps.
 
@@ -13,7 +13,7 @@ use crate::room::{Body, Tiles, cell_center, cell_of};
 use crate::{Fx, FxVec2};
 use std::cell::OnceCell;
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 
 /// Step costs: 2 orthogonal, 3 diagonal (about sqrt 2 : 1), so paths hug corners
 /// instead of zigzagging.
@@ -64,6 +64,33 @@ impl FlowField {
         self.grid
             .get_or_init(|| Grid::build(self.tiles, &self.goals))
             .next(pos)
+    }
+}
+
+/// One [`FlowField`] per goal cell, made the first time an enemy heads there: each
+/// enemy chases its own target (a player it sees, or where it last saw one). Keyed by
+/// cell in a `BTreeMap`, so nothing depends on the order enemies ask.
+#[derive(Clone, Debug)]
+pub struct FlowFields {
+    tiles: Tiles,
+    fields: BTreeMap<(i32, i32), FlowField>,
+}
+
+impl FlowFields {
+    #[must_use]
+    pub const fn new(tiles: Tiles) -> Self {
+        Self {
+            tiles,
+            fields: BTreeMap::new(),
+        }
+    }
+
+    /// The field toward `goal`'s cell.
+    pub fn toward(&mut self, goal: FxVec2) -> &FlowField {
+        let tiles = self.tiles;
+        self.fields
+            .entry((cell_of(goal.x), cell_of(goal.y)))
+            .or_insert_with(|| FlowField::toward(tiles, &[goal]))
     }
 }
 

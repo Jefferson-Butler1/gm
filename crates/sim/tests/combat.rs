@@ -3,9 +3,9 @@
 
 use sim::room::{Body, Tiles, cell_center, cell_of};
 use sim::{
-    Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2,
-    MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig, SPAWN_TELEGRAPH_TICKS,
-    SimState, TickInputs, Tuning, step, trig,
+    Awareness, Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy, Event, Fx,
+    FxVec2, MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig,
+    SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, Tuning, step, trig,
 };
 
 const SEED: u64 = 7;
@@ -29,12 +29,22 @@ fn point(x: i32, y: i32) -> FxVec2 {
     }
 }
 
-/// An empty arena plus one rusher `x` points right of the player, already past its
-/// spawn telegraph.
+/// Already hunting the player where it starts, so tests of the fight itself see no
+/// `EnemyAlerted`.
+fn hunting() -> Awareness {
+    Awareness::Alert {
+        last_seen: point(0, 0),
+        searching: 0,
+    }
+}
+
+/// An empty arena plus one hunting rusher `x` points right of the player, already past
+/// its spawn telegraph.
 fn arena_with_rusher(x: i32) -> SimState {
     let mut state = empty_arena();
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
+        awareness: hunting(),
         ..Enemy::rusher(point(x, 0))
     });
     state
@@ -309,11 +319,12 @@ fn separation_never_pushes_a_rusher_into_walls_or_pits() {
 
 // --- shooter, enemy bullets, steering -------------------------------------------------
 
-/// An empty arena plus one active shooter at `at`, `ticks` from starting to aim.
+/// An empty arena plus one active, hunting shooter at `at`, `ticks` from starting to aim.
 fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
     let mut state = empty_arena();
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
+        awareness: hunting(),
         behavior: Behavior::Shooter {
             pattern: Pattern::Aimed,
             shot_timer: AIM_TICKS.saturating_add(ticks),

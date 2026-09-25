@@ -28,7 +28,7 @@ const AUTO_FIGHT: Range<u64> = 1335..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x97ab_f569_e21e_b448;
+const GOLDEN_TRACE: u64 = 0x57ab_d9d8_7c77_b2d6;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -109,9 +109,18 @@ fn script() -> Vec<TickInputs> {
         .collect()
 }
 
-/// Two players, starting dead so the script exercises the restart transition.
+/// Two players, starting dead so the script exercises the restart transition. Enemies
+/// see across the whole room, so the idle party still draws the cargo hold's fight (at
+/// Normal's sight radius it would stand unnoticed at the entrance).
 fn start() -> SimState {
-    let mut state = SimState::new(SEED, RunConfig::default());
+    let config = RunConfig {
+        tuning: Tuning {
+            sight_radius: u16::MAX,
+            ..Tuning::NORMAL
+        },
+        ..RunConfig::default()
+    };
+    let mut state = SimState::new(SEED, config);
     state.players[1] = state.players[0];
     state.run = Run::Dead {
         room: RoomId(0),
