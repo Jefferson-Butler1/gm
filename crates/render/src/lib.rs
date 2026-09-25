@@ -8,6 +8,7 @@
 //! to `game`.
 
 use bytemuck::{Pod, Zeroable};
+use sim::camera::View;
 use sim::room::{Cell, PrototypeRoom};
 use sim::{Behavior, Enemy, EnemyId, Event, Fx, FxVec2, Pattern, Player, SimState};
 use std::f32::consts::TAU;
@@ -593,23 +594,25 @@ impl Renderer {
         }
     }
 
-    /// Where the screen center sits in room space: on the focus (the player), clamped so
-    /// the view stays inside the room. An axis where the room fits on screen centers it.
-    fn camera_for(&self, room: &PrototypeRoom, focus: [f32; 2]) -> [f32; 2] {
-        let cell = sim::room::CELL.to_num::<f32>();
-        let extent = |cells: usize| f32::from(u16::try_from(cells).unwrap_or(u16::MAX)) * cell;
-        let axis = |room: f32, screen: f32, focus: f32| {
-            if room <= screen {
-                room / 2.0
-            } else {
-                focus.clamp(screen / 2.0, room - screen / 2.0)
-            }
-        };
-        let [w, h] = self.size_pt;
-        [
-            axis(extent(room.width()), w, focus[0]),
-            axis(extent(room.height()), h, focus[1]),
-        ]
+    /// The viewport in whole points, as the sim takes it (see [`sim::camera::View`]).
+    #[must_use]
+    pub fn view(&self) -> View {
+        let whole =
+            |pt: f32| Fx::checked_from_num(pt.round()).map_or(0, Fx::saturating_to_num::<u16>);
+        let [width, height] = self.size_pt;
+        View {
+            width: whole(width),
+            height: whole(height),
+        }
+    }
+
+    /// Where the screen center sits in room space: the sim's camera
+    /// ([`sim::camera::center`]), so what's drawn on screen is what enemies notice from.
+    fn camera_for(&self, room: &PrototypeRoom, [x, y]: [f32; 2]) -> [f32; 2] {
+        let fx = |v: f32| Fx::checked_from_num(v).unwrap_or_default();
+        let focus = FxVec2 { x: fx(x), y: fx(y) };
+        let center = sim::camera::center(room, focus, self.view());
+        [center.x.to_num(), center.y.to_num()]
     }
 
     /// One quad per non-void cell. Exit gaps draw as doors: open or sealed. The extraction
