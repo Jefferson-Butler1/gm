@@ -269,6 +269,8 @@ impl Game {
             while clock + dt <= target_timestamp {
                 let mut inputs = TickInputs::default();
                 inputs.players[0] = g.controls.next_input();
+                // Enemies notice the player from what its screen shows.
+                inputs.players[0].view = g.renderer.view();
                 g.prev.clone_from(&g.current);
                 let events = sim::step(&mut g.current, &inputs);
                 g.renderer.note_events(g.current.tick, &events.events);
