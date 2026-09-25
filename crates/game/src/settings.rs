@@ -52,6 +52,8 @@ pub struct RunSettings {
     pub alert_radius: f32,
     /// How long a hunter searches where it lost the player before giving up.
     pub forget_secs: f32,
+    /// Doors seal only while an enemy is hunting; off, on entry until the room is clear.
+    pub doors_lock_on_aggro: bool,
 }
 
 /// What a difficulty sets for the enemy tunables, for sliders without an override.
@@ -85,6 +87,7 @@ pub fn default_run_settings() -> RunSettings {
         hearing_radius: f32::from(t.hearing_radius),
         alert_radius: f32::from(t.alert_radius),
         forget_secs: secs(t.forget_ticks),
+        doors_lock_on_aggro: t.doors_lock_on_aggro,
     }
 }
 
@@ -127,6 +130,7 @@ impl RunSettings {
                 hearing_radius: whole(self.hearing_radius),
                 alert_radius: whole(self.alert_radius),
                 forget_ticks: ticks(self.forget_secs),
+                doors_lock_on_aggro: self.doors_lock_on_aggro,
                 ..Tuning::NORMAL
             },
         }

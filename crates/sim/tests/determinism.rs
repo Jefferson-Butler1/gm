@@ -35,7 +35,7 @@ const WHOLE_ROOM: View = View {
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xaccc_ba01_e2e8_69b2;
+const GOLDEN_TRACE: u64 = 0x85a1_9427_4e0f_5812;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist

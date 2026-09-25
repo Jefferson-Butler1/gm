@@ -1,5 +1,6 @@
-//! Rooms in play: walking through exits, room events (seal/unseal), waves from object
-//! layers, and extraction. Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
+//! Rooms in play: walking through exits (and back into a fight left mid-way), room events
+//! (seal/unseal, or sealing while enemies hunt), waves from object layers, and extraction.
+//! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
 use crate::combat::{Awareness, Enemy, Pattern, SHOOTER_STAGGER};
 use crate::derelict::DERELICT;
@@ -8,12 +9,22 @@ use crate::room::{
     EnemyKind, LayerTrigger, Placement, PrototypeRoom, RoomAction, RoomTrigger, cell_center,
     cell_of,
 };
-use crate::{Event, FxVec2, RoomId, Run, SimState, TickEvents};
+use crate::{Event, FxVec2, RoomId, Run, SimState, Suspended, TickEvents};
 
-/// Moves the whole party to `at` in room `id` and starts that room: an Encounter (base
-/// layer spawned, entry events fired) if it still has enemies, else Boarding. Bullets
-/// and enemies belong to the room being left, so they are dropped.
+/// Moves the whole party to `at` in room `id` and starts that room: a fight walked out
+/// of resumes as it was left; otherwise an Encounter (base layer spawned) if it still has
+/// enemies, else Boarding. An Encounter fires the entry events. Bullets belong to the room
+/// being left, so they are dropped; so are its enemies, unless it is mid-fight: then they
+/// are suspended with it (see [`SimState::suspended`]).
 pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEvents) {
+    if let Run::Encounter { room, wave, .. } = state.run {
+        let enemies = state.enemies.iter().map(|(_, e)| *e).collect();
+        state.suspended.push(Suspended {
+            room,
+            wave,
+            enemies,
+        });
+    }
     state.enemies.retain(|_, _| false);
     state.bullets.retain(|_, _| false);
     state.enemy_bullets.retain(|_, _| false);
@@ -26,16 +37,28 @@ pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEven
         state.run = Run::Boarding { room: id };
         return;
     };
-    state.run = if state.cleared(id) || !room.has_enemies() {
-        Run::Boarding { room: id }
+    let (resumed, others): (Vec<_>, Vec<_>) = std::mem::take(&mut state.suspended)
+        .into_iter()
+        .partition(|s| s.room == id);
+    state.suspended = others;
+    let wave = if let Some(left) = resumed.into_iter().next() {
+        for enemy in left.enemies {
+            state.enemies.insert(enemy);
+        }
+        left.wave
+    } else if state.cleared(id) || !room.has_enemies() {
+        state.run = Run::Boarding { room: id };
+        return;
     } else {
         spawn(state, room.base, false);
-        Run::Encounter {
-            room: id,
-            wave: 0,
-            doors_locked: react(room, RoomTrigger::OnEnterWithEnemies, false),
-        }
+        0
     };
+    state.run = Run::Encounter {
+        room: id,
+        wave,
+        doors_locked: react(room, RoomTrigger::OnEnterWithEnemies, false),
+    };
+    seal_on_aggro(state, room);
 }
 
 /// After combat: advance waves or finish the room, then win if a living player touches
@@ -46,10 +69,12 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
         wave,
         doors_locked,
     } = state.run
-        && state.enemies.is_empty()
         && let Some(room) = DERELICT.room(id)
     {
-        next_wave(state, room, id, wave, doors_locked, events);
+        if state.enemies.is_empty() {
+            next_wave(state, room, id, wave, doors_locked, events);
+        }
+        seal_on_aggro(state, room);
     }
 
     let Some(tiles) = state.tiles() else {
@@ -137,6 +162,21 @@ fn react(room: &PrototypeRoom, trigger: RoomTrigger, doors_locked: bool) -> bool
             RoomAction::Seal => true,
             RoomAction::Unseal => false,
         })
+}
+
+/// Under the run's `doors_lock_on_aggro`, an Encounter in a room that seals at all holds
+/// its doors sealed exactly while one of its enemies is hunting, whatever the room
+/// events did. (Reinforcements arrive hunting, so each wave seals them again.)
+fn seal_on_aggro(state: &mut SimState, room: &PrototypeRoom) {
+    if let Run::Encounter { doors_locked, .. } = &mut state.run
+        && state.config.tuning.doors_lock_on_aggro
+        && react(room, RoomTrigger::OnEnterWithEnemies, false)
+    {
+        *doors_locked = state
+            .enemies
+            .iter()
+            .any(|(_, e)| e.awareness != Awareness::Unaware);
+    }
 }
 
 /// Spawns `placements`, unaware unless `hunting`: then each already knows where the
