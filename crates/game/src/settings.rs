@@ -46,9 +46,8 @@ pub struct RunSettings {
     pub spread_shooter: bool,
     /// A fall into a pit, before the respawn.
     pub fall_secs: f32,
-    /// Enemy awareness, pt: how far an unaware enemy sees, hears a shot, and how far a
-    /// hunting one alerts its allies.
-    pub sight_radius: f32,
+    /// Enemy awareness, pt: how far an unaware enemy hears a shot, and how far a hunting
+    /// one alerts its allies. (Sight is the player's screen.)
     pub hearing_radius: f32,
     pub alert_radius: f32,
     /// How long a hunter searches where it lost the player before giving up.
@@ -83,7 +82,6 @@ pub fn default_run_settings() -> RunSettings {
         regen_charge_secs: secs(t.regen_charge_ticks),
         spread_shooter: t.spread_shooter,
         fall_secs: secs(t.fall_ticks),
-        sight_radius: f32::from(t.sight_radius),
         hearing_radius: f32::from(t.hearing_radius),
         alert_radius: f32::from(t.alert_radius),
         forget_secs: secs(t.forget_ticks),
@@ -126,7 +124,6 @@ impl RunSettings {
                 regen_charge_ticks: ticks(self.regen_charge_secs),
                 spread_shooter: self.spread_shooter,
                 fall_ticks: ticks(self.fall_secs),
-                sight_radius: whole(self.sight_radius),
                 hearing_radius: whole(self.hearing_radius),
                 alert_radius: whole(self.alert_radius),
                 forget_ticks: ticks(self.forget_secs),

@@ -1,4 +1,5 @@
 use crate::MAX_PLAYERS;
+use crate::camera::View;
 use serde::{Deserialize, Serialize};
 
 /// Number of movement direction buckets in a full turn.
@@ -18,6 +19,9 @@ pub struct PlayerInput {
     /// Aim-assist strength: 0 = raw aim, 255 = snap to the target in the assist cone.
     pub assist: u8,
     pub buttons: Buttons,
+    /// The player's viewport: unaware enemies on its screen, in plain view, notice it.
+    /// Zero = [`DEFAULT_VIEW`](crate::camera::DEFAULT_VIEW).
+    pub view: View,
 }
 
 /// Button bitflags.

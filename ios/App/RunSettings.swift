@@ -20,7 +20,6 @@ enum RunSettingsStore {
         ("regenDelaySecs", \.regenDelaySecs),
         ("regenChargeSecs", \.regenChargeSecs),
         ("fallSecs", \.fallSecs),
-        ("sightRadius", \.sightRadius),
         ("hearingRadius", \.hearingRadius),
         ("alertRadius", \.alertRadius),
         ("forgetSecs", \.forgetSecs),
@@ -124,9 +123,6 @@ struct RunSettingsSections: View {
             Toggle("Spread shooters", isOn: $model.runSettings.spreadShooter)
             SliderRow(label: "Pit fall", value: $model.runSettings.fallSecs, range: 0.1...2, step: 0.05) {
                 String(format: "%.2f s", $0)
-            }
-            SliderRow(label: "Enemy sight", value: $model.runSettings.sightRadius, range: 32...640, step: 16) {
-                cells($0)
             }
             SliderRow(label: "Enemy hearing", value: $model.runSettings.hearingRadius, range: 0...480, step: 16) {
                 cells($0)

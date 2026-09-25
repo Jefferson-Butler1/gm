@@ -5,6 +5,7 @@
 //! [`RunConfig`](crate::RunConfig) (issue #15).
 
 use crate::arena::{Arena, Id};
+use crate::camera::Screen;
 use crate::config::{RunConfig, Tuning, per_tick};
 use crate::path::{FlowField, FlowFields, walk_clear};
 use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
@@ -112,9 +113,9 @@ pub struct Enemy {
 /// has to go find them; reinforcements arrive already hunting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Awareness {
-    /// Stands where it is: never moves or fires. Notices a player that comes within the
-    /// run's `sight_radius` in plain view, that shoots within `hearing_radius`, or that
-    /// hits it, and an ally that is hunting within `alert_radius` in plain view.
+    /// Stands where it is: never moves or fires. Notices a player whose screen it is on
+    /// in plain view, that shoots within `hearing_radius`, or that hits it, and an ally
+    /// that is hunting within `alert_radius` in plain view.
     Unaware,
     /// Hunting. With a player in sight it fights as usual (and tracks it at any range);
     /// otherwise it heads for `last_seen`. `searching` counts ticks spent there without
@@ -256,7 +257,7 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
     let senses = Senses {
         tiles,
         tuning: state.config.tuning,
-        players: targetable(state),
+        players: watching(state, inputs, tiles),
         shots,
         hunters,
     };
@@ -404,8 +405,8 @@ fn enemy_bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
 struct Senses {
     tiles: Tiles,
     tuning: Tuning,
-    /// Targetable players' positions.
-    players: Vec<FxVec2>,
+    /// Targetable players' positions, and what each one's screen shows.
+    players: Vec<(FxVec2, Screen)>,
     /// Where players fired from this tick.
     shots: Vec<FxVec2>,
     /// Enemies on the hunt as of last tick: where each is, and where it's headed.
@@ -423,8 +424,19 @@ fn targetable(state: &SimState) -> Vec<FxVec2> {
         .collect()
 }
 
+/// Targetable players with their screens, from each one's view input.
+fn watching(state: &SimState, inputs: &TickInputs, tiles: Tiles) -> Vec<(FxVec2, Screen)> {
+    state
+        .players
+        .iter()
+        .zip(&inputs.players)
+        .filter_map(|(p, input)| p.filter(Player::targetable).map(|p| (p, input.view)))
+        .map(|(p, view)| (p.pos, Screen::of(tiles.room, p.pos, view)))
+        .collect()
+}
+
 /// Updates `enemy`'s awareness from what it perceives, and returns the player it sees:
-/// the nearest in plain view, within `sight_radius` unless it is already hunting.
+/// the nearest in plain view, and on that player's screen unless it is already hunting.
 /// Failing that, a shot it hears or an ally hunting in plain view alerts it.
 fn notice(
     enemy: &mut Enemy,
@@ -440,10 +452,10 @@ fn notice(
     let seen = senses
         .players
         .iter()
-        .copied()
-        .filter(|&p| {
-            (hunting || within(p, tuning.sight_radius)) && line_of_fire(senses.tiles, pos, p)
+        .filter(|(p, screen)| {
+            (hunting || screen.contains(pos)) && line_of_fire(senses.tiles, pos, *p)
         })
+        .map(|&(p, _)| p)
         .min_by_key(nearest);
     let heard = || {
         senses
