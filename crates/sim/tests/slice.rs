@@ -50,6 +50,7 @@ fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
     assert!(matches!(fighting.run, Run::Encounter { .. }));
 
     let mut clear = on_the_pad(Run::Boarding { room });
+    clear.cleared = 1 << room.0;
     let events = step(&mut clear, &TickInputs::default()).events;
     assert_eq!(events, [Event::Won]);
     assert_eq!(clear.run, Run::Won { room });
@@ -60,6 +61,62 @@ fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
     walk.players[0].move_mag = u8::MAX;
     assert!(step(&mut clear, &walk).events.is_empty());
     assert_eq!(clear.players, frozen.players);
+}
+
+/// Walks the party east out of a cleared bridge into the exit room's encounter.
+fn enter_the_exit_room() -> SimState {
+    let mut state = SimState::new(SEED, RunConfig::default());
+    state.cleared = 0b1110;
+    state.run = Run::Boarding { room: RoomId(3) };
+    if let Some(player) = &mut state.players[0] {
+        // Centered on the bridge's 2-cell east gap (rows 5 and 6).
+        player.pos = FxVec2 {
+            x: cell_center(14, 5).x,
+            y: sim::room::CELL.saturating_mul_int(6),
+        };
+        player.solid = player.pos;
+    }
+    let mut east = TickInputs::default();
+    east.players[0].move_mag = u8::MAX;
+    for _ in 0..20 {
+        step(&mut state, &east);
+    }
+    state
+}
+
+#[test]
+fn the_pad_stays_dead_while_the_exit_rooms_last_wave_lives() {
+    let room = exit_room();
+    let mut state = enter_the_exit_room();
+    assert!(matches!(state.run, Run::Encounter { room: r, wave: 0, .. } if r == room));
+    // The base wave dies: the last wave spawns.
+    state.enemies.retain(|_, _| false);
+    let events = step(&mut state, &TickInputs::default()).events;
+    assert!(
+        events.contains(&Event::WaveStarted { wave: 1 }),
+        "{events:?}"
+    );
+
+    // Stand on the pad through the whole telegraph and beyond, unhurt.
+    let (x, y) = DERELICT
+        .room(room)
+        .and_then(|r| r.extraction)
+        .unwrap_or_default();
+    for _ in 0..120 {
+        if let Some(player) = &mut state.players[0] {
+            player.pos = cell_center(x, y);
+            player.hp = MAX_HP;
+        }
+        let events = step(&mut state, &TickInputs::default()).events;
+        assert!(!state.enemies.is_empty());
+        assert!(!events.contains(&Event::Won), "{events:?}");
+        assert!(
+            matches!(state.run, Run::Encounter { wave: 1, .. }),
+            "{:?}",
+            state.run
+        );
+        assert!(!state.extraction_live());
+    }
 }
 
 #[test]

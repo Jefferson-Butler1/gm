@@ -427,8 +427,7 @@ impl Renderer {
         if let Some(room) = sim::DERELICT.room(current.run.room()) {
             let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
             self.camera = self.camera_for(room, focus);
-            let pad_live = !matches!(current.run, sim::Run::Encounter { .. });
-            self.push_room(room, current.run.doors_locked(), pad_live);
+            self.push_room(room, current.run.doors_locked(), current.extraction_live());
         }
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
         let telegraph = current.config.tuning.shooter_telegraph;

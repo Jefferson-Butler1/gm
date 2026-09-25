@@ -60,6 +60,7 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     }
     let mut living = state.players.iter().flatten().filter(|p| p.alive());
     if let Run::Boarding { room } = state.run
+        && state.extraction_live()
         && living.any(|p| tiles.room.on_extraction(p.pos, PLAYER_RADIUS))
     {
         state.run = Run::Won { room };
