@@ -7,7 +7,7 @@
 mod controls;
 mod stats;
 
-use controls::{Controls, Scheme, Viewport};
+use controls::{Controls, FireMode, Scheme, Viewport};
 use render::Renderer;
 use sim::{Run, RunConfig, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
@@ -186,6 +186,11 @@ impl Game {
         g.viewport = viewport;
     }
 
+    pub fn set_fire_mode(&self, mode: FireMode) {
+        eprintln!("[gm] fire_mode={mode:?}");
+        self.lock().controls.set_fire_mode(mode);
+    }
+
     pub fn set_scheme(&self, scheme: Scheme) {
         eprintln!("[gm] scheme={scheme:?}");
         self.lock().controls.set_scheme(scheme);
@@ -270,6 +275,10 @@ impl Game {
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)
             .is_some();
+        // Tap-to-fire aims from where the player was just drawn.
+        let player_view =
+            player.map(|p| g.renderer.view_point([p.pos.x.to_num(), p.pos.y.to_num()]));
+        g.controls.set_player_view(player_view);
         g.stats.set_status(&g.current);
         g.stats.record(
             timestamp,

@@ -1,6 +1,7 @@
 //! Touch -> quantized [`PlayerInput`] for the four control schemes (issue #7), ported from
-//! the feel spike. Schemes only change how touches become input; aim assist and auto-aim
-//! are sim rules.
+//! the feel spike, and the three fire modes (issue #15). Schemes and fire modes only
+//! change how touches become input; aim assist, auto-aim and the gun's fire cap are sim
+//! rules.
 
 use crate::TouchPhase;
 use render::{ButtonView, Overlay, StickView};
@@ -44,6 +45,19 @@ pub enum Scheme {
     AutoAim,
     /// D: like A, with aim bent toward targets by the assist strength.
     AimAssist,
+}
+
+/// How the aim side's touches fire, chosen in settings.
+#[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FireMode {
+    /// Auto: fires (at the gun's cap) while the aim stick is held past its deadzone.
+    #[default]
+    Hold,
+    /// Semi-auto: each touch-down on the aim side fires one shot toward the touch.
+    /// Dragging aims without firing.
+    Tap,
+    /// Drag to aim; lifting the finger fires one shot along the aim.
+    Release,
 }
 
 /// View size and safe-area insets, in points.
@@ -127,6 +141,16 @@ impl Stick {
     }
 }
 
+/// One shot waiting for the next sim tick (tap and release fire modes). The sim's fire
+/// cap drops it if the gun isn't ready.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shot {
+    /// Along this angle, in turns `0..1` from +x toward +y.
+    At(f32),
+    /// Scheme C: at the nearest target.
+    Auto,
+}
+
 /// A dodge waiting for the next sim tick.
 #[derive(Clone, Copy)]
 enum Dodge {
@@ -139,11 +163,15 @@ enum Dodge {
 
 pub struct Controls {
     scheme: Scheme,
+    fire_mode: FireMode,
     /// Aim assist for scheme D, `0..=1`.
     assist: f32,
     layout: Layout,
     sticks: [Option<Stick>; 2],
     dodge: Option<Dodge>,
+    shot: Option<Shot>,
+    /// Where slot 0 was last drawn, in view points; tap-to-fire aims from here.
+    player_view: Option<[f32; 2]>,
     /// A vent tap waiting for the next sim tick.
     vent: bool,
     /// A restart tap waiting for the next sim tick.
@@ -154,10 +182,13 @@ impl Controls {
     pub fn new(viewport: &Viewport) -> Self {
         Self {
             scheme: Scheme::default(),
+            fire_mode: FireMode::default(),
             assist: 0.5,
             layout: Layout::new(viewport),
             sticks: [None, None],
             dodge: None,
+            shot: None,
+            player_view: None,
             vent: false,
             restart: false,
         }
@@ -173,16 +204,28 @@ impl Controls {
         self.sticks = [None, None];
     }
 
-    /// Drops held sticks and a pending dodge or vent (pause); a pending restart survives.
+    /// Drops held sticks and a pending dodge, shot or vent (pause); a pending restart
+    /// survives.
     pub const fn release(&mut self) {
         self.sticks = [None, None];
         self.dodge = None;
+        self.shot = None;
         self.vent = false;
     }
 
     pub const fn set_scheme(&mut self, scheme: Scheme) {
         self.scheme = scheme;
         self.sticks = [None, None];
+    }
+
+    pub const fn set_fire_mode(&mut self, mode: FireMode) {
+        self.fire_mode = mode;
+        self.sticks = [None, None];
+        self.shot = None;
+    }
+
+    pub const fn set_player_view(&mut self, at: Option<[f32; 2]>) {
+        self.player_view = at;
     }
 
     pub const fn set_assist(&mut self, strength: f32) {
@@ -214,6 +257,12 @@ impl Controls {
                 }
             }
             TouchPhase::Ended => {
+                if self.fire_mode == FireMode::Release
+                    && let [_, Some(right)] = &self.sticks
+                    && right.id == id
+                {
+                    self.shot = self.aimed_shot(right);
+                }
                 for slot in &mut self.sticks {
                     if slot.as_ref().is_some_and(|s| s.id == id) {
                         *slot = None;
@@ -249,6 +298,28 @@ impl Controls {
         } else {
             *slot = Some(Stick::new(id, p, p, false));
         }
+        if side == 1
+            && self.fire_mode == FireMode::Tap
+            && let [_, Some(right)] = &self.sticks
+        {
+            // A fixed stick's deflection already points at the touch; a floating one
+            // starts undeflected, so aim from the player on screen to the touch.
+            let toward_touch = self.player_view.map(|from| {
+                let [dx, dy] = sub(p, from);
+                Shot::At(turns(dx, dy))
+            });
+            self.shot = self.aimed_shot(right).or(toward_touch);
+        }
+    }
+
+    /// A single shot along `stick`'s aim: auto-aimed in scheme C, else only past the aim
+    /// deadzone.
+    fn aimed_shot(&self, stick: &Stick) -> Option<Shot> {
+        if self.scheme == Scheme::AutoAim {
+            return Some(Shot::Auto);
+        }
+        let (t, mag) = stick.polar();
+        (mag > AIM_DEADZONE).then_some(Shot::At(t))
     }
 
     /// Input for the next sim tick. A pending dodge, vent or restart goes out once, on the
@@ -272,21 +343,24 @@ impl Controls {
             .as_ref()
             .map(Stick::polar)
             .filter(|&(_, mag)| mag > AIM_DEADZONE);
-        match self.scheme {
+        // Hold fires from the held stick; tap and release only through pending shots.
+        let held = self.fire_mode == FireMode::Hold;
+        let shot = match self.scheme {
             Scheme::FloatingSticks | Scheme::FixedSticks | Scheme::AimAssist => {
-                if let Some((t, _)) = aim {
-                    input.aim = u16::try_from(quantize(t, 1 << 16) & 0xFFFF).unwrap_or(0);
-                    input.buttons |= Buttons::FIRE;
-                }
-                if self.scheme == Scheme::AimAssist {
-                    input.assist = u8::try_from(quantize(self.assist, 255)).unwrap_or(u8::MAX);
-                }
+                aim.filter(|_| held).map(|(t, _)| Shot::At(t))
             }
-            Scheme::AutoAim => {
-                if right.is_some() {
-                    input.buttons |= Buttons::FIRE | Buttons::AUTO_AIM;
-                }
+            Scheme::AutoAim => (held && right.is_some()).then_some(Shot::Auto),
+        };
+        match self.shot.take().or(shot) {
+            Some(Shot::At(t)) => {
+                input.aim = u16::try_from(quantize(t, 1 << 16) & 0xFFFF).unwrap_or(0);
+                input.buttons |= Buttons::FIRE;
             }
+            Some(Shot::Auto) => input.buttons |= Buttons::FIRE | Buttons::AUTO_AIM,
+            None => {}
+        }
+        if self.scheme == Scheme::AimAssist {
+            input.assist = u8::try_from(quantize(self.assist, 255)).unwrap_or(u8::MAX);
         }
         match self.dodge.take() {
             Some(Dodge::Button) => input.buttons |= Buttons::DODGE,
@@ -431,6 +505,81 @@ mod tests {
         c.touch(2, TouchPhase::Began, x + STICK_RADIUS, y); // full right
         let input = c.next_input();
         assert_eq!((input.move_dir, input.move_mag), (0, 255));
+    }
+
+    fn fired(input: PlayerInput) -> Option<u16> {
+        input.buttons.contains(Buttons::FIRE).then_some(input.aim)
+    }
+
+    #[test]
+    fn hold_fires_every_tick_the_aim_stick_is_deflected() {
+        let mut c = controls(Scheme::FixedSticks);
+        let [x, y] = c.layout.bases[1];
+        c.touch(1, TouchPhase::Began, x, y + STICK_RADIUS); // straight down
+        assert_eq!(fired(c.next_input()), Some(16384));
+        assert_eq!(fired(c.next_input()), Some(16384));
+        c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
+        assert_eq!(fired(c.next_input()), None);
+    }
+
+    #[test]
+    fn tap_fires_once_toward_the_touch_and_dragging_only_aims() {
+        // Fixed stick: the touch's offset from the base is the aim.
+        let mut c = controls(Scheme::FixedSticks);
+        c.set_fire_mode(FireMode::Tap);
+        let [x, y] = c.layout.bases[1];
+        c.touch(1, TouchPhase::Began, x - STICK_RADIUS, y); // straight left
+        assert_eq!(fired(c.next_input()), Some(32768));
+        c.touch(1, TouchPhase::Moved, x, y + STICK_RADIUS);
+        assert_eq!(
+            fired(c.next_input()),
+            None,
+            "held and dragged: no more shots"
+        );
+        c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
+        c.touch(2, TouchPhase::Began, x, y - STICK_RADIUS); // straight up
+        assert_eq!(fired(c.next_input()), Some(49152), "each touch-down fires");
+
+        // Floating stick: aim from the player on screen to the touch.
+        let mut c = controls(Scheme::FloatingSticks);
+        c.set_fire_mode(FireMode::Tap);
+        c.set_player_view(Some([400.0, 200.0]));
+        c.touch(1, TouchPhase::Began, 600.0, 200.0);
+        assert_eq!(fired(c.next_input()), Some(0));
+        assert_eq!(fired(c.next_input()), None);
+    }
+
+    #[test]
+    fn release_fires_once_along_the_dragged_aim_when_lifted() {
+        let mut c = controls(Scheme::FloatingSticks);
+        c.set_fire_mode(FireMode::Release);
+        c.touch(1, TouchPhase::Began, 600.0, 200.0);
+        c.touch(1, TouchPhase::Moved, 600.0, 200.0 + STICK_RADIUS); // aim down
+        assert_eq!(fired(c.next_input()), None, "dragging only aims");
+        c.touch(1, TouchPhase::Ended, 600.0, 200.0 + STICK_RADIUS);
+        assert_eq!(fired(c.next_input()), Some(16384));
+        assert_eq!(fired(c.next_input()), None);
+        // A release inside the deadzone is a cancel.
+        c.touch(2, TouchPhase::Began, 600.0, 200.0);
+        c.touch(2, TouchPhase::Ended, 600.0, 200.0);
+        assert_eq!(fired(c.next_input()), None);
+    }
+
+    #[test]
+    fn scheme_c_taps_and_releases_fire_one_auto_aimed_shot() {
+        for mode in [FireMode::Tap, FireMode::Release] {
+            let mut c = controls(Scheme::AutoAim);
+            c.set_fire_mode(mode);
+            c.touch(1, TouchPhase::Began, 600.0, 200.0);
+            let first = c.next_input();
+            c.touch(1, TouchPhase::Ended, 600.0, 200.0);
+            let second = c.next_input();
+            let shots = [first, second]
+                .iter()
+                .filter(|i| i.buttons.contains(Buttons::FIRE | Buttons::AUTO_AIM))
+                .count();
+            assert_eq!(shots, 1, "{mode:?}");
+        }
     }
 
     #[test]

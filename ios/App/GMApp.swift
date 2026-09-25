@@ -20,7 +20,14 @@ final class GameModel {
         (.autoAim, "C", "C · Move + auto-aim (flick to dodge)"),
         (.aimAssist, "D", "D · Twin sticks + aim assist"),
     ]
+    /// Fire mode options, with stable keys for persistence.
+    static let fireModes: [(mode: FireMode, key: String, label: String)] = [
+        (.hold, "hold", "Hold · auto-fire while aiming"),
+        (.tap, "tap", "Tap · one shot per touch"),
+        (.release, "release", "Release · drag to aim, lift to fire"),
+    ]
     private static let schemeKey = "controls.scheme"
+    private static let fireModeKey = "controls.fireMode"
     private static let assistKey = "controls.assist"
 
     var hud: HudData?
@@ -28,6 +35,12 @@ final class GameModel {
         didSet {
             UserDefaults.standard.set(Self.schemes.first { $0.scheme == scheme }?.key, forKey: Self.schemeKey)
             game?.setScheme(scheme: scheme)
+        }
+    }
+    var fireMode: FireMode = GameModel.loadFireMode() {
+        didSet {
+            UserDefaults.standard.set(Self.fireModes.first { $0.mode == fireMode }?.key, forKey: Self.fireModeKey)
+            game?.setFireMode(mode: fireMode)
         }
     }
     /// Only used by scheme D. The real default is a combat-tuning decision (issue #15).
@@ -47,6 +60,7 @@ final class GameModel {
     func attach(_ game: Game) {
         self.game = game
         game.setScheme(scheme: scheme)
+        game.setFireMode(mode: fireMode)
         game.setAssistStrength(strength: assist)
         if paused { game.pause() }
     }
@@ -62,6 +76,11 @@ final class GameModel {
     /// Restart (end-of-run overlay tap or the settings button); Rust turns it into the sim's RESTART input.
     func restart() {
         game?.restart()
+    }
+
+    private static func loadFireMode() -> FireMode {
+        let key = UserDefaults.standard.string(forKey: fireModeKey)
+        return fireModes.first { $0.key == key }?.mode ?? .hold
     }
 
     private static func loadScheme() -> Scheme {
@@ -178,6 +197,15 @@ struct ControlsSettings: View {
                     }
                 }
                 .pickerStyle(.inline)
+                Section("Fire mode") {
+                    Picker("Fire mode", selection: $model.fireMode) {
+                        ForEach(GameModel.fireModes, id: \.key) { option in
+                            Text(option.label).tag(option.mode)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                }
                 if model.scheme == .aimAssist {
                     Section("Aim assist strength") {
                         HStack {

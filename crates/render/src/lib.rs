@@ -609,6 +609,15 @@ impl Renderer {
         }
     }
 
+    /// A room-space point in view points (origin top-left), through the camera of the
+    /// last drawn frame.
+    #[must_use]
+    pub fn view_point(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        let [w, h] = self.size_pt;
+        let [cx, cy] = self.camera;
+        [x - cx + w / 2.0, y - cy + h / 2.0]
+    }
+
     /// Room space (points, +y down) through the camera: one world unit is one view point.
     fn push_world(&mut self, [x, y]: [f32; 2], [hx, hy]: [f32; 2], color: [f32; 4], shape: f32) {
         let [w, h] = self.size_pt;
