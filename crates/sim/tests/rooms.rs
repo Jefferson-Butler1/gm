@@ -1,14 +1,13 @@
 //! Rooms through the public API: format validation, walls and pits, walking through
-//! exits, seal on entry (or while enemies hunt), waves, unseal on clear, and walking out
-//! of a fight and back.
+//! exits, seal on entry, waves, unseal on clear.
 
 use sim::room::{
     CELL, Category, Connection, Derelict, DerelictError, Dir, EnemyKind, Exit, ExitKind, ExitRef,
     Placement, PrototypeRoom, RoomAction, RoomError, RoomTrigger, cell_center,
 };
 use sim::{
-    Awareness, Behavior, Buttons, DERELICT, Event, Fx, FxVec2, PLAYER_RADIUS, PlayerInput, RoomId,
-    Run, RunConfig, SimState, TickInputs, step,
+    Buttons, DERELICT, Event, Fx, FxVec2, PLAYER_RADIUS, PlayerInput, RoomId, Run, RunConfig,
+    SimState, TickInputs, step,
 };
 
 const SEED: u64 = 3;
@@ -290,21 +289,19 @@ fn airlock_at(pos: FxVec2) -> SimState {
     state
 }
 
-/// Walks from just inside the airlock's east exit into the cargo hold, under the run's
-/// `doors_lock_on_aggro` set to `aggro` (off: seal on entry, unseal on clear).
-fn enter_cargo_hold(aggro: bool) -> (SimState, Vec<Event>) {
+/// Walks from just inside the airlock's east exit into the cargo hold.
+fn enter_cargo_hold() -> (SimState, Vec<Event>) {
     let mut state = airlock_at(FxVec2 {
         x: cell_center(12, 4).x,
         y: CELL.saturating_mul_int(5), // centered on the 2-cell gap (rows 4 and 5)
     });
-    state.config.tuning.doors_lock_on_aggro = aggro;
     let events = run(&mut state, 10, &walk(EAST));
     (state, events)
 }
 
 #[test]
 fn walking_through_an_exit_enters_the_linked_room_and_seals_it() {
-    let (state, events) = enter_cargo_hold(false);
+    let (state, events) = enter_cargo_hold();
     assert!(events.contains(&Event::RoomEntered { room: RoomId(1) }));
     assert_eq!(
         state.run,
@@ -325,7 +322,7 @@ fn walking_through_an_exit_enters_the_linked_room_and_seals_it() {
 
 #[test]
 fn sealed_doors_stop_players_and_bullets() {
-    let (mut state, _) = enter_cargo_hold(false);
+    let (mut state, _) = enter_cargo_hold();
     run(&mut state, 30, &walk(WEST));
     assert_eq!(state.run.room(), RoomId(1), "still inside");
     assert_eq!(
@@ -348,7 +345,7 @@ fn sealed_doors_stop_players_and_bullets() {
 
 #[test]
 fn waves_advance_on_clear_then_the_room_unseals_and_stays_cleared() {
-    let (mut state, _) = enter_cargo_hold(false);
+    let (mut state, _) = enter_cargo_hold();
 
     state.enemies.retain(|_, _| false);
     let events = run(&mut state, 1, &TickInputs::default());
@@ -380,106 +377,6 @@ fn waves_advance_on_clear_then_the_room_unseals_and_stays_cleared() {
     assert_eq!(walk_to_next_room(&mut state, EAST), Some(RoomId(1)));
     assert_eq!(state.run, Run::Boarding { room: RoomId(1) });
     assert!(state.enemies.is_empty());
-}
-
-fn locked(state: &SimState) -> bool {
-    state.tiles().is_some_and(|t| t.sealed)
-}
-
-/// Sets every enemy's awareness: hunting slot 0 where it stands, or not.
-fn aware(state: &mut SimState, hunting: bool) {
-    let at = state.players[0].map(|p| p.pos).unwrap_or_default();
-    for (_, enemy) in state.enemies.iter_mut() {
-        enemy.awareness = if hunting {
-            Awareness::Alert {
-                last_seen: at,
-                searching: 0,
-            }
-        } else {
-            Awareness::Unaware
-        };
-    }
-}
-
-#[test]
-fn with_doors_lock_on_aggro_doors_seal_only_while_an_enemy_hunts() {
-    let (mut state, _) = enter_cargo_hold(true);
-    assert!(matches!(state.run, Run::Encounter { wave: 0, .. }));
-    // Hidden from the base wave behind the pillar, the party is not seen as it
-    // telegraphs in: it stands unaware, and the doors stay open.
-    if let Some(player) = &mut state.players[0] {
-        player.pos = cell_center(4, 4);
-        player.solid = player.pos;
-    }
-    run(&mut state, 60, &TickInputs::default());
-    assert!(!locked(&state));
-
-    aware(&mut state, true);
-    run(&mut state, 1, &TickInputs::default());
-    assert!(locked(&state), "sealed while they hunt");
-
-    // They give up: open again.
-    aware(&mut state, false);
-    run(&mut state, 1, &TickInputs::default());
-    assert!(!locked(&state));
-
-    // Only the shooter (far from the rushers, so it alerts neither) hunts, then dies:
-    // open again, with the rushers alive and unaware.
-    let (_, shooter) = state
-        .enemies
-        .iter_mut()
-        .find(|(_, e)| matches!(e.behavior, Behavior::Shooter { .. }))
-        .unwrap();
-    shooter.awareness = Awareness::Alert {
-        last_seen: shooter.pos,
-        searching: 0,
-    };
-    run(&mut state, 1, &TickInputs::default());
-    assert!(locked(&state));
-    state
-        .enemies
-        .retain(|_, e| matches!(e.behavior, Behavior::Rusher { .. }));
-    run(&mut state, 1, &TickInputs::default());
-    assert_eq!(state.enemies.len(), 2);
-    assert!(!locked(&state));
-}
-
-#[test]
-fn with_doors_lock_on_aggro_a_fight_walked_out_of_resumes_on_return() {
-    let (mut state, _) = enter_cargo_hold(true);
-    // The base wave dies; the reinforcements arrive hunting and seal the doors.
-    state.enemies.retain(|_, _| false);
-    run(&mut state, 1, &TickInputs::default());
-    assert!(locked(&state));
-    // They lose the party, and one dies: it walks out through the open doors.
-    aware(&mut state, false);
-    let (first, _) = state.enemies.iter().next().unwrap();
-    state.enemies.retain(|id, _| id != first);
-    assert_eq!(walk_to_next_room(&mut state, WEST), Some(RoomId(0)));
-    assert!(state.enemies.is_empty());
-    let left = state.suspended.first().map(|s| s.enemies.clone()).unwrap();
-    assert_eq!(left.len(), 3);
-
-    // Back in: the same wave and survivors, as they were left; not cleared.
-    assert_eq!(walk_to_next_room(&mut state, EAST), Some(RoomId(1)));
-    assert!(matches!(
-        state.run,
-        Run::Encounter {
-            room: RoomId(1),
-            wave: 1,
-            doors_locked: false
-        }
-    ));
-    assert_eq!(state.enemies.len(), left.len());
-    assert!(state.enemies.iter().all(|(_, e)| left.contains(e)));
-    assert!(state.suspended.is_empty());
-    assert!(!state.cleared(RoomId(1)));
-
-    // Killing them clears the room: no wave comes again.
-    state.enemies.retain(|_, _| false);
-    let events = run(&mut state, 1, &TickInputs::default());
-    assert!(events.contains(&Event::RoomCleared { room: RoomId(1) }));
-    assert_eq!(state.run, Run::Boarding { room: RoomId(1) });
 }
 
 #[test]

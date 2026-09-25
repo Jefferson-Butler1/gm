@@ -46,7 +46,6 @@ enum RunSettingsStore {
         if let value = saved["charges"] as? Int { settings.charges = UInt8(clamping: value) }
         if let value = saved["ventStyle"] as? String { settings.ventStyle = value == "regen" ? .regen : .clip }
         if let value = saved["spreadShooter"] as? Bool { settings.spreadShooter = value }
-        if let value = saved["doorsLockOnAggro"] as? Bool { settings.doorsLockOnAggro = value }
         return settings
     }
 
@@ -60,7 +59,6 @@ enum RunSettingsStore {
         saved["charges"] = Int(settings.charges)
         saved["ventStyle"] = settings.ventStyle == .regen ? "regen" : "clip"
         saved["spreadShooter"] = settings.spreadShooter
-        saved["doorsLockOnAggro"] = settings.doorsLockOnAggro
         UserDefaults.standard.set(saved, forKey: key)
     }
 }
@@ -135,7 +133,6 @@ struct RunSettingsSections: View {
             SliderRow(label: "Enemy search time", value: $model.runSettings.forgetSecs, range: 0.5...10, step: 0.5) {
                 String(format: "%.1f s", $0)
             }
-            Toggle("Doors lock only while enemies hunt", isOn: $model.runSettings.doorsLockOnAggro)
             Button("Reset to defaults") { model.resetTuning() }
         } header: {
             Text("Tuning")

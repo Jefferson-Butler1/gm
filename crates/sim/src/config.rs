@@ -109,10 +109,6 @@ pub struct Tuning {
     /// An enemy that reaches where it last saw a player and finds nobody gives up after
     /// this many ticks.
     pub forget_ticks: u16,
-    /// A room's doors seal only while an enemy in it is hunting, and reopen once none is
-    /// (a player can walk out of a room of unaware enemies). Off: they seal on entry and
-    /// reopen once the room is clear.
-    pub doors_lock_on_aggro: bool,
 }
 
 impl Tuning {
@@ -144,7 +140,6 @@ impl Tuning {
         hearing_radius: 160,
         alert_radius: 128,
         forget_ticks: 180,
-        doors_lock_on_aggro: true,
     };
 }
 
@@ -193,7 +188,6 @@ impl RunConfig {
                 hearing_radius: t.hearing_radius.min(2048),
                 alert_radius: t.alert_radius.min(2048),
                 forget_ticks: t.forget_ticks.clamp(1, 3600),
-                doors_lock_on_aggro: t.doors_lock_on_aggro,
             },
         };
         let interval = sane.shooter_interval();

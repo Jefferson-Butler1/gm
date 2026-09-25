@@ -110,15 +110,6 @@ impl Run {
     }
 }
 
-/// A fight the party walked out of: the wave it was on and its surviving enemies, as they
-/// were.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Suspended {
-    pub room: RoomId,
-    pub wave: u8,
-    pub enemies: Vec<Enemy>,
-}
-
 /// Everything that affects simulation results. Nothing outside this struct may.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SimState {
@@ -130,17 +121,13 @@ pub struct SimState {
     pub run: Run,
     /// `None` = empty slot. An occupied slot with 0 HP is a dead player.
     pub players: [Option<Player>; MAX_PLAYERS],
-    /// Enemies and bullets in the party's current room. Leaving a room drops its bullets;
-    /// its enemies too, unless it is mid-fight (see [`Self::suspended`]).
+    /// Enemies and bullets in the party's current room; leaving a room drops them.
     pub enemies: Arena<Enemy>,
     /// The players' bullets.
     pub bullets: Arena<Bullet>,
     pub enemy_bullets: Arena<Bullet>,
     /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
     pub cleared: u64,
-    /// Rooms the party walked out of mid-fight (doors open under `doors_lock_on_aggro`),
-    /// kept as left and resumed on return.
-    pub suspended: Vec<Suspended>,
     /// Difficulty and tunables, fixed for the run.
     pub config: RunConfig,
     /// The config the next restart uses; `None` keeps [`Self::config`]. The host sets it
@@ -165,7 +152,6 @@ impl SimState {
             bullets: Arena::default(),
             enemy_bullets: Arena::default(),
             cleared: 0,
-            suspended: Vec::new(),
             config,
             next_config: None,
         };
