@@ -129,7 +129,7 @@ pub struct StickView {
 pub struct DodgeView {
     pub center: [f32; 2],
     pub radius: f32,
-    /// Dimmed while the roll is on cooldown.
+    /// Dimmed while a roll is in progress (a new one can't start).
     pub ready: bool,
 }
 
@@ -511,7 +511,8 @@ impl Renderer {
         let radius = sim::PLAYER_RADIUS.to_num::<f32>();
         let (radius, mut color) = if !p.alive() {
             (radius, DEAD_COLOR)
-        } else if p.rolling() {
+        } else if p.roll_iframes > 0 {
+            // Only the roll's i-frames look like a roll: the landing is vulnerable.
             (radius * ROLLING_SCALE, ROLLING_COLOR)
         } else if hurt {
             (radius, HURT_COLOR)

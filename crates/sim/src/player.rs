@@ -7,9 +7,6 @@ use crate::room::{Body, Tiles};
 use crate::{Fx, FxVec2, trig};
 use serde::{Deserialize, Serialize};
 
-/// Ticks from one roll's start until the next may start: 24 = 0.4 s. A dodge pressed
-/// sooner is dropped (whether to buffer it is a combat-tuning question, issue #15).
-pub const ROLL_COOLDOWN_TICKS: u16 = 24;
 /// Aim assist only bends toward targets within this half-angle of the aim: ±20°.
 pub const ASSIST_CONE: i16 = 3641;
 /// Hits a fresh player can take.
@@ -23,11 +20,13 @@ pub struct Player {
     /// Move direction while moving, overridden by the resolved aim while firing; one
     /// full turn = 65536.
     pub facing: u16,
-    /// Ticks of the current roll left, including this tick; nonzero = rolling (i-frames).
+    /// Ticks of the current roll left, including this tick; nonzero = rolling: locked
+    /// direction, no firing, no new roll.
     pub roll_ticks: u16,
+    /// I-frames left of the current roll. They cover its start; the rest of the roll is
+    /// a vulnerable landing.
+    pub roll_iframes: u16,
     pub roll_dir: u16,
-    /// Ticks until the next roll may start.
-    pub roll_cooldown: u16,
     /// 0 = dead. A dead player keeps its slot but no longer acts or takes hits.
     pub hp: u8,
     /// Post-hit invulnerability left.
@@ -42,8 +41,8 @@ impl Default for Player {
             pos: FxVec2::default(),
             facing: 0,
             roll_ticks: 0,
+            roll_iframes: 0,
             roll_dir: 0,
-            roll_cooldown: 0,
             hp: MAX_HP,
             hurt_ticks: 0,
             fire_cooldown: 0,
@@ -62,10 +61,10 @@ impl Player {
         self.hp > 0
     }
 
-    /// Damage is ignored while this is set: dodge i-frames and post-hit invulnerability.
+    /// Damage is ignored while this is set: roll i-frames and post-hit invulnerability.
     #[must_use]
     pub const fn invulnerable(&self) -> bool {
-        self.rolling() || self.hurt_ticks > 0
+        self.roll_iframes > 0 || self.hurt_ticks > 0
     }
 
     /// Takes one hit unless invulnerable or already dead, then stays invulnerable for
@@ -79,9 +78,11 @@ impl Player {
         true
     }
 
+    /// No cooldown (ETG): a roll may start once the last one has landed. A dodge pressed
+    /// mid-roll is dropped, not buffered.
     #[must_use]
     pub const fn can_roll(&self) -> bool {
-        self.roll_cooldown == 0
+        !self.rolling()
     }
 
     /// One tick of this player's input, moving through `tiles`. `targets` are what aim
@@ -96,17 +97,16 @@ impl Player {
         let move_angle = (input.move_mag > 0).then(|| bucket_angle(input.move_dir));
 
         self.roll_ticks = self.roll_ticks.saturating_sub(1);
+        self.roll_iframes = self.roll_iframes.saturating_sub(1);
         if input.buttons.contains(Buttons::DODGE) && self.can_roll() {
             self.roll_dir = move_angle.unwrap_or(self.facing);
             self.roll_ticks = tuning.roll_ticks;
-            self.roll_cooldown = ROLL_COOLDOWN_TICKS;
+            self.roll_iframes = iframe_ticks(tuning);
         }
 
         let velocity = if self.rolling() {
-            let speed = Fx::from_num(tuning.roll_distance)
-                .checked_div_int(i64::from(tuning.roll_ticks))
-                .unwrap_or(Fx::ZERO);
-            scale(trig::unit(self.roll_dir), speed)
+            let elapsed = tuning.roll_ticks.saturating_sub(self.roll_ticks);
+            scale(trig::unit(self.roll_dir), roll_step(tuning, elapsed))
         } else if let Some(angle) = move_angle {
             self.facing = angle;
             let run = per_tick(tuning.move_speed);
@@ -130,7 +130,6 @@ impl Player {
             }
         }
 
-        self.roll_cooldown = self.roll_cooldown.saturating_sub(1);
         self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
         self.hurt_ticks = self.hurt_ticks.saturating_sub(1);
         shot
@@ -172,6 +171,40 @@ impl Player {
     fn nearest(&self, targets: impl Iterator<Item = FxVec2>) -> Option<FxVec2> {
         targets.min_by_key(|&t| dist_sq(t, self.pos))
     }
+}
+
+/// The roll's i-frames: its first `roll_iframe_percent`, rounded to whole ticks.
+fn iframe_ticks(tuning: &Tuning) -> u16 {
+    let scaled = u32::from(tuning.roll_ticks)
+        .saturating_mul(u32::from(tuning.roll_iframe_percent))
+        .saturating_add(50)
+        / 100;
+    u16::try_from(scaled).unwrap_or(tuning.roll_ticks)
+}
+
+/// Distance the roll covers on its tick `elapsed` (0-based). ETG's roll is front-loaded,
+/// so per-tick weights fall linearly, `5n - 3i` over `n` ticks: the last tick moves ~0.4x
+/// the first (ETG's curve: ~10.7 -> ~4.3 tiles/s). Steps are differences of the
+/// cumulative distance, so the whole roll covers exactly `roll_distance`.
+fn roll_step(tuning: &Tuning, elapsed: u16) -> Fx {
+    let n = i64::from(tuning.roll_ticks);
+    let total = roll_weight(n, n);
+    let covered = |k: i64| {
+        Fx::from_num(tuning.roll_distance)
+            .saturating_mul_int(roll_weight(n, k))
+            .checked_div_int(total)
+            .unwrap_or(Fx::ZERO)
+    };
+    let k = i64::from(elapsed);
+    covered(k.saturating_add(1)).saturating_sub(covered(k))
+}
+
+/// Summed weight of an `n`-tick roll's first `k` ticks: 5nk - 3k(k - 1)/2.
+const fn roll_weight(n: i64, k: i64) -> i64 {
+    let falloff = k.saturating_mul(k.saturating_sub(1)).saturating_mul(3) / 2;
+    n.saturating_mul(k)
+        .saturating_mul(5)
+        .saturating_sub(falloff)
 }
 
 /// Squared distance in raw `Fx` bits; exact, for comparisons only.
@@ -345,18 +378,50 @@ mod tests {
     }
 
     #[test]
-    fn roll_is_36_ticks_of_iframes_covering_160_pt() {
+    fn roll_has_iframes_for_its_first_55_percent_then_a_vulnerable_landing() {
         let mut p = player();
-        p.update(dodge(), &[], tiles(), &Tuning::NORMAL);
-        for tick in 1..ROLL_TICKS {
-            assert!(p.invulnerable(), "tick {tick}");
-            p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
+        let mut iframes = Vec::new();
+        for tick in 0..ROLL_TICKS {
+            let input = if tick == 0 {
+                dodge()
+            } else {
+                PlayerInput::default()
+            };
+            p.update(input, &[], tiles(), &Tuning::NORMAL);
+            assert!(p.rolling(), "tick {tick}");
+            iframes.push(p.invulnerable());
         }
-        assert!(p.invulnerable());
+        // 55% of 36 ticks = 19.8, rounded to 20: ticks 0..20 dodge, 20..36 don't.
+        let expected: Vec<bool> = (0..ROLL_TICKS).map(|t| t < 20).collect();
+        assert_eq!(iframes, expected);
         assert_eq!(at(&p), (160, 0), "rolls along the facing when idle");
         p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
-        assert!(!p.rolling() && !p.invulnerable());
+        assert!(!p.rolling());
         assert_eq!(at(&p), (160, 0));
+    }
+
+    #[test]
+    fn roll_is_fast_then_slow() {
+        let mut p = player();
+        let mut steps = Vec::new();
+        for tick in 0..ROLL_TICKS {
+            let before = p.pos.x;
+            let input = if tick == 0 {
+                dodge()
+            } else {
+                PlayerInput::default()
+            };
+            p.update(input, &[], tiles(), &Tuning::NORMAL);
+            steps.push(p.pos.x.saturating_sub(before));
+        }
+        assert!(steps.windows(2).all(|w| w[0] >= w[1]), "{steps:?}");
+        // ~376 pt/s at the start (above the 230 walk), ~157 at the end (below it).
+        let per_second = |v: Fx| v.saturating_mul_int(60).round().to_num::<i64>();
+        assert_eq!(
+            (per_second(steps[0]), per_second(steps[35])),
+            (376, 157),
+            "{steps:?}"
+        );
     }
 
     #[test]
@@ -375,27 +440,31 @@ mod tests {
     }
 
     #[test]
-    fn held_dodge_rolls_again_exactly_when_the_cooldown_ends() {
+    fn held_dodge_rolls_again_right_after_landing() {
         let mut p = player();
-        let starts: Vec<u32> = (0..60)
+        let starts: Vec<u16> = (0..100)
             .filter(|_| {
                 p.update(dodge(), &[], tiles(), &Tuning::NORMAL);
                 p.roll_ticks == ROLL_TICKS
             })
             .collect();
-        assert_eq!(starts, [0, 24, 48]);
+        assert_eq!(starts, [0, 36, 72]);
     }
 
     #[test]
-    fn dodge_during_cooldown_is_dropped() {
+    fn dodge_mid_roll_is_dropped() {
         let mut p = player();
         p.update(dodge(), &[], tiles(), &Tuning::NORMAL);
-        for tick in 1..ROLL_COOLDOWN_TICKS {
+        for tick in 1..ROLL_TICKS {
             assert!(!p.can_roll(), "tick {tick}");
             p.update(dodge(), &[], tiles(), &Tuning::NORMAL);
             assert_ne!(p.roll_ticks, ROLL_TICKS, "tick {tick}");
         }
-        assert!(p.can_roll(), "ready once the cooldown has fully elapsed");
+        p.update(dodge(), &[], tiles(), &Tuning::NORMAL);
+        assert_eq!(
+            p.roll_ticks, ROLL_TICKS,
+            "the tick after landing rolls again"
+        );
     }
 
     #[test]
@@ -447,6 +516,14 @@ mod tests {
             &Tuning::NORMAL,
         );
         assert_eq!((p.roll_dir, p.facing, shot), (RIGHT, RIGHT, None));
+        // Held fire stays silent through the landing, then fires once the roll is over.
+        let shots: Vec<u16> = (1..=ROLL_TICKS)
+            .filter(|_| {
+                p.update(fire(DOWN, 0), &[], tiles(), &Tuning::NORMAL)
+                    .is_some()
+            })
+            .collect();
+        assert_eq!(shots, [ROLL_TICKS]);
     }
 
     #[test]

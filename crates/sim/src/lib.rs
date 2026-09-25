@@ -32,7 +32,7 @@ pub use combat::{
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use derelict::DERELICT;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
-pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player, ROLL_COOLDOWN_TICKS};
+pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
 pub use rng::Rng;
 
 use serde::{Deserialize, Serialize};

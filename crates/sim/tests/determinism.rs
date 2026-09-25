@@ -18,14 +18,16 @@ const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
 const WALK_IN: [Range<u64>; 2] = [40..125, 1250..1335];
 const WALK_NORTH: u64 = 13;
 /// Both players stand idle from just after entering the cargo hold, so its shooter lives
-/// long enough to fire and the rushers kill them.
+/// long enough to fire and the rushers kill them; they only roll (along their facing) every
+/// [`STAND_STILL_ROLL`] ticks, so some hits land on a roll's vulnerable landing.
 const STAND_STILL: Range<u64> = 130..1200;
+const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
 const AUTO_FIGHT: Range<u64> = 1335..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x0ceb_6d39_ec1b_9c80;
+const GOLDEN_TRACE: u64 = 0x9cef_54bd_fcf7_3cd4;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -52,7 +54,14 @@ fn script() -> Vec<TickInputs> {
                 };
             }
             let scripted = if STAND_STILL.contains(&tick) {
-                Some(PlayerInput::default())
+                Some(PlayerInput {
+                    buttons: if tick % STAND_STILL_ROLL == 0 {
+                        Buttons::DODGE
+                    } else {
+                        Buttons::default()
+                    },
+                    ..PlayerInput::default()
+                })
             } else if let Some(window) = RESTARTS.iter().find(|r| r.contains(&tick)) {
                 Some(PlayerInput {
                     buttons: if tick == window.end.saturating_sub(1) {
@@ -148,7 +157,8 @@ fn golden_trace_matches_committed_value() {
     assert_eq!(trace, GOLDEN_TRACE, "got {trace:#018x}");
 }
 
-/// Guards the script's purpose: the golden trace must cover walking, rolling, shooting,
+/// Guards the script's purpose: the golden trace must cover walking, rolling (dropped
+/// mid-roll dodges, a hit on a vulnerable landing), shooting,
 /// kills, a room transition into a sealed encounter with a second wave, shooters firing,
 /// player deaths and restarts.
 #[test]
@@ -158,14 +168,28 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
         .unwrap()
         .pos;
     let (mut rolls, mut moved, mut sealed) = (0, false, false);
+    let (mut dropped_dodges, mut landing_hits) = (0, 0);
     let (mut enemy_shots, mut enemy_bullets) = (0, 0);
     let mut events = Vec::new();
     for i in script() {
-        events.extend(step(&mut state, &i).events);
+        let was_rolling = state.players[0].is_some_and(|p| p.rolling());
+        let stepped = step(&mut state, &i).events;
         if let Some(p) = state.players[0] {
             rolls += usize::from(p.roll_ticks == Tuning::NORMAL.roll_ticks);
             moved |= p.pos != start_pos;
+            // ETG roll: dodges mid-roll are dropped, and the landing can be hit.
+            dropped_dodges += usize::from(
+                was_rolling && p.rolling() && i.players[0].buttons.contains(Buttons::DODGE),
+            );
         }
+        landing_hits += stepped
+            .iter()
+            .filter(|e| match e {
+                Event::PlayerHit { slot } => state.players[*slot].is_some_and(|p| p.rolling()),
+                _ => false,
+            })
+            .count();
+        events.extend(stepped);
         sealed |= state.run.doors_locked();
         enemy_shots += usize::from(state.enemy_bullets.len() > enemy_bullets);
         enemy_bullets = state.enemy_bullets.len();
@@ -179,11 +203,16 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     let waves = count(|e| matches!(e, Event::WaveStarted { .. }));
     let cleared = count(|e| matches!(e, Event::RoomCleared { .. }));
     println!(
-        "rolls={rolls} shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
+        "rolls={rolls} dropped_dodges={dropped_dodges} landing_hits={landing_hits} \
+         shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
          entries={entries} waves={waves} cleared={cleared} sealed={sealed} \
          enemy_shots={enemy_shots}"
     );
-    assert!(moved && rolls >= 10, "moved={moved} rolls={rolls}");
+    assert!(
+        moved && rolls >= 10 && dropped_dodges >= 5 && landing_hits >= 1,
+        "moved={moved} rolls={rolls} dropped_dodges={dropped_dodges} \
+         landing_hits={landing_hits}"
+    );
     // Restarts: the scripted start plus at least one after a full-party death.
     assert!(
         shots >= 50 && kills >= 5 && deaths >= 2 && restarts >= 2,

@@ -85,16 +85,19 @@ fn rusher_contact_hurts_then_post_hit_invulnerability_protects() {
 }
 
 #[test]
-fn dodge_iframes_block_contact_damage() {
+fn roll_iframes_block_contact_damage_but_the_landing_is_vulnerable() {
     let mut state = arena_with_rusher(30); // in the roll's path (facing right)
     let mut events = run(&mut state, 1, &press(Buttons::DODGE));
-    events.extend(run(
-        &mut state,
-        usize::from(Tuning::NORMAL.roll_ticks) - 1,
-        &TickInputs::default(),
-    ));
+    // The i-frames: 55% of the 36-tick roll, rounded = 20 ticks.
+    events.extend(run(&mut state, 19, &TickInputs::default()));
     assert!(events.is_empty(), "{events:?}");
-    assert_eq!(state.players[0].unwrap().hp, MAX_HP);
+    // The rusher turns and catches the slowing landing.
+    let events = run(&mut state, 16, &TickInputs::default());
+    assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
+    assert!(
+        state.players[0].unwrap().rolling(),
+        "hit before the roll ended"
+    );
 }
 
 #[test]
