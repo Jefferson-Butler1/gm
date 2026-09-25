@@ -5,11 +5,13 @@
 //! time, renders `prev` -> `current` interpolated, and returns [`HudData`] for `SwiftUI`.
 
 mod controls;
+mod settings;
 mod stats;
 
 use controls::{Controls, FireMode, Scheme, Viewport};
 use render::Renderer;
-use sim::{Run, RunConfig, SimState, TICK_HZ, TickInputs};
+use settings::RunSettings;
+use sim::{Run, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -132,12 +134,17 @@ impl Game {
 impl Game {
     /// `layer_ptr` is a `CAMetalLayer*` that Swift keeps alive for the Game's lifetime.
     /// `seed` seeds the session's first run (Swift picks it at random); restarts derive
-    /// the next run's seed inside the sim.
+    /// the next run's seed inside the sim. `settings` configure the first run.
     ///
     /// # Errors
     /// If the pointer is null or wgpu cannot set up rendering on the layer.
     #[uniffi::constructor]
-    pub fn new(layer_ptr: u64, viewport: Viewport, seed: u64) -> Result<Arc<Self>, GameError> {
+    pub fn new(
+        layer_ptr: u64,
+        viewport: Viewport,
+        seed: u64,
+        settings: RunSettings,
+    ) -> Result<Arc<Self>, GameError> {
         let addr = usize::try_from(layer_ptr).map_err(|_| GameError::NullLayer)?;
         let layer = NonNull::new(std::ptr::with_exposed_provenance_mut::<c_void>(addr))
             .ok_or(GameError::NullLayer)?;
@@ -154,7 +161,7 @@ impl Game {
         }
         .map_err(GameError::Render)?;
         eprintln!("[gm] Game::new {viewport:?} seed={seed:#018x}");
-        let state = SimState::new(seed, RunConfig::default());
+        let state = SimState::new(seed, settings.run_config());
         Ok(Arc::new(Self {
             inner: Mutex::new(Inner {
                 renderer,
@@ -200,6 +207,13 @@ impl Game {
     pub fn set_assist_strength(&self, strength: f32) {
         eprintln!("[gm] assist={strength}");
         self.lock().controls.set_assist(strength);
+    }
+
+    /// Settings for the next run: difficulty and tunables apply when the run restarts
+    /// (death, win, or the Restart button), never mid-run.
+    pub fn set_run_settings(&self, settings: RunSettings) {
+        eprintln!("[gm] next run: {settings:?}");
+        self.lock().current.next_config = Some(settings.run_config());
     }
 
     /// Restart: sends RESTART on the next tick. A live run restarts at once; after a

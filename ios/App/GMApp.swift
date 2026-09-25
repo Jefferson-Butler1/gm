@@ -50,6 +50,13 @@ final class GameModel {
             game?.setAssistStrength(strength: assist)
         }
     }
+    /// Difficulty and tuning for the next run; the game picks them up on restart.
+    var runSettings: RunSettings = RunSettingsStore.load() {
+        didSet {
+            RunSettingsStore.save(runSettings)
+            game?.setRunSettings(settings: runSettings)
+        }
+    }
     /// The game pauses while either holds; pause lives outside the sim (Rust stops stepping).
     var settingsOpen = false { didSet { syncPause() } }
     var appActive = true { didSet { syncPause() } }
@@ -71,6 +78,13 @@ final class GameModel {
         guard shouldPause != paused else { return }
         paused = shouldPause
         if paused { game?.pause() } else { game?.resume() }
+    }
+
+    /// Tuning back to Rust's defaults; the difficulty stays.
+    func resetTuning() {
+        var settings = defaultRunSettings()
+        settings.difficulty = runSettings.difficulty
+        runSettings = settings
     }
 
     /// Restart (end-of-run overlay tap or the settings button); Rust turns it into the sim's RESTART input.
@@ -215,6 +229,7 @@ struct ControlsSettings: View {
                         }
                     }
                 }
+                RunSettingsSections(model: model)
                 Section {
                     // Pending restart survives the pause; it lands on the first tick after
                     // the sheet closes.
@@ -224,7 +239,7 @@ struct ControlsSettings: View {
                     }
                 }
             }
-            .navigationTitle("Controls")
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
