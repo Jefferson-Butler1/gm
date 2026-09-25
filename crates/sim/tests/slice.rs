@@ -4,7 +4,7 @@
 use sim::room::{Body, Category, Tiles, cell_center, cell_of};
 use sim::{
     Buttons, DERELICT, Event, FxVec2, MAX_HP, MOVE_BUCKETS, PlayerInput, Rng, RoomId, Run,
-    SimState, TickInputs, step, trig,
+    RunConfig, SimState, TickInputs, step, trig,
 };
 use std::collections::VecDeque;
 
@@ -21,7 +21,7 @@ fn exit_room() -> RoomId {
 
 /// A fresh run moved to the exit room, slot 0 standing on its extraction pad.
 fn on_the_pad(run: Run) -> SimState {
-    let mut state = SimState::new(SEED);
+    let mut state = SimState::new(SEED, RunConfig::default());
     state.run = run;
     let (x, y) = DERELICT
         .room(exit_room())
@@ -69,7 +69,7 @@ fn restart_from_won_starts_a_fresh_run() {
     let mut restart = TickInputs::default();
     restart.players[0].buttons = Buttons::RESTART;
     assert_eq!(step(&mut state, &restart).events, [Event::Restarted]);
-    let mut fresh = SimState::new(Rng::next_seed(SEED));
+    let mut fresh = SimState::new(Rng::next_seed(SEED), RunConfig::default());
     fresh.tick = state.tick;
     assert_eq!(state, fresh);
 }
@@ -220,7 +220,7 @@ fn scripted_input(state: &SimState) -> Option<PlayerInput> {
 /// topped back up to full HP every tick, so the run can't die.
 #[test]
 fn a_scripted_player_clears_every_room_and_extracts() {
-    let mut state = SimState::new(SEED);
+    let mut state = SimState::new(SEED, RunConfig::default());
     let mut events = Vec::new();
     let budget = 60 * 60 * 5; // 5 minutes of play
     for _ in 0..budget {

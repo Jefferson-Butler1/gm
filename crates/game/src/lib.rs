@@ -9,7 +9,7 @@ mod stats;
 
 use controls::{Controls, Scheme, Viewport};
 use render::Renderer;
-use sim::{Run, SimState, TICK_HZ, TickInputs};
+use sim::{Run, RunConfig, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -147,7 +147,7 @@ impl Game {
         }
         .map_err(GameError::Render)?;
         eprintln!("[gm] Game::new {viewport:?} seed={seed:#018x}");
-        let state = SimState::new(seed);
+        let state = SimState::new(seed, RunConfig::default());
         Ok(Arc::new(Self {
             inner: Mutex::new(Inner {
                 renderer,

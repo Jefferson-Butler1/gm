@@ -34,7 +34,7 @@ const ROLLING_SCALE: f32 = 0.6;
 const DEAD_COLOR: [f32; 4] = [0.35, 0.35, 0.4, 1.0];
 const HURT_COLOR: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
 /// Post-hit invulnerability blinks the player: half alpha every other `BLINK_TICKS`.
-const BLINK_TICKS: u8 = 4;
+const BLINK_TICKS: u16 = 4;
 const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
 const SHOOTER_COLOR: [f32; 4] = [0.7, 0.4, 1.0, 1.0];
 /// A shooter's aim telegraph: a white core swelling to this fraction of its body.
@@ -407,6 +407,7 @@ impl Renderer {
             self.push_room(room, current.run.doors_locked(), pad_live);
         }
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
+        let telegraph = current.config.tuning.shooter_telegraph;
         for (id, e) in current.enemies.iter() {
             if !e.active() {
                 self.push_telegraph(e, radius, alpha);
@@ -420,10 +421,10 @@ impl Renderer {
                 enemy_color(e)
             };
             self.push_world(pos, [radius, radius], color, CIRCLE);
-            if let Some(left) = e.aiming() {
+            if let Some(left) = e.aiming(telegraph) {
                 // 0 -> 1 over the telegraph, interpolated like `push_telegraph`.
-                let aimed = (1.0 - (f32::from(left) - alpha) / f32::from(sim::SHOOTER_AIM_TICKS))
-                    .clamp(0.0, 1.0);
+                let aimed =
+                    (1.0 - (f32::from(left) - alpha) / f32::from(telegraph)).clamp(0.0, 1.0);
                 let core = radius * AIM_CORE * aimed;
                 self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
             }

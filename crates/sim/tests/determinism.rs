@@ -1,32 +1,35 @@
 //! Determinism checks (issue #5): replay, rollback-every-tick, and a committed golden
 //! checksum that CI verifies on both `x86_64` and `aarch64`.
 
-use sim::{Buttons, Event, PlayerInput, Rng, RoomId, Run, SimState, TickEvents, TickInputs, step};
+use sim::{
+    Buttons, Event, PlayerInput, Rng, RoomId, Run, RunConfig, SimState, TickEvents, TickInputs,
+    Tuning, step,
+};
 use std::ops::Range;
 
 const SEED: u64 = 0x5EED;
-const TICKS: u64 = 1500;
+const TICKS: u64 = 2700;
 /// Ticks when the party holds only RESTART (the scripted start, then after the death).
 /// RESTART also abandons a live run, so each window presses it on its last tick only:
 /// once the death pause is over, not every tick after the run has restarted.
-const RESTARTS: [Range<u64>; 2] = [0..40, 900..950];
+const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
 /// Ticks when the party walks from the start cell out of the airlock's east exit and into
 /// the cargo hold's encounter: [`WALK_NORTH`] ticks up, then east.
-const WALK_IN: [Range<u64>; 2] = [40..100, 950..1010];
-const WALK_NORTH: u64 = 8;
+const WALK_IN: [Range<u64>; 2] = [40..125, 1250..1335];
+const WALK_NORTH: u64 = 13;
 /// Both players stand idle from just after entering the cargo hold, so its shooter lives
 /// long enough to fire and the rushers kill them.
-const STAND_STILL: Range<u64> = 110..900;
+const STAND_STILL: Range<u64> = 130..1200;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
-const AUTO_FIGHT: Range<u64> = 1010..TICKS;
+const AUTO_FIGHT: Range<u64> = 1335..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x80e5_3197_ee84_df4c;
+const GOLDEN_TRACE: u64 = 0x0ceb_6d39_ec1b_9c80;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
-/// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and
+/// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is pressed on ~1 tick in 32 so rolls, dropped dodges and
 /// walking all show up; FIRE is held about half the time.
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
@@ -41,7 +44,7 @@ fn script() -> Vec<TickInputs> {
                     aim: u16::from_le_bytes([bits[2], bits[3]]),
                     assist: bits[5],
                     buttons: Buttons(bits[4] & !Buttons::DODGE.0 & !Buttons::RESTART.0 & 0b1_1111)
-                        | if bits[6] < 32 {
+                        | if bits[6] < 8 {
                             Buttons::DODGE
                         } else {
                             Buttons::default()
@@ -89,7 +92,7 @@ fn script() -> Vec<TickInputs> {
 
 /// Two players, starting dead so the script exercises the restart transition.
 fn start() -> SimState {
-    let mut state = SimState::new(SEED);
+    let mut state = SimState::new(SEED, RunConfig::default());
     state.players[1] = state.players[0];
     state.run = Run::Dead {
         room: RoomId(0),
@@ -151,14 +154,16 @@ fn golden_trace_matches_committed_value() {
 #[test]
 fn script_exercises_movement_dodge_combat_and_rooms() {
     let mut state = start();
-    let start_pos = SimState::new(SEED).players[0].unwrap().pos;
+    let start_pos = SimState::new(SEED, RunConfig::default()).players[0]
+        .unwrap()
+        .pos;
     let (mut rolls, mut moved, mut sealed) = (0, false, false);
     let (mut enemy_shots, mut enemy_bullets) = (0, 0);
     let mut events = Vec::new();
     for i in script() {
         events.extend(step(&mut state, &i).events);
         if let Some(p) = state.players[0] {
-            rolls += usize::from(p.roll_ticks == sim::ROLL_TICKS);
+            rolls += usize::from(p.roll_ticks == Tuning::NORMAL.roll_ticks);
             moved |= p.pos != start_pos;
         }
         sealed |= state.run.doors_locked();

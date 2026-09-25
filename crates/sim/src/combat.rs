@@ -1,9 +1,10 @@
 //! Gun, bullets, and the two enemies (melee rusher, ranged shooter), colliding with the
 //! room's tiles. Systems run in a fixed order over arenas iterated in slot order, so every
-//! tie resolves the same way on every machine. Tuning values are first guesses for combat
-//! tuning (issue #15).
+//! tie resolves the same way on every machine. Speeds and timings come from the run's
+//! [`RunConfig`](crate::RunConfig) (issue #15).
 
 use crate::arena::Id;
+use crate::config::per_tick;
 use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
 use crate::room::{Body, Tiles};
 use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
@@ -11,8 +12,6 @@ use serde::{Deserialize, Serialize};
 
 pub type EnemyId = Id<Enemy>;
 
-/// Bullet speed: 15 pt/tick = 900 pt/s.
-const BULLET_SPEED: Fx = Fx::from_bits(15 << 32);
 /// Bullets vanish after 60 ticks = 1 s if they hit nothing.
 const BULLET_TICKS: u8 = 60;
 /// Hitbox radius.
@@ -20,34 +19,27 @@ pub const BULLET_RADIUS: Fx = Fx::from_bits(4 << 32);
 /// Bullets leave the gun this far ahead of the player's center.
 const MUZZLE: Fx = Fx::from_bits(22 << 32);
 
-/// Enemy bullet speed: 5 pt/tick = 300 pt/s, slow enough to read and sidestep.
-const ENEMY_BULLET_SPEED: Fx = Fx::from_bits(5 << 32);
-/// Enemy bullets vanish after 150 ticks = 2.5 s (750 pt) if they hit nothing.
-const ENEMY_BULLET_TICKS: u8 = 150;
+/// Enemy bullets vanish after 240 ticks = 4 s (1040 pt at Normal speed) if they hit
+/// nothing.
+const ENEMY_BULLET_TICKS: u8 = 240;
 /// Hitbox radius; bigger than the player's bullets so they read as a threat.
 pub const ENEMY_BULLET_RADIUS: Fx = Fx::from_bits(5 << 32);
 
 /// Hitbox radius of every enemy; also its half-extent against tiles.
 pub const ENEMY_RADIUS: Fx = Fx::from_bits(13 << 32);
-pub const RUSHER_HP: u8 = 3;
-/// Rusher chase speed: 3 pt/tick = 180 pt/s (the player runs 420).
-const RUSHER_SPEED: Fx = Fx::from_bits(3 << 32);
+/// Enemy HP is in pistol-damage units: Normal's 5 per hit kills a rusher in 2 hits.
+pub const RUSHER_HP: u8 = 10;
 /// Ticks after a rusher lands a contact hit before it can land another: 0.5 s.
 const CONTACT_COOLDOWN: u8 = 30;
 
-pub const SHOOTER_HP: u8 = 2;
+/// 2 hits at Normal damage.
+pub const SHOOTER_HP: u8 = 10;
 /// Shooter walk speed: 2 pt/tick = 120 pt/s.
 const SHOOTER_SPEED: Fx = Fx::from_bits(2 << 32);
 /// Shooters back off inside this range of their target...
 const SHOOTER_NEAR: Fx = Fx::from_bits(120 << 32);
 /// ...close in beyond this one, and strafe in between.
 const SHOOTER_FAR: Fx = Fx::from_bits(200 << 32);
-/// Ticks from one shot to the next: 96 = 1.6 s, the last [`SHOOTER_AIM_TICKS`] of it
-/// standing still, aiming.
-pub const SHOOTER_RELOAD: u8 = 96;
-/// The shot telegraph: 36 ticks = 0.6 s. It only starts with a clear line of fire, and
-/// once started it always ends in a shot (at wherever the target is by then).
-pub const SHOOTER_AIM_TICKS: u8 = 36;
 /// Spawned shooters wait up to this many extra ticks before their first shot, so a wave
 /// doesn't fire in unison.
 pub const SHOOTER_STAGGER: u32 = 48;
@@ -109,9 +101,11 @@ pub enum Behavior {
     Rusher { contact_cooldown: u8 },
     /// Keeps its distance, strafing, and shoots at the nearest living player.
     Shooter {
-        /// Ticks until the next shot; aiming (standing still, telegraphing) at or below
-        /// [`SHOOTER_AIM_TICKS`].
-        shot_timer: u8,
+        /// Ticks until the next shot. The run's shot interval (`RunConfig`) restarts it;
+        /// its last `shooter_telegraph` ticks are the shot telegraph: standing still,
+        /// aiming. The telegraph only starts with a clear line of fire, and once started
+        /// always ends in a shot (at wherever the target is by then).
+        shot_timer: u16,
         /// Strafe direction, +1 or -1 turns (as [`Enemy::steer`]); flips after each shot
         /// and when blocked.
         strafe: i8,
@@ -134,17 +128,17 @@ impl Enemy {
         }
     }
 
-    /// A shooter arriving at `pos`, which starts aiming `delay` ticks later than a full
-    /// reload after its telegraph.
+    /// A shooter arriving at `pos`, which fires its first shot `interval` + `delay`
+    /// ticks after its spawn telegraph.
     #[must_use]
-    pub const fn shooter(pos: FxVec2, delay: u8) -> Self {
+    pub const fn shooter(pos: FxVec2, interval: u16, delay: u16) -> Self {
         Self {
             pos,
             hp: SHOOTER_HP,
             spawn_ticks: SPAWN_TELEGRAPH_TICKS,
             steer: 0,
             behavior: Behavior::Shooter {
-                shot_timer: SHOOTER_RELOAD.saturating_add(delay),
+                shot_timer: interval.saturating_add(delay),
                 strafe: 1,
             },
         }
@@ -156,13 +150,12 @@ impl Enemy {
         self.spawn_ticks == 0
     }
 
-    /// Shot telegraph left, `SHOOTER_AIM_TICKS..=1` (it fires at 0); `None` when not aiming.
+    /// Shot telegraph left, `telegraph..=1` (it fires at 0); `None` when not aiming.
+    /// `telegraph` is the run's `shooter_telegraph`.
     #[must_use]
-    pub const fn aiming(&self) -> Option<u8> {
+    pub const fn aiming(&self, telegraph: u16) -> Option<u16> {
         match self.behavior {
-            Behavior::Shooter { shot_timer, .. } if shot_timer <= SHOOTER_AIM_TICKS => {
-                Some(shot_timer)
-            }
+            Behavior::Shooter { shot_timer, .. } if shot_timer <= telegraph => Some(shot_timer),
             Behavior::Shooter { .. } | Behavior::Rusher { .. } => None,
         }
     }
@@ -190,6 +183,7 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
 }
 
 fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut TickEvents) {
+    let tuning = state.config.tuning;
     let targets: Vec<FxVec2> = state
         .enemies
         .iter()
@@ -200,11 +194,11 @@ fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut
         let Some(player) = player.as_mut().filter(|p| p.alive()) else {
             continue;
         };
-        if let Some(angle) = player.update(*input, &targets, tiles) {
+        if let Some(angle) = player.update(*input, &targets, tiles, &tuning) {
             let dir = trig::unit(angle);
             state.bullets.insert(Bullet {
                 pos: add(player.pos, scale(dir, MUZZLE)),
-                vel: scale(dir, BULLET_SPEED),
+                vel: scale(dir, per_tick(tuning.bullet_speed)),
                 ticks_left: BULLET_TICKS,
             });
             events.events.push(Event::ShotFired { slot });
@@ -222,6 +216,7 @@ fn fly(bullet: &mut Bullet, tiles: Tiles) -> bool {
 
 fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
     // Each bullet hits at most the first live enemy it overlaps, in slot order.
+    let damage = state.config.tuning.damage;
     let enemies = &mut state.enemies;
     state.bullets.retain(|_, bullet| {
         if !fly(bullet, tiles) {
@@ -234,7 +229,7 @@ fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         else {
             return true;
         };
-        e.hp = e.hp.saturating_sub(1);
+        e.hp = e.hp.saturating_sub(damage);
         events.events.push(Event::EnemyHit { enemy });
         if e.hp == 0 {
             events.events.push(Event::EnemyKilled { enemy, pos: e.pos });
@@ -247,6 +242,7 @@ fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
 /// Enemy bullets hurt the first player (in slot order) they overlap who can take the hit.
 /// Invulnerable players (rolling, or just hurt) don't stop them: dodged bullets fly on.
 fn enemy_bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
+    let hurt_ticks = state.config.tuning.hurt_ticks;
     let players = &mut state.players;
     state.enemy_bullets.retain(|_, bullet| {
         if !fly(bullet, tiles) {
@@ -255,7 +251,8 @@ fn enemy_bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         let reach = ENEMY_BULLET_RADIUS.saturating_add(PLAYER_RADIUS);
         let hit = players.iter_mut().enumerate().find_map(|(slot, player)| {
             let player = player.as_mut()?;
-            (overlaps(bullet.pos, player.pos, reach) && player.hurt()).then_some((slot, player))
+            (overlaps(bullet.pos, player.pos, reach) && player.hurt(hurt_ticks))
+                .then_some((slot, player))
         });
         let Some((slot, player)) = hit else {
             return true;
@@ -269,6 +266,9 @@ fn enemy_bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
 }
 
 fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
+    let config = state.config;
+    let telegraph = config.tuning.shooter_telegraph;
+    let rusher_speed = per_tick(config.tuning.rusher_speed);
     let players: Vec<FxVec2> = state
         .players
         .iter()
@@ -288,27 +288,27 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         match &mut enemy.behavior {
             Behavior::Rusher { contact_cooldown } => {
                 *contact_cooldown = contact_cooldown.saturating_sub(1);
-                enemy.pos = steer(tiles, enemy.pos, angle, RUSHER_SPEED, &mut enemy.steer);
+                enemy.pos = steer(tiles, enemy.pos, angle, rusher_speed, &mut enemy.steer);
             }
             Behavior::Shooter { shot_timer, strafe } => {
-                if *shot_timer <= SHOOTER_AIM_TICKS {
+                if *shot_timer <= telegraph {
                     // Aiming: stand still, then fire at wherever the target is now.
                     *shot_timer = shot_timer.saturating_sub(1);
                     if *shot_timer == 0 {
                         let dir = trig::unit(angle);
                         state.enemy_bullets.insert(Bullet {
                             pos: add(enemy.pos, scale(dir, ENEMY_RADIUS)),
-                            vel: scale(dir, ENEMY_BULLET_SPEED),
+                            vel: scale(dir, per_tick(config.enemy_bullet_speed())),
                             ticks_left: ENEMY_BULLET_TICKS,
                         });
-                        *shot_timer = SHOOTER_RELOAD;
+                        *shot_timer = config.shooter_interval();
                         *strafe = strafe.saturating_neg();
                     }
                     continue;
                 }
                 let clear = line_of_fire(tiles, enemy.pos, target);
                 // Only start aiming with a clear line of fire; otherwise keep repositioning.
-                if *shot_timer > SHOOTER_AIM_TICKS.saturating_add(1) || clear {
+                if *shot_timer > telegraph.saturating_add(1) || clear {
                     *shot_timer = shot_timer.saturating_sub(1);
                 }
                 enemy.pos = if !clear || !overlaps(enemy.pos, target, SHOOTER_FAR) {
@@ -350,7 +350,7 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         for (slot, player) in state.players.iter_mut().enumerate() {
             if let Some(player) = player
                 && overlaps(player.pos, enemy.pos, reach)
-                && player.hurt()
+                && player.hurt(config.tuning.hurt_ticks)
             {
                 *contact_cooldown = CONTACT_COOLDOWN;
                 events.events.push(Event::PlayerHit { slot });

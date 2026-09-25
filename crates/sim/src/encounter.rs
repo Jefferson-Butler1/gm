@@ -144,7 +144,8 @@ fn spawn(state: &mut SimState, placements: &[Placement]) {
             EnemyKind::Rusher => Enemy::rusher(pos),
             EnemyKind::Shooter => {
                 let delay = state.rng.below(SHOOTER_STAGGER);
-                Enemy::shooter(pos, u8::try_from(delay).unwrap_or(0))
+                let delay = u16::try_from(delay).unwrap_or(0);
+                Enemy::shooter(pos, state.config.shooter_interval(), delay)
             }
         });
     }

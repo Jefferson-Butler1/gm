@@ -4,17 +4,19 @@
 use sim::room::{Body, Tiles, cell_center, cell_of};
 use sim::{
     Behavior, Bullet, Buttons, DEATH_TICKS, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, MAX_HP,
-    PlayerInput, RUSHER_HP, Rng, RoomId, Run, SHOOTER_AIM_TICKS, SPAWN_TELEGRAPH_TICKS, SimState,
-    TickInputs, step,
+    PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig, SPAWN_TELEGRAPH_TICKS, SimState,
+    TickInputs, Tuning, step,
 };
 
 const SEED: u64 = 7;
 
 const DOWN: u16 = 16384;
+/// The shot telegraph.
+const AIM_TICKS: u16 = Tuning::NORMAL.shooter_telegraph;
 
 /// A fresh run: the party alone in the empty start room.
 fn empty_arena() -> SimState {
-    SimState::new(SEED)
+    SimState::new(SEED, RunConfig::default())
 }
 
 /// A point (`x`, `y`) from where the player starts.
@@ -62,7 +64,7 @@ fn held_fire_kills_a_rusher() {
     let events = run(&mut state, 40, &press(Buttons::FIRE)); // aim 0 = straight right
     let hits = count(&events, |e| matches!(e, Event::EnemyHit { .. }));
     let kills = count(&events, |e| matches!(e, Event::EnemyKilled { .. }));
-    assert_eq!((hits, kills), (usize::from(RUSHER_HP), 1), "{events:?}");
+    assert_eq!((hits, kills), (2, 1), "rushers die in 2 hits: {events:?}");
     assert!(state.enemies.is_empty());
     assert_eq!(
         state.players[0].unwrap().hp,
@@ -88,7 +90,7 @@ fn dodge_iframes_block_contact_damage() {
     let mut events = run(&mut state, 1, &press(Buttons::DODGE));
     events.extend(run(
         &mut state,
-        usize::from(sim::ROLL_TICKS) - 1,
+        usize::from(Tuning::NORMAL.roll_ticks) - 1,
         &TickInputs::default(),
     ));
     assert!(events.is_empty(), "{events:?}");
@@ -118,7 +120,7 @@ fn death_goes_to_dead_and_restart_starts_a_fresh_run() {
     assert!(events.is_empty(), "{events:?}");
 
     assert_eq!(run(&mut state, 1, &restart), [Event::Restarted]);
-    let mut fresh = SimState::new(Rng::next_seed(SEED));
+    let mut fresh = SimState::new(Rng::next_seed(SEED), RunConfig::default());
     fresh.tick = state.tick;
     assert_eq!(state, fresh);
 }
@@ -135,15 +137,18 @@ fn restart_now(state: &mut SimState) {
 fn restart_abandons_a_live_run_at_once() {
     let mut state = arena_with_rusher(40);
     state.cleared = 0b1;
-    assert_eq!(run(&mut state, 1, &press(Buttons::RESTART)), [Event::Restarted]);
-    let mut fresh = SimState::new(Rng::next_seed(SEED));
+    assert_eq!(
+        run(&mut state, 1, &press(Buttons::RESTART)),
+        [Event::Restarted]
+    );
+    let mut fresh = SimState::new(Rng::next_seed(SEED), RunConfig::default());
     fresh.tick = state.tick;
     assert_eq!(state, fresh);
 }
 
 #[test]
 fn each_restart_resets_the_rooms_and_derives_the_next_run_seed() {
-    let mut state = SimState::new(SEED);
+    let mut state = SimState::new(SEED, RunConfig::default());
     // As if the party had cleared the airlock and died in the cargo hold.
     state.cleared = 0b1;
     state.run = Run::Dead {
@@ -153,7 +158,7 @@ fn each_restart_resets_the_rooms_and_derives_the_next_run_seed() {
     restart_now(&mut state);
     let second_seed = state.seed;
     assert_eq!(second_seed, Rng::next_seed(SEED));
-    let mut fresh = SimState::new(second_seed);
+    let mut fresh = SimState::new(second_seed, RunConfig::default());
     fresh.tick = state.tick;
     assert_eq!(state, fresh, "back in the start room, nothing cleared");
     restart_now(&mut state);
@@ -253,16 +258,17 @@ fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
     let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
     let mut state = rushers_at(column);
     let mut last: Vec<FxVec2> = Vec::new();
-    for tick in 0..300 {
+    for tick in 0..360 {
         step(&mut state, &TickInputs::default());
         let closest = closest_pair(&state);
         assert!(closest >= min, "tick {tick}: {closest}");
         let now: Vec<FxVec2> = state.enemies.iter().map(|(_, e)| e.pos).collect();
-        // Settled by 240: nobody moves 1/32 pt a tick (sub-pixel; no visible jitter).
-        if tick >= 240 {
+        // Settled by 300: nobody moves 1/16 pt a tick (sub-pixel; no visible jitter). At
+        // the 150 pt/s rusher speed the ring creeps ~0.04 pt a tick instead of freezing.
+        if tick >= 300 {
             for (a, b) in now.iter().zip(&last) {
                 let moved = a.x.abs_diff(b.x).saturating_add(a.y.abs_diff(b.y));
-                assert!(moved < Fx::from_bits(1 << 27), "tick {tick}: moved {moved}");
+                assert!(moved < Fx::from_bits(1 << 28), "tick {tick}: moved {moved}");
             }
         }
         last = now;
@@ -300,15 +306,15 @@ fn separation_never_pushes_a_rusher_into_walls_or_pits() {
 // --- shooter, enemy bullets, steering -------------------------------------------------
 
 /// An empty arena plus one active shooter at `at`, `ticks` from starting to aim.
-fn arena_with_shooter(at: FxVec2, ticks: u8) -> SimState {
+fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
     let mut state = empty_arena();
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
         behavior: Behavior::Shooter {
-            shot_timer: SHOOTER_AIM_TICKS.saturating_add(ticks),
+            shot_timer: AIM_TICKS.saturating_add(ticks),
             strafe: 1,
         },
-        ..Enemy::shooter(at, 0)
+        ..Enemy::shooter(at, 0, 0)
     });
     state
 }
@@ -324,11 +330,11 @@ fn shooter_telegraphs_stands_still_then_fires_a_bullet_that_hurts() {
     run(&mut state, 1, &TickInputs::default());
     let aiming_at = first_enemy(&state).unwrap().pos;
     assert_eq!(
-        first_enemy(&state).unwrap().aiming(),
-        Some(SHOOTER_AIM_TICKS)
+        first_enemy(&state).unwrap().aiming(AIM_TICKS),
+        Some(AIM_TICKS)
     );
 
-    let aim_rest = usize::from(SHOOTER_AIM_TICKS) - 1;
+    let aim_rest = usize::from(AIM_TICKS) - 1;
     let events = run(&mut state, aim_rest, &TickInputs::default());
     assert!(events.is_empty(), "{events:?}");
     assert!(state.enemy_bullets.is_empty(), "not yet");
@@ -340,7 +346,11 @@ fn shooter_telegraphs_stands_still_then_fires_a_bullet_that_hurts() {
 
     run(&mut state, 1, &TickInputs::default());
     assert_eq!(state.enemy_bullets.len(), 1, "fired");
-    assert_eq!(first_enemy(&state).unwrap().aiming(), None, "reloading");
+    assert_eq!(
+        first_enemy(&state).unwrap().aiming(AIM_TICKS),
+        None,
+        "reloading"
+    );
 
     let events = run(&mut state, 40, &TickInputs::default());
     assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
@@ -413,7 +423,7 @@ fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
     state.players[0].as_mut().unwrap().pos = row(80);
     run(&mut state, 1, &TickInputs::default());
     assert_eq!(
-        first_enemy(&state).unwrap().aiming(),
+        first_enemy(&state).unwrap().aiming(AIM_TICKS),
         None,
         "no line of fire"
     );

@@ -6,8 +6,8 @@ use sim::room::{
     Placement, PrototypeRoom, RoomAction, RoomError, RoomTrigger, cell_center,
 };
 use sim::{
-    Buttons, DERELICT, Event, Fx, FxVec2, PLAYER_RADIUS, PlayerInput, RoomId, Run, SimState,
-    TickInputs, step,
+    Buttons, DERELICT, Event, Fx, FxVec2, PLAYER_RADIUS, PlayerInput, RoomId, Run, RunConfig,
+    SimState, TickInputs, step,
 };
 
 const SEED: u64 = 3;
@@ -282,7 +282,7 @@ fn walk_to_next_room(state: &mut SimState, bucket: u8) -> Option<RoomId> {
 
 /// A fresh run with slot 0 moved to `pos` in the airlock.
 fn airlock_at(pos: FxVec2) -> SimState {
-    let mut state = SimState::new(SEED);
+    let mut state = SimState::new(SEED, RunConfig::default());
     if let Some(player) = &mut state.players[0] {
         player.pos = pos;
     }
