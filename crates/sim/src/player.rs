@@ -91,6 +91,13 @@ impl Player {
         self.fall_ticks > 0
     }
 
+    /// What enemies chase, aim at and crowd: alive and not falling. A falling player is
+    /// out of the fight until it respawns.
+    #[must_use]
+    pub const fn targetable(&self) -> bool {
+        self.alive() && !self.falling()
+    }
+
     /// Damage is ignored while this is set: roll i-frames, post-hit invulnerability, and
     /// falling.
     #[must_use]

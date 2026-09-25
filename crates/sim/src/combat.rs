@@ -59,6 +59,9 @@ const PLAYER_SPACING: Fx = Fx::from_bits(
         .saturating_add(ENEMY_RADIUS.to_bits())
         .saturating_sub(3 << 32),
 );
+/// A pit respawn shoves active enemies out to this far from the player's center: two
+/// cells, so nothing is in contact reach (27 pt) or a step away when it lands.
+const RESPAWN_CLEARANCE: Fx = Fx::from_bits(64 << 32);
 /// Separation passes per tick; each pass shrinks what a crowd's pressure leaves over.
 const SEPARATION_PASSES: u8 = 8;
 const HALF: Fx = Fx::from_bits(1 << 31);
@@ -121,9 +124,9 @@ impl Pattern {
 /// Each enemy type's own state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Behavior {
-    /// Chases the nearest living player and hurts on contact.
+    /// Chases the nearest targetable player and hurts on contact.
     Rusher { contact_cooldown: u8 },
-    /// Keeps its distance, strafing, and shoots at the nearest living player.
+    /// Keeps its distance, strafing, and shoots at the nearest targetable player.
     Shooter {
         pattern: Pattern,
         /// Ticks until the next shot. The run's interval for the pattern restarts it;
@@ -190,9 +193,9 @@ impl Enemy {
     }
 }
 
-/// One live tick, in order: players (move, fall, fire), their bullets, enemies (move, fire,
-/// separate, contact, telegraph countdown), enemy bullets, the death check, then the room
-/// (waves, exits, extraction).
+/// One live tick, in order: players (move, fall, respawn, fire), their bullets, enemies
+/// (move, fire, separate, contact, telegraph countdown), enemy bullets, the death check,
+/// then the room (waves, exits, extraction).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
     let Some(tiles) = state.tiles() else {
         return;
@@ -223,7 +226,11 @@ fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut
         let Some(player) = player.as_mut().filter(|p| p.alive()) else {
             continue;
         };
+        let was_falling = player.falling();
         let shot = player.update(*input, &targets, tiles, &tuning);
+        if was_falling && !player.falling() {
+            clear_respawn(&mut state.enemies, player.pos, tiles);
+        }
         // A fall starts at the full `fall_ticks` (at least 1), and only ever this way.
         if player.fall_ticks == tuning.fall_ticks {
             events.events.push(Event::PlayerFell { slot });
@@ -239,6 +246,20 @@ fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut
                 ticks_left: BULLET_TICKS,
             });
             events.events.push(Event::ShotFired { slot });
+        }
+    }
+}
+
+/// Pushes every active enemy within [`RESPAWN_CLEARANCE`] of a pit respawn at `at`
+/// straight out to that distance, sliding through `tiles` in quarter steps (each under a
+/// cell, as `slide` needs), so one pinned against a wall or pit stays short of it. The
+/// post-hit invulnerability the respawn grants covers whatever is left close.
+fn clear_respawn(enemies: &mut Arena<Enemy>, at: FxVec2, tiles: Tiles) {
+    const QUARTER: Fx = Fx::from_bits(1 << 30);
+    for (_, enemy) in enemies.iter_mut().filter(|(_, e)| e.active()) {
+        let step = scale(push_out(at, enemy.pos, RESPAWN_CLEARANCE), QUARTER);
+        for _ in 0..4 {
+            enemy.pos = tiles.slide(enemy.pos, ENEMY_RADIUS, step, Body::Walker);
         }
     }
 }
@@ -310,11 +331,12 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         .players
         .iter()
         .flatten()
-        .filter(|p| p.alive())
+        .filter(|p| p.targetable())
         .map(|p| p.pos)
         .collect();
     for (_, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
-        // Nearest living player; `min_by_key` keeps the first, so ties go to the lower slot.
+        // Nearest targetable player; `min_by_key` keeps the first, so ties go to the lower
+        // slot. With none (all falling or dead), enemies hold still, timers paused.
         let Some(&target) = players.iter().min_by_key(|&&p| dist_sq(p, enemy.pos)) else {
             continue;
         };
@@ -506,7 +528,8 @@ fn line_of_fire(tiles: Tiles, from: FxVec2, to: FxVec2) -> bool {
     })
 }
 
-/// Resolves overlaps among active enemies: pushes them apart and out of living players.
+/// Resolves overlaps among active enemies: pushes them apart and out of targetable
+/// players.
 /// Every push slides through `tiles` like a walk, so nobody is shoved into a wall, pit,
 /// void or sealed door; a body pinned against one leaves the rest of the correction to
 /// later passes and to its neighbors. Pairs resolve in slot order, each pass building on
@@ -517,7 +540,7 @@ fn separate(state: &mut SimState, tiles: Tiles) {
         .players
         .iter()
         .flatten()
-        .filter(|p| p.alive())
+        .filter(|p| p.targetable())
         .map(|p| p.pos)
         .collect();
     let mut bodies: Vec<FxVec2> = state

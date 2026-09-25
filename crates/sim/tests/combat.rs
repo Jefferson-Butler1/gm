@@ -482,6 +482,58 @@ fn falling_into_a_pit_on_the_last_hit_point_is_a_death() {
     assert!(matches!(state.run, Run::Dead { .. }), "{:?}", state.run);
 }
 
+#[test]
+fn enemies_ignore_a_falling_player_and_its_respawn_pushes_them_back() {
+    let mut state = empty_arena();
+    // Mid-fall into the airlock's pit (cells 3..=4, 3), respawning at cell (8, 6).
+    let respawn = cell_center(8, 6);
+    let player = state.players[0].as_mut().unwrap();
+    player.pos = cell_center(3, 3);
+    player.fall_ticks = 20;
+    player.solid = respawn;
+    // A rusher 20 pt from the respawn spot, and a shooter.
+    let near = FxVec2 {
+        x: respawn.x.saturating_add(Fx::from_num(20)),
+        ..respawn
+    };
+    let rusher = state.enemies.insert(Enemy {
+        spawn_ticks: 0,
+        ..Enemy::rusher(near)
+    });
+    state.enemies.insert(Enemy {
+        spawn_ticks: 0,
+        ..Enemy::shooter(cell_center(10, 2), Pattern::Aimed, &RunConfig::default(), 0)
+    });
+    let enemies_at = |s: &SimState| s.enemies.iter().map(|(_, e)| e.pos).collect::<Vec<_>>();
+    let before = enemies_at(&state);
+    run(&mut state, 19, &TickInputs::default());
+    assert!(state.players[0].unwrap().falling());
+    assert_eq!(
+        enemies_at(&state),
+        before,
+        "nobody chases or crowds the pit"
+    );
+    assert!(state.enemy_bullets.is_empty(), "nobody fires at it");
+
+    step(&mut state, &TickInputs::default());
+    let player = state.players[0].unwrap();
+    assert!(!player.falling() && player.pos == respawn);
+    let gap = state
+        .enemies
+        .get(rusher)
+        .map(|e| sub_len(e.pos, respawn))
+        .unwrap();
+    // Pushed to two cells (64 pt), then it took its first 2.5 pt step back in.
+    assert!(gap >= Fx::from_num(61), "rusher {gap} pt from the respawn");
+}
+
+const fn sub_len(a: FxVec2, b: FxVec2) -> Fx {
+    let (dx, dy) = (a.x.saturating_sub(b.x), a.y.saturating_sub(b.y));
+    dx.saturating_mul(dx)
+        .saturating_add(dy.saturating_mul(dy))
+        .sqrt()
+}
+
 // --- spread shooter (the pattern experiment) ------------------------------------------
 
 #[test]
