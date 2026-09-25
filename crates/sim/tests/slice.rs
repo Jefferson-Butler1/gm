@@ -287,11 +287,17 @@ fn a_scripted_player_clears_every_room_and_extracts() {
         .iter()
         .filter(|e| matches!(e, Event::PlayerHit { .. }))
         .count();
+    let falls = events
+        .iter()
+        .filter(|e| matches!(e, Event::PlayerFell { .. }))
+        .count();
     println!(
         "won after {} ticks: cleared {cleared:?}, {kills} kills, took {hits} hits, \
-         {auto_vents} auto vents, {manual_vents} manual vents",
+         {falls} falls, {auto_vents} auto vents, {manual_vents} manual vents",
         state.tick
     );
+    // It paths around pits (as enemies do), so the HP top-up never hides a fall.
+    assert_eq!(falls, 0);
     assert!(
         auto_vents >= 5 && manual_vents >= 1,
         "{auto_vents} {manual_vents}"

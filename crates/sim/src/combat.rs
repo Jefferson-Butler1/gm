@@ -190,7 +190,7 @@ impl Enemy {
     }
 }
 
-/// One live tick, in order: players (move, fire), their bullets, enemies (move, fire,
+/// One live tick, in order: players (move, fall, fire), their bullets, enemies (move, fire,
 /// separate, contact, telegraph countdown), enemy bullets, the death check, then the room
 /// (waves, exits, extraction).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
@@ -223,7 +223,15 @@ fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut
         let Some(player) = player.as_mut().filter(|p| p.alive()) else {
             continue;
         };
-        if let Some(angle) = player.update(*input, &targets, tiles, &tuning) {
+        let shot = player.update(*input, &targets, tiles, &tuning);
+        // A fall starts at the full `fall_ticks` (at least 1), and only ever this way.
+        if player.fall_ticks == tuning.fall_ticks {
+            events.events.push(Event::PlayerFell { slot });
+            if !player.alive() {
+                events.events.push(Event::PlayerDied { slot });
+            }
+        }
+        if let Some(angle) = shot {
             let dir = trig::unit(angle);
             state.bullets.insert(Bullet {
                 pos: add(player.pos, scale(dir, MUZZLE)),

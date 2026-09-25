@@ -26,7 +26,7 @@ pub const MAX_ROOMS: usize = 64;
 pub enum Cell {
     Floor,
     Wall,
-    /// Blocks walkers, not bullets.
+    /// Blocks enemies, not bullets; players walking onto one fall in.
     Pit,
     Void,
 }
@@ -249,7 +249,8 @@ pub enum RoomError {
         x: usize,
         y: usize,
     },
-    /// Floor must be one 4-connected region.
+    /// Floor must be one 4-connected region without crossing pits: enemies can't cross
+    /// them, and players only by falling in or rolling over.
     UnreachableFloor,
     /// A room that can seal must end its `OnEnemiesCleared` actions unsealed.
     SealsForever,
@@ -767,10 +768,15 @@ impl Derelict {
     }
 }
 
-/// What is moving through the tiles: bodies walk, shots fly over pits.
+/// What is moving through the tiles. Walls, void and sealed doors stop everything; pits
+/// differ by body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Body {
+    /// Enemies: pits stop them.
     Walker,
+    /// Players walk onto pits, and fall in (see `Player`).
+    Player,
+    /// Flies over pits.
     Shot,
 }
 
@@ -788,9 +794,15 @@ impl Tiles {
             return true;
         }
         match (self.room.cell(x, y), body) {
-            (Cell::Floor, _) | (Cell::Pit, Body::Shot) => false,
+            (Cell::Floor, _) | (Cell::Pit, Body::Player | Body::Shot) => false,
             (Cell::Wall | Cell::Void, _) | (Cell::Pit, Body::Walker) => true,
         }
+    }
+
+    /// Whether `p` is over a pit.
+    #[must_use]
+    pub fn pit_at(self, p: FxVec2) -> bool {
+        self.room.cell(cell_of(p.x), cell_of(p.y)) == Cell::Pit
     }
 
     /// Whether the cell containing `p` blocks `body`.

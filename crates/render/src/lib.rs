@@ -282,7 +282,7 @@ impl Renderer {
         for event in events {
             let flash = match *event {
                 Event::EnemyHit { enemy } => Flash::Enemy(enemy),
-                Event::PlayerHit { slot } => Flash::Player(slot),
+                Event::PlayerHit { slot } | Event::PlayerFell { slot } => Flash::Player(slot),
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
                 Event::PlayerDied { .. }
@@ -400,8 +400,15 @@ impl Renderer {
             .iter()
             .zip(&current.players)
             .map(|(a, b)| {
-                a.zip(*b)
-                    .map(|(a, b)| (lerp(lerp_from(a.pos, b.pos), b.pos, alpha), b))
+                a.zip(*b).map(|(a, b)| {
+                    // A pit respawn is a jump, not a slide.
+                    let from = if a.falling() && !b.falling() {
+                        b.pos
+                    } else {
+                        lerp_from(a.pos, b.pos)
+                    };
+                    (lerp(from, b.pos, alpha), b)
+                })
             })
             .collect();
         if let Some(room) = sim::DERELICT.room(current.run.room()) {
@@ -433,10 +440,15 @@ impl Renderer {
                 self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
             }
         }
+        let fall_ticks = f32::from(current.config.tuning.fall_ticks.max(1));
         for (slot, player) in players.iter().enumerate() {
             if let Some((pos, p)) = player {
                 let hurt = self.flashing(Flash::Player(slot));
-                self.push_player(*pos, p, hurt);
+                // Fall left, 1 -> 0, interpolated like positions (`fall_ticks` drops 1/tick).
+                let fall = p
+                    .falling()
+                    .then(|| ((f32::from(p.fall_ticks) - alpha) / fall_ticks).clamp(0.0, 1.0));
+                self.push_player(*pos, p, hurt, fall);
             }
         }
         let bullet = sim::BULLET_RADIUS.to_num::<f32>();
@@ -511,7 +523,12 @@ impl Renderer {
         self.push_world(pos, [radius, radius], [r, g, b, 0.3 * (1.0 - left)], CIRCLE);
     }
 
-    fn push_player(&mut self, [x, y]: [f32; 2], p: &Player, hurt: bool) {
+    /// `fall` is how much of a fall into a pit is left (1 -> 0): the player shrinks and
+    /// fades into it. A fatal fall freezes the run, so a dead faller isn't drawn at all.
+    fn push_player(&mut self, [x, y]: [f32; 2], p: &Player, hurt: bool, fall: Option<f32>) {
+        if fall.is_some() && !p.alive() {
+            return;
+        }
         let radius = sim::PLAYER_RADIUS.to_num::<f32>();
         let (radius, mut color) = if !p.alive() {
             (radius, DEAD_COLOR)
@@ -526,10 +543,14 @@ impl Renderer {
         if p.alive() && (p.hurt_ticks / BLINK_TICKS) % 2 == 1 {
             color[3] *= 0.4;
         }
+        let shrink = fall.unwrap_or(1.0);
+        color[3] *= shrink;
+        let radius = radius * shrink;
         self.push_world([x, y], [radius, radius], color, CIRCLE);
         let (sin, cos) = (f32::from(p.facing) / 65536.0 * TAU).sin_cos();
-        let nub = [cos.mul_add(NUB_OFFSET, x), sin.mul_add(NUB_OFFSET, y)];
-        self.push_world(nub, [NUB_HALF, NUB_HALF], color, SQUARE);
+        let (offset, half) = (NUB_OFFSET * shrink, NUB_HALF * shrink);
+        let nub = [cos.mul_add(offset, x), sin.mul_add(offset, y)];
+        self.push_world(nub, [half, half], color, SQUARE);
     }
 
     fn push_overlay(&mut self, overlay: &Overlay) {

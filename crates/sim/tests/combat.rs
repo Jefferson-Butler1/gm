@@ -446,8 +446,40 @@ fn a_rusher_steers_around_a_pit_between_it_and_the_player() {
         x: Fx::from_num(128),
         y: Fx::from_num(48),
     };
-    let events = run(&mut state, 150, &TickInputs::default());
+    let mut events = Vec::new();
+    for tick in 0..150 {
+        events.extend(step(&mut state, &TickInputs::default()).events);
+        // Players may walk onto pits now; enemies still can't.
+        let tiles = state.tiles().unwrap();
+        for (_, enemy) in state.enemies.iter() {
+            assert!(
+                !in_blocking_tiles(tiles, enemy.pos),
+                "tick {tick}: {enemy:?}"
+            );
+        }
+    }
     assert!(events.contains(&Event::PlayerHit { slot: 0 }), "{events:?}");
+}
+
+#[test]
+fn falling_into_a_pit_on_the_last_hit_point_is_a_death() {
+    let mut state = empty_arena();
+    let player = state.players[0].as_mut().unwrap();
+    player.hp = 1;
+    // Right of the airlock's pit (cells 3..=4, 3), walking into it.
+    player.pos = cell_center(6, 3);
+    let mut walk_left = TickInputs::default();
+    walk_left.players[0] = PlayerInput {
+        move_dir: 16,
+        move_mag: u8::MAX,
+        ..PlayerInput::default()
+    };
+    let events = run(&mut state, 30, &walk_left);
+    assert_eq!(
+        events,
+        [Event::PlayerFell { slot: 0 }, Event::PlayerDied { slot: 0 }]
+    );
+    assert!(matches!(state.run, Run::Dead { .. }), "{:?}", state.run);
 }
 
 // --- spread shooter (the pattern experiment) ------------------------------------------

@@ -89,8 +89,10 @@ pub struct Tuning {
     pub shooter_interval: Option<u16>,
     /// The last ticks of each shooter interval, spent standing still aiming.
     pub shooter_telegraph: u16,
-    /// Invulnerability after taking a hit.
+    /// Invulnerability after taking a hit, and after respawning from a pit.
     pub hurt_ticks: u16,
+    /// A fall into a pit: the player can't act or be hit, then respawns.
+    pub fall_ticks: u16,
     /// Rusher chase speed, pt/s.
     pub rusher_speed: u16,
     pub vent_style: VentStyle,
@@ -119,6 +121,7 @@ impl Tuning {
         shooter_interval: None,
         shooter_telegraph: 36,
         hurt_ticks: 60,
+        fall_ticks: 30,
         rusher_speed: 150,
         vent_style: VentStyle::Clip,
         // 0.6 s pause, then a charge per 0.4 s: a full refill takes 2.6 s. (0.35 s + 0.15 s
@@ -165,6 +168,7 @@ impl RunConfig {
                 shooter_interval,
                 shooter_telegraph: t.shooter_telegraph,
                 hurt_ticks: t.hurt_ticks.min(600),
+                fall_ticks: t.fall_ticks.clamp(1, 600),
                 rusher_speed: t.rusher_speed.clamp(30, 900),
                 vent_style: t.vent_style,
                 regen_delay_ticks: t.regen_delay_ticks.clamp(1, 600),

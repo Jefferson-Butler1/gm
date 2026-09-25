@@ -19,6 +19,7 @@ pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEven
     state.enemy_bullets.retain(|_, _| false);
     for player in state.players.iter_mut().flatten() {
         player.pos = at;
+        player.solid = at;
     }
     events.events.push(Event::RoomEntered { room: id });
     let Some(room) = DERELICT.room(id) else {

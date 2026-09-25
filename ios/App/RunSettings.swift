@@ -19,6 +19,7 @@ enum RunSettingsStore {
         ("ventSecs", \.ventSecs),
         ("regenDelaySecs", \.regenDelaySecs),
         ("regenChargeSecs", \.regenChargeSecs),
+        ("fallSecs", \.fallSecs),
     ]
     /// Absent = the difficulty's value.
     private static let overrides: [(key: String, path: WritableKeyPath<RunSettings, Float?>)] = [
@@ -117,6 +118,9 @@ struct RunSettingsSections: View {
                 }
             }
             Toggle("Spread shooters", isOn: $model.runSettings.spreadShooter)
+            SliderRow(label: "Pit fall", value: $model.runSettings.fallSecs, range: 0.1...2, step: 0.05) {
+                String(format: "%.2f s", $0)
+            }
             Button("Reset to defaults") { model.resetTuning() }
         } header: {
             Text("Tuning")

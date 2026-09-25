@@ -44,6 +44,8 @@ pub struct RunSettings {
     /// Vent style B: time per regenerated charge.
     pub regen_charge_secs: f32,
     pub spread_shooter: bool,
+    /// A fall into a pit, before the respawn.
+    pub fall_secs: f32,
 }
 
 /// What a difficulty sets for the enemy tunables, for sliders without an override.
@@ -73,6 +75,7 @@ pub fn default_run_settings() -> RunSettings {
         regen_delay_secs: secs(t.regen_delay_ticks),
         regen_charge_secs: secs(t.regen_charge_ticks),
         spread_shooter: t.spread_shooter,
+        fall_secs: secs(t.fall_ticks),
     }
 }
 
@@ -111,6 +114,7 @@ impl RunSettings {
                 regen_delay_ticks: ticks(self.regen_delay_secs),
                 regen_charge_ticks: ticks(self.regen_charge_secs),
                 spread_shooter: self.spread_shooter,
+                fall_ticks: ticks(self.fall_secs),
                 ..Tuning::NORMAL
             },
         }

@@ -1,5 +1,11 @@
-//! Player movement, dodge roll, aim, gun and HP. Speeds and times come from the run's
-//! [`Tuning`] (issue #15); the rest are fixed here.
+//! Player movement, dodge roll, pits, aim, gun and HP. Speeds and times come from the
+//! run's [`Tuning`] (issue #15); the rest are fixed here.
+//!
+//! Pits (ETG rules): walking onto one, judged by the player's center cell, is a fall. The
+//! whole roll is airborne, so only where it lands counts. A fall always costs 1 HP (even
+//! mid post-hit invulnerability), leaves the player unable to act or be hit for
+//! `fall_ticks`, then respawns them where they last stood on solid ground, with the
+//! post-hit invulnerability.
 
 use crate::config::{Tuning, per_tick};
 use crate::gun::PhasePistol;
@@ -32,6 +38,11 @@ pub struct Player {
     pub hp: u8,
     /// Post-hit invulnerability left.
     pub hurt_ticks: u16,
+    /// Fall left; nonzero = falling into a pit: no acting, no hits. Ends in a respawn at
+    /// [`Self::solid`].
+    pub fall_ticks: u16,
+    /// Where the player last stood grounded (not mid-roll) outside a pit.
+    pub solid: FxVec2,
     pub gun: PhasePistol,
 }
 
@@ -50,6 +61,11 @@ impl Player {
             roll_dir: 0,
             hp: MAX_HP,
             hurt_ticks: 0,
+            fall_ticks: 0,
+            solid: FxVec2 {
+                x: Fx::ZERO,
+                y: Fx::ZERO,
+            },
             gun: PhasePistol::new(tuning),
         }
     }
@@ -64,10 +80,16 @@ impl Player {
         self.hp > 0
     }
 
-    /// Damage is ignored while this is set: roll i-frames and post-hit invulnerability.
+    #[must_use]
+    pub const fn falling(&self) -> bool {
+        self.fall_ticks > 0
+    }
+
+    /// Damage is ignored while this is set: roll i-frames, post-hit invulnerability, and
+    /// falling.
     #[must_use]
     pub const fn invulnerable(&self) -> bool {
-        self.roll_iframes > 0 || self.hurt_ticks > 0
+        self.roll_iframes > 0 || self.hurt_ticks > 0 || self.falling()
     }
 
     /// Takes one hit unless invulnerable or already dead, then stays invulnerable for
@@ -85,11 +107,12 @@ impl Player {
     /// mid-roll is dropped, not buffered.
     #[must_use]
     pub const fn can_roll(&self) -> bool {
-        !self.rolling()
+        !self.rolling() && !self.falling()
     }
 
     /// One tick of this player's input, moving through `tiles`. `targets` are what aim
-    /// assist and auto-aim may lock onto. Returns the angle of a shot fired this tick.
+    /// assist and auto-aim may lock onto. Returns the angle of a shot fired this tick. A
+    /// fall starting this tick leaves `fall_ticks` at the run's full `fall_ticks`.
     pub fn update(
         &mut self,
         input: PlayerInput,
@@ -97,6 +120,16 @@ impl Player {
         tiles: Tiles,
         tuning: &Tuning,
     ) -> Option<u16> {
+        if self.falling() {
+            self.fall_ticks = self.fall_ticks.saturating_sub(1);
+            if !self.falling() {
+                self.pos = self.solid;
+                self.hurt_ticks = tuning.hurt_ticks;
+            }
+            // The gun can't fire, but a vent carries on as through a roll.
+            self.gun.tick(tuning, false, false);
+            return None;
+        }
         let move_angle = (input.move_mag > 0).then(|| bucket_angle(input.move_dir));
 
         self.roll_ticks = self.roll_ticks.saturating_sub(1);
@@ -121,7 +154,20 @@ impl Player {
         } else {
             FxVec2::default()
         };
-        self.pos = tiles.slide(self.pos, PLAYER_RADIUS, velocity, Body::Walker);
+        self.pos = tiles.slide(self.pos, PLAYER_RADIUS, velocity, Body::Player);
+
+        // The whole roll is airborne: it lands (grounded again) at the end of its last tick.
+        if self.roll_ticks <= 1 {
+            if tiles.pit_at(self.pos) {
+                self.hp = self.hp.saturating_sub(1);
+                self.fall_ticks = tuning.fall_ticks;
+                self.roll_ticks = 0;
+                self.roll_iframes = 0;
+                self.hurt_ticks = 0;
+                return None;
+            }
+            self.solid = self.pos;
+        }
 
         // No aiming or firing mid-roll (Gungeon-style); the roll owns the facing. Venting
         // carries on through a roll.
@@ -234,7 +280,7 @@ pub const fn scale(v: FxVec2, k: Fx) -> FxVec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::room::{CELL, Category, PrototypeRoom, cell_center};
+    use crate::room::{CELL, Category, PrototypeRoom, cell_center, cell_of};
 
     const ROLL_TICKS: u16 = Tuning::NORMAL.roll_ticks;
 
@@ -270,7 +316,8 @@ mod tests {
         }
     }
 
-    /// 30 x 20 cells of floor inside walls, with a pit strip at x = 2..=3, rows 8..=11.
+    /// 30 x 20 cells of floor inside walls, with a pit strip at x = 2..=3, rows 8..=11,
+    /// and a 1-deep pit row at y = 4, x = 10..=20.
     const HALL: PrototypeRoom = PrototypeRoom {
         name: "test hall",
         category: Category::Normal,
@@ -279,7 +326,7 @@ mod tests {
             "#............................#",
             "#............................#",
             "#............................#",
-            "#............................#",
+            "#.........ooooooooooo........#",
             "#............................#",
             "#............................#",
             "#............................#",
@@ -317,10 +364,20 @@ mod tests {
     }
 
     fn player() -> Player {
+        player_at(start())
+    }
+
+    /// A player placed at `pos`, as entering a room places it.
+    fn player_at(pos: FxVec2) -> Player {
         Player {
-            pos: start(),
+            pos,
+            solid: pos,
             ..Player::new(&Tuning::NORMAL)
         }
+    }
+
+    fn cell(p: FxVec2) -> (i32, i32) {
+        (cell_of(p.x), cell_of(p.y))
     }
 
     /// Position relative to [`start`], rounded to whole points.
@@ -365,17 +422,93 @@ mod tests {
         assert!(at(&p).1 > 40, "{:?}", at(&p));
     }
 
+    const FALL_TICKS: u16 = Tuning::NORMAL.fall_ticks;
+
+    /// Runs `ticks` updates of `input`; returns how many fired.
+    fn hold(p: &mut Player, input: PlayerInput, ticks: u16) -> usize {
+        (0..ticks)
+            .filter(|_| p.update(input, &[], tiles(), &Tuning::NORMAL).is_some())
+            .count()
+    }
+
     #[test]
-    fn pits_stop_walkers() {
-        let mut p = player();
-        for _ in 0..120 {
+    fn walking_into_a_pit_falls_costs_a_hit_and_respawns_on_the_last_solid_spot() {
+        // Mid post-hit invulnerability: the fall costs the hit anyway.
+        let mut p = Player {
+            hurt_ticks: 1000,
+            ..player()
+        };
+        let mut last = p.pos;
+        for _ in 0..200 {
+            if p.falling() {
+                break;
+            }
+            last = p.pos;
             p.update(walk(16), &[], tiles(), &Tuning::NORMAL);
         }
+        assert!(p.falling());
+        assert_eq!((p.hp, p.fall_ticks), (MAX_HP - 1, FALL_TICKS));
+        // Judged by the center: it just crossed from floor into the pit.
+        assert!(tiles().pit_at(p.pos) && !tiles().pit_at(last));
+        assert_eq!(p.solid, last);
+
+        // Falling: no moving, rolling, firing or getting hit, for the rest of the fall.
+        let flail = with(walk(0), Buttons::DODGE | Buttons::FIRE);
+        let pit = p.pos;
+        assert_eq!(hold(&mut p, flail, FALL_TICKS - 1), 0);
+        assert!(p.falling() && p.invulnerable() && !p.can_roll());
+        assert!(!p.hurt(Tuning::NORMAL.hurt_ticks));
+        assert_eq!((p.pos, p.hp), (pit, MAX_HP - 1));
+
+        p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
+        assert!(!p.falling());
+        assert_eq!(p.pos, last, "back on the last solid spot");
         assert_eq!(
-            p.pos.x,
-            CELL.saturating_mul_int(4).saturating_add(PLAYER_RADIUS),
-            "flush with the pit's edge"
+            p.hurt_ticks,
+            Tuning::NORMAL.hurt_ticks,
+            "with post-hit invulnerability"
         );
+    }
+
+    #[test]
+    fn a_roll_flies_over_a_one_wide_pit() {
+        // 160 pt up from row 6 lands in row 1, crossing the pit row at y = 4.
+        let from = cell_center(15, 6);
+        let mut p = player_at(from);
+        p.update(
+            with(walk(24), Buttons::DODGE),
+            &[],
+            tiles(),
+            &Tuning::NORMAL,
+        );
+        let mut over_pit = false;
+        for _ in 1..ROLL_TICKS + 10 {
+            over_pit |= tiles().pit_at(p.pos);
+            p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
+            assert!(!p.falling());
+        }
+        assert!(over_pit);
+        assert_eq!((p.hp, cell(p.pos)), (MAX_HP, (15, 1)));
+    }
+
+    #[test]
+    fn a_roll_that_lands_on_a_pit_falls() {
+        // 160 pt up from row 9's center lands mid pit row 4.
+        let from = cell_center(15, 9);
+        let mut p = player_at(from);
+        p.update(
+            with(walk(24), Buttons::DODGE),
+            &[],
+            tiles(),
+            &Tuning::NORMAL,
+        );
+        hold(&mut p, PlayerInput::default(), ROLL_TICKS - 2);
+        assert!(p.rolling() && !p.falling(), "airborne until it lands");
+        p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
+        assert_eq!(p.fall_ticks, FALL_TICKS, "falls as the roll lands");
+        assert_eq!((p.hp, cell(p.pos)), (MAX_HP - 1, (15, 4)));
+        hold(&mut p, PlayerInput::default(), FALL_TICKS);
+        assert_eq!(p.pos, from, "respawns where the roll took off");
     }
 
     #[test]

@@ -217,7 +217,12 @@ pub enum Event {
     PlayerHit {
         slot: usize,
     },
-    /// Also preceded by the killing `PlayerHit`.
+    /// A player walked (or rolled) into a pit, losing a hit point; respawns after the
+    /// run's `fall_ticks`.
+    PlayerFell {
+        slot: usize,
+    },
+    /// Also preceded by the killing `PlayerHit` or `PlayerFell`.
     PlayerDied {
         slot: usize,
     },

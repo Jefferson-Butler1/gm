@@ -18,8 +18,9 @@ const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
 const WALK_IN: [Range<u64>; 2] = [40..125, 1250..1335];
 const WALK_NORTH: u64 = 13;
 /// Both players stand idle from just after entering the cargo hold, so its shooter lives
-/// long enough to fire and the rushers kill them; they only roll (along their facing) every
-/// [`STAND_STILL_ROLL`] ticks, so some hits land on a roll's vulnerable landing.
+/// long enough to fire and the rushers kill them; they only roll east every
+/// [`STAND_STILL_ROLL`] ticks, so some hits land on a roll's vulnerable landing and a roll
+/// lands in the hold's pit strip.
 const STAND_STILL: Range<u64> = 130..1200;
 const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
@@ -27,7 +28,7 @@ const AUTO_FIGHT: Range<u64> = 1335..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xf2b0_b714_753c_b7b6;
+const GOLDEN_TRACE: u64 = 0xc26a_7203_be1a_35c1;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -61,13 +62,15 @@ fn script() -> Vec<TickInputs> {
                 };
             }
             let scripted = if STAND_STILL.contains(&tick) {
-                Some(PlayerInput {
-                    buttons: if tick % STAND_STILL_ROLL == 0 {
-                        Buttons::DODGE
-                    } else {
-                        Buttons::default()
-                    },
-                    ..PlayerInput::default()
+                Some(if tick % STAND_STILL_ROLL == 0 {
+                    // Bucket 0 = straight right; only the roll moves.
+                    PlayerInput {
+                        move_mag: u8::MAX,
+                        buttons: Buttons::DODGE,
+                        ..PlayerInput::default()
+                    }
+                } else {
+                    PlayerInput::default()
                 })
             } else if let Some(window) = RESTARTS.iter().find(|r| r.contains(&tick)) {
                 Some(PlayerInput {
@@ -165,7 +168,7 @@ fn golden_trace_matches_committed_value() {
 }
 
 /// Guards the script's purpose: the golden trace must cover walking, rolling (dropped
-/// mid-roll dodges, a hit on a vulnerable landing), shooting, venting (auto and manual,
+/// mid-roll dodges, a hit on a vulnerable landing), falling into a pit, shooting, venting (auto and manual,
 /// and the refills),
 /// kills, a room transition into a sealed encounter with a second wave, shooters firing,
 /// player deaths and restarts.
@@ -217,6 +220,7 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     let shots = count(|e| matches!(e, Event::ShotFired { .. }));
     let kills = count(|e| matches!(e, Event::EnemyKilled { .. }));
     let deaths = count(|e| matches!(e, Event::PlayerDied { .. }));
+    let falls = count(|e| matches!(e, Event::PlayerFell { .. }));
     let restarts = count(|e| matches!(e, Event::Restarted));
     let entries = count(|e| matches!(e, Event::RoomEntered { .. }));
     let waves = count(|e| matches!(e, Event::WaveStarted { .. }));
@@ -225,7 +229,7 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
         "rolls={rolls} dropped_dodges={dropped_dodges} landing_hits={landing_hits} \
          shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
          entries={entries} waves={waves} cleared={cleared} sealed={sealed} \
-         enemy_shots={enemy_shots}"
+         enemy_shots={enemy_shots} falls={falls}"
     );
     println!("auto_vents={auto_vents} manual_vents={manual_vents} refills={refills}");
     assert!(
@@ -248,4 +252,6 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     );
     // The cargo hold's second wave brings a shooter.
     assert!(enemy_shots >= 2, "enemy_shots={enemy_shots}");
+    // Rolls landing in the cargo hold's pit: falls, respawns, and a fatal fall.
+    assert!(falls >= 2, "falls={falls}");
 }

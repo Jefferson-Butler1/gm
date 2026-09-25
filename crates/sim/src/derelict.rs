@@ -197,8 +197,9 @@ const BRIDGE: PrototypeRoom = PrototypeRoom {
 }
 .valid();
 
-/// The exit room: a pit trench splits it (shots fly over, walkers go round), pillars
-/// guard the far side, and the extraction pad sits at the far end.
+/// The exit room: a pit trench splits it (shots fly over, enemies go round, players go
+/// round or roll over), pillars guard the far side, and the extraction pad sits at the
+/// far end.
 const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
     name: "shuttle bay",
     category: Category::Exit,
