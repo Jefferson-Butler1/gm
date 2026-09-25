@@ -163,6 +163,7 @@ impl Exit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnemyKind {
     Rusher,
+    Shooter,
 }
 
 /// An enemy spawned at the center of cell (`x`, `y`).

@@ -1,10 +1,11 @@
-//! Combat rules through the public `step`: gun vs rusher, contact damage, i-frames, and
-//! death -> restart.
+//! Combat rules through the public `step`: gun vs rusher and shooter, contact damage,
+//! enemy bullets, i-frames, steering, and death -> restart.
 
 use sim::room::{Body, Tiles, cell_center, cell_of};
 use sim::{
-    Buttons, DEATH_TICKS, Enemy, Event, Fx, FxVec2, MAX_HP, PlayerInput, RUSHER_HP, RUSHER_RADIUS,
-    Rng, RoomId, Run, SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, step,
+    Behavior, Bullet, Buttons, DEATH_TICKS, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, MAX_HP,
+    PlayerInput, RUSHER_HP, Rng, RoomId, Run, SHOOTER_AIM_TICKS, SPAWN_TELEGRAPH_TICKS, SimState,
+    TickInputs, step,
 };
 
 const SEED: u64 = 7;
@@ -232,7 +233,7 @@ fn rushers_at(spots: impl IntoIterator<Item = FxVec2>) -> SimState {
 
 #[test]
 fn two_stacked_rushers_part_and_never_overlap() {
-    let touching = RUSHER_RADIUS.saturating_mul_int(2);
+    let touching = ENEMY_RADIUS.saturating_mul_int(2);
     let min = touching.saturating_sub(Fx::from_num(OVERLAP_TOLERANCE));
     let mut state = rushers_at([point(200, 0); 2]);
     // They walk onto the player at ~60 ticks and press on it for the rest.
@@ -245,7 +246,7 @@ fn two_stacked_rushers_part_and_never_overlap() {
 
 #[test]
 fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
-    let touching = RUSHER_RADIUS.saturating_mul_int(2);
+    let touching = ENEMY_RADIUS.saturating_mul_int(2);
     let min = touching.saturating_sub(Fx::from_num(OVERLAP_TOLERANCE));
     // A column of 8, 30 pt apart, 200 pt right of the player and spanning the airlock's
     // height (the player starts in its lower half).
@@ -271,8 +272,8 @@ fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
 /// Whether an enemy's box overlaps any cell that stops walkers.
 fn in_blocking_tiles(tiles: Tiles, pos: FxVec2) -> bool {
     let cells = |c: Fx| {
-        cell_of(c.saturating_sub(RUSHER_RADIUS))
-            ..=cell_of(c.saturating_add(RUSHER_RADIUS).saturating_sub(Fx::DELTA))
+        cell_of(c.saturating_sub(ENEMY_RADIUS))
+            ..=cell_of(c.saturating_add(ENEMY_RADIUS).saturating_sub(Fx::DELTA))
     };
     cells(pos.y).any(|y| cells(pos.x).any(|x| tiles.blocks(x, y, Body::Walker)))
 }
@@ -294,4 +295,142 @@ fn separation_never_pushes_a_rusher_into_walls_or_pits() {
             );
         }
     }
+}
+
+// --- shooter, enemy bullets, steering -------------------------------------------------
+
+/// An empty arena plus one active shooter at `at`, `ticks` from starting to aim.
+fn arena_with_shooter(at: FxVec2, ticks: u8) -> SimState {
+    let mut state = empty_arena();
+    state.enemies.insert(Enemy {
+        spawn_ticks: 0,
+        behavior: Behavior::Shooter {
+            shot_timer: SHOOTER_AIM_TICKS.saturating_add(ticks),
+            strafe: 1,
+        },
+        ..Enemy::shooter(at, 0)
+    });
+    state
+}
+
+fn first_enemy(state: &SimState) -> Option<Enemy> {
+    state.enemies.iter().next().map(|(_, e)| *e)
+}
+
+#[test]
+fn shooter_telegraphs_stands_still_then_fires_a_bullet_that_hurts() {
+    // 160 pt right: inside its preferred range, so it only strafes before aiming.
+    let mut state = arena_with_shooter(point(160, 0), 1);
+    run(&mut state, 1, &TickInputs::default());
+    let aiming_at = first_enemy(&state).unwrap().pos;
+    assert_eq!(
+        first_enemy(&state).unwrap().aiming(),
+        Some(SHOOTER_AIM_TICKS)
+    );
+
+    let aim_rest = usize::from(SHOOTER_AIM_TICKS) - 1;
+    let events = run(&mut state, aim_rest, &TickInputs::default());
+    assert!(events.is_empty(), "{events:?}");
+    assert!(state.enemy_bullets.is_empty(), "not yet");
+    assert_eq!(
+        first_enemy(&state).unwrap().pos,
+        aiming_at,
+        "stood still while aiming"
+    );
+
+    run(&mut state, 1, &TickInputs::default());
+    assert_eq!(state.enemy_bullets.len(), 1, "fired");
+    assert_eq!(first_enemy(&state).unwrap().aiming(), None, "reloading");
+
+    let events = run(&mut state, 40, &TickInputs::default());
+    assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
+    assert_eq!(state.players[0].unwrap().hp, MAX_HP - 1);
+    assert!(state.enemy_bullets.is_empty(), "spent on the hit");
+}
+
+#[test]
+fn shooter_backs_off_to_its_range_and_never_touches() {
+    let mut state = arena_with_shooter(point(40, 0), 90);
+    let events = run(&mut state, 60, &TickInputs::default());
+    assert!(events.is_empty(), "no contact damage: {events:?}");
+    // Backs off to 120 pt, then strafes around the player at about that range.
+    let (at, from) = (first_enemy(&state).unwrap().pos, point(0, 0));
+    let (dx, dy) = (at.x.saturating_sub(from.x), at.y.saturating_sub(from.y));
+    let gap = dx
+        .saturating_mul(dx)
+        .saturating_add(dy.saturating_mul(dy))
+        .sqrt();
+    assert!(gap >= Fx::from_num(118), "{gap}");
+}
+
+/// An enemy bullet flying left from `from`.
+fn bullet_flying_left(state: &mut SimState, from: FxVec2) {
+    state.enemy_bullets.insert(Bullet {
+        pos: from,
+        vel: FxVec2 {
+            x: Fx::from_num(-5),
+            y: Fx::ZERO,
+        },
+        ticks_left: 100,
+    });
+}
+
+#[test]
+fn dodge_iframes_let_enemy_bullets_pass_through() {
+    let mut standing = empty_arena();
+    bullet_flying_left(&mut standing, point(40, 0));
+    let events = run(&mut standing, 30, &TickInputs::default());
+    assert_eq!(events, [Event::PlayerHit { slot: 0 }], "control: it hits");
+
+    // Roll right (the default facing), through the bullet.
+    let mut rolling = empty_arena();
+    bullet_flying_left(&mut rolling, point(40, 0));
+    let mut events = run(&mut rolling, 1, &press(Buttons::DODGE));
+    events.extend(run(&mut rolling, 29, &TickInputs::default()));
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(rolling.players[0].unwrap().hp, MAX_HP);
+    assert_eq!(rolling.enemy_bullets.len(), 1, "flew on past");
+}
+
+#[test]
+fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
+    // The cargo hold's pillar covers cells (5..=6, 3..=4), x 160..224; the player hides
+    // west of it at its height.
+    let row = |x: i32| FxVec2 {
+        x: Fx::from_num(x),
+        y: Fx::from_num(128),
+    };
+    let mut state = empty_arena();
+    state.run = Run::Boarding { room: RoomId(1) };
+    state.players[0].as_mut().unwrap().pos = row(80);
+    bullet_flying_left(&mut state, row(300));
+    let events = run(&mut state, 60, &TickInputs::default());
+    assert!(events.is_empty(), "{events:?}");
+    assert!(state.enemy_bullets.is_empty(), "the pillar ate it");
+
+    let mut state = arena_with_shooter(row(260), 1);
+    state.run = Run::Boarding { room: RoomId(1) };
+    state.players[0].as_mut().unwrap().pos = row(80);
+    run(&mut state, 1, &TickInputs::default());
+    assert_eq!(
+        first_enemy(&state).unwrap().aiming(),
+        None,
+        "no line of fire"
+    );
+}
+
+#[test]
+fn a_rusher_steers_around_a_pit_between_it_and_the_player() {
+    // The airlock's pit covers cells (3..=4, 3): x 96..160, y 96..128. The player stands
+    // right above its middle and the rusher right below, so the way is blocked head-on.
+    let mut state = rushers_at([FxVec2 {
+        x: Fx::from_num(128),
+        y: Fx::from_num(200),
+    }]);
+    state.players[0].as_mut().unwrap().pos = FxVec2 {
+        x: Fx::from_num(128),
+        y: Fx::from_num(48),
+    };
+    let events = run(&mut state, 150, &TickInputs::default());
+    assert!(events.contains(&Event::PlayerHit { slot: 0 }), "{events:?}");
 }

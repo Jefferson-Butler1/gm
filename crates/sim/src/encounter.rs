@@ -1,7 +1,7 @@
 //! Rooms in play: walking through exits, room events (seal/unseal), and waves from object
 //! layers. Drives `Run::Boarding` <-> `Run::Encounter`.
 
-use crate::combat::Enemy;
+use crate::combat::{Enemy, SHOOTER_STAGGER};
 use crate::derelict::DERELICT;
 use crate::room::{
     EnemyKind, LayerTrigger, Placement, PrototypeRoom, RoomAction, RoomTrigger, cell_center,
@@ -15,6 +15,7 @@ use crate::{Event, FxVec2, RoomId, Run, SimState, TickEvents};
 pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEvents) {
     state.enemies.retain(|_, _| false);
     state.bullets.retain(|_, _| false);
+    state.enemy_bullets.retain(|_, _| false);
     for player in state.players.iter_mut().flatten() {
         player.pos = at;
     }
@@ -100,6 +101,8 @@ fn next_wave(
         return;
     }
     let doors_locked = react(room, RoomTrigger::OnEnemiesCleared, doors_locked);
+    // Gungeon-style: clearing the room clears its enemy fire too.
+    state.enemy_bullets.retain(|_, _| false);
     state.set_cleared(id);
     events.events.push(Event::RoomCleared { room: id });
     state.run = if doors_locked {
@@ -130,6 +133,10 @@ fn spawn(state: &mut SimState, placements: &[Placement]) {
         let pos = cell_center(placement.x, placement.y);
         state.enemies.insert(match placement.kind {
             EnemyKind::Rusher => Enemy::rusher(pos),
+            EnemyKind::Shooter => {
+                let delay = state.rng.below(SHOOTER_STAGGER);
+                Enemy::shooter(pos, u8::try_from(delay).unwrap_or(0))
+            }
         });
     }
 }

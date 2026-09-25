@@ -21,6 +21,14 @@ const fn rusher(x: usize, y: usize) -> Placement {
     }
 }
 
+const fn shooter(x: usize, y: usize) -> Placement {
+    Placement {
+        kind: EnemyKind::Shooter,
+        x,
+        y,
+    }
+}
+
 const AIRLOCK: PrototypeRoom = PrototypeRoom {
     name: "airlock",
     category: Category::Entrance,
@@ -87,10 +95,10 @@ const CARGO_HOLD: PrototypeRoom = PrototypeRoom {
             kind: ExitKind::Exit,
         },
     ],
-    base: &[rusher(27, 9), rusher(27, 13), rusher(16, 2)],
+    base: &[rusher(27, 9), rusher(27, 13), shooter(16, 2)],
     reinforcements: &[Reinforcement {
         trigger: LayerTrigger::OnEnemiesCleared,
-        placements: &[rusher(29, 8), rusher(29, 14), rusher(12, 13), rusher(3, 1)],
+        placements: &[rusher(29, 8), rusher(29, 14), rusher(12, 13), shooter(3, 1)],
     }],
     events: LOCKDOWN,
 }

@@ -25,8 +25,8 @@ pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, RUSHER_HP, RUSHER_RADIUS,
-    SPAWN_TELEGRAPH_TICKS,
+    BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS, Enemy,
+    EnemyId, RUSHER_HP, SHOOTER_AIM_TICKS, SHOOTER_HP, SHOOTER_RELOAD, SPAWN_TELEGRAPH_TICKS,
 };
 pub use derelict::DERELICT;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
@@ -116,7 +116,9 @@ pub struct SimState {
     pub players: [Option<Player>; MAX_PLAYERS],
     /// Enemies and bullets in the party's current room; leaving a room drops them.
     pub enemies: Arena<Enemy>,
+    /// The players' bullets.
     pub bullets: Arena<Bullet>,
+    pub enemy_bullets: Arena<Bullet>,
     /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
     pub cleared: u64,
 }
@@ -134,6 +136,7 @@ impl SimState {
             players: [Some(Player::default()), None, None, None],
             enemies: Arena::default(),
             bullets: Arena::default(),
+            enemy_bullets: Arena::default(),
             cleared: 0,
         };
         encounter::enter(&mut state, room, at, &mut TickEvents::default());
