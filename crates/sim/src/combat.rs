@@ -5,8 +5,8 @@
 //! [`RunConfig`](crate::RunConfig) (issue #15).
 
 use crate::arena::{Arena, Id};
-use crate::config::{RunConfig, per_tick};
-use crate::path::{FlowField, walk_clear};
+use crate::config::{RunConfig, Tuning, per_tick};
+use crate::path::{FlowField, FlowFields, walk_clear};
 use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
 use crate::room::{Body, Tiles};
 use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
@@ -74,6 +74,10 @@ const HALF_TURN: u16 = 32768;
 /// corner a bullet would clip slips between samples.
 const LINE_STEP: Fx = Fx::from_bits(4 << 32);
 
+/// An enemy hunting without a player in sight has reached where it last saw one once it
+/// is within 2 cells of the spot; then it starts to give up (see [`Awareness::Alert`]).
+const ARRIVED: Fx = Fx::from_bits(64 << 32);
+
 /// Spawn telegraph: a new enemy spends 30 ticks = 0.5 s as a warning marker. Meanwhile
 /// it is inert: it doesn't move, hurt, push or get pushed, and it can't be targeted or
 /// hit (bullets pass through).
@@ -100,7 +104,24 @@ pub struct Enemy {
     /// Which way it is detouring around something in its path: +1 turns clockwise
     /// (toward +y from +x), -1 counter-clockwise, 0 = heading straight.
     pub steer: i8,
+    pub awareness: Awareness,
     pub behavior: Behavior,
+}
+
+/// Whether an enemy knows the party is there. Room enemies start unaware, so a player
+/// has to go find them; reinforcements arrive already hunting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Awareness {
+    /// Stands where it is: never moves or fires. Notices a player that comes within the
+    /// run's `sight_radius` in plain view, that shoots within `hearing_radius`, or that
+    /// hits it, and an ally that is hunting within `alert_radius` in plain view.
+    Unaware,
+    /// Hunting. With a player in sight it fights as usual (and tracks it at any range);
+    /// otherwise it heads for `last_seen`. `searching` counts ticks spent there without
+    /// finding anyone; at the run's `forget_ticks` it gives up, unaware where it stands.
+    /// Only an enemy still on the hunt (`searching == 0`) alerts its allies, so a group
+    /// that has lost the player can calm down instead of re-alerting each other forever.
+    Alert { last_seen: FxVec2, searching: u16 },
 }
 
 /// What a shooter fires.
@@ -125,9 +146,9 @@ impl Pattern {
 /// Each enemy type's own state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Behavior {
-    /// Chases the nearest targetable player and hurts on contact.
+    /// Hunting, chases the player it sees (see [`Awareness`]) and hurts on contact.
     Rusher { contact_cooldown: u8 },
-    /// Keeps its distance, strafing, and shoots at the nearest targetable player.
+    /// Hunting, keeps its distance from the player it sees, strafing, and shoots at it.
     Shooter {
         pattern: Pattern,
         /// Ticks until the next shot. The run's interval for the pattern restarts it;
@@ -142,8 +163,8 @@ pub enum Behavior {
 }
 
 impl Enemy {
-    /// A rusher arriving at `pos`. Every spawn starts in the telegraph, so any spawner
-    /// just inserts this.
+    /// An unaware rusher arriving at `pos`. Every spawn starts in the telegraph, so any
+    /// spawner just inserts this.
     #[must_use]
     pub const fn rusher(pos: FxVec2) -> Self {
         Self {
@@ -151,14 +172,16 @@ impl Enemy {
             hp: RUSHER_HP,
             spawn_ticks: SPAWN_TELEGRAPH_TICKS,
             steer: 0,
+            awareness: Awareness::Unaware,
             behavior: Behavior::Rusher {
                 contact_cooldown: 0,
             },
         }
     }
 
-    /// A shooter arriving at `pos`, which fires its first shot a full interval (for its
-    /// pattern, under `config`) plus `delay` ticks after its spawn telegraph.
+    /// An unaware shooter arriving at `pos`, which fires its first shot a full interval
+    /// (for its pattern, under `config`) plus `delay` ticks of hunting after its spawn
+    /// telegraph.
     #[must_use]
     pub fn shooter(pos: FxVec2, pattern: Pattern, config: &RunConfig, delay: u16) -> Self {
         Self {
@@ -169,6 +192,7 @@ impl Enemy {
             },
             spawn_ticks: SPAWN_TELEGRAPH_TICKS,
             steer: 0,
+            awareness: Awareness::Unaware,
             behavior: Behavior::Shooter {
                 pattern,
                 shot_timer: pattern.interval(config).saturating_add(delay),
@@ -183,6 +207,18 @@ impl Enemy {
         self.spawn_ticks == 0
     }
 
+    /// Starts (or refreshes) a hunt for a player at `at`. Reports `EnemyAlerted` when it
+    /// was unaware.
+    fn alert(&mut self, id: EnemyId, at: FxVec2, events: &mut TickEvents) {
+        if self.awareness == Awareness::Unaware {
+            events.events.push(Event::EnemyAlerted { enemy: id });
+        }
+        self.awareness = Awareness::Alert {
+            last_seen: at,
+            searching: 0,
+        };
+    }
+
     /// Shot telegraph left, `telegraph..=1` (it fires at 0); `None` when not aiming.
     /// `telegraph` is the run's `shooter_telegraph`.
     #[must_use]
@@ -195,15 +231,36 @@ impl Enemy {
 }
 
 /// One live tick, in order: players (move, fall, respawn, fire), their bullets, enemies
-/// (move, fire, separate, contact, telegraph countdown), enemy bullets, the death check,
-/// then the room (waves, exits, extraction).
+/// (notice, move, fire, separate, contact, telegraph countdown), enemy bullets, the death
+/// check, then the room (waves, exits, extraction).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
     let Some(tiles) = state.tiles() else {
         return;
     };
-    players(state, inputs, tiles, events);
+    // Who alerts allies this tick is decided by last tick's states, so an alert spreads
+    // one hop per tick whatever order enemies update in.
+    let hunters: Vec<(FxVec2, FxVec2)> = state
+        .enemies
+        .iter()
+        .filter(|(_, e)| e.active())
+        .filter_map(|(_, e)| match e.awareness {
+            Awareness::Alert {
+                last_seen,
+                searching: 0,
+            } => Some((e.pos, last_seen)),
+            Awareness::Alert { .. } | Awareness::Unaware => None,
+        })
+        .collect();
+    let shots = players(state, inputs, tiles, events);
     bullets(state, tiles, events);
-    enemies(state, tiles, events);
+    let senses = Senses {
+        tiles,
+        tuning: state.config.tuning,
+        players: targetable(state),
+        shots,
+        hunters,
+    };
+    enemies(state, &senses, events);
     enemy_bullets(state, tiles, events);
     if !state.players.iter().flatten().any(Player::alive) {
         state.run = Run::Dead {
@@ -215,8 +272,15 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
     encounter::tick(state, events);
 }
 
-fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut TickEvents) {
+/// Moves and fires the players. Returns where each shot this tick was fired from.
+fn players(
+    state: &mut SimState,
+    inputs: &TickInputs,
+    tiles: Tiles,
+    events: &mut TickEvents,
+) -> Vec<FxVec2> {
     let tuning = state.config.tuning;
+    let mut shots = Vec::new();
     let targets: Vec<FxVec2> = state
         .enemies
         .iter()
@@ -247,8 +311,10 @@ fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut
                 ticks_left: BULLET_TICKS,
             });
             events.events.push(Event::ShotFired { slot });
+            shots.push(player.pos);
         }
     }
+    shots
 }
 
 /// Pushes every active enemy within [`RESPAWN_CLEARANCE`] of a pit respawn at `at`
@@ -274,8 +340,16 @@ fn fly(bullet: &mut Bullet, tiles: Tiles) -> bool {
 }
 
 fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
-    // Each bullet hits at most the first live enemy it overlaps, in slot order.
+    // Each bullet hits at most the first live enemy it overlaps, in slot order. A hit
+    // alerts it to the nearest living player (bullets don't record who fired them).
     let damage = state.config.tuning.damage;
+    let players: Vec<FxVec2> = state
+        .players
+        .iter()
+        .flatten()
+        .filter(|p| p.alive())
+        .map(|p| p.pos)
+        .collect();
     let enemies = &mut state.enemies;
     state.bullets.retain(|_, bullet| {
         if !fly(bullet, tiles) {
@@ -292,6 +366,8 @@ fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
         events.events.push(Event::EnemyHit { enemy });
         if e.hp == 0 {
             events.events.push(Event::EnemyKilled { enemy, pos: e.pos });
+        } else if let Some(&shooter) = players.iter().min_by_key(|&&p| dist_sq(p, e.pos)) {
+            e.alert(enemy, shooter, events);
         }
         false
     });
@@ -324,29 +400,122 @@ fn enemy_bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
     });
 }
 
-fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
-    let config = state.config;
-    let telegraph = config.tuning.shooter_telegraph;
-    let rusher_speed = per_tick(config.tuning.rusher_speed);
-    let players: Vec<FxVec2> = state
+/// What enemies can perceive this tick (see [`notice`]).
+struct Senses {
+    tiles: Tiles,
+    tuning: Tuning,
+    /// Targetable players' positions.
+    players: Vec<FxVec2>,
+    /// Where players fired from this tick.
+    shots: Vec<FxVec2>,
+    /// Enemies on the hunt as of last tick: where each is, and where it's headed.
+    hunters: Vec<(FxVec2, FxVec2)>,
+}
+
+/// Positions of the players enemies chase, aim at and crowd.
+fn targetable(state: &SimState) -> Vec<FxVec2> {
+    state
         .players
         .iter()
         .flatten()
         .filter(|p| p.targetable())
         .map(|p| p.pos)
-        .collect();
-    let field = FlowField::toward(tiles, &players);
-    for (_, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
-        // Nearest targetable player; `min_by_key` keeps the first, so ties go to the lower
-        // slot. With none (all falling or dead), enemies hold still, timers paused.
-        let Some(&target) = players.iter().min_by_key(|&&p| dist_sq(p, enemy.pos)) else {
+        .collect()
+}
+
+/// Updates `enemy`'s awareness from what it perceives, and returns the player it sees:
+/// the nearest in plain view, within `sight_radius` unless it is already hunting.
+/// Failing that, a shot it hears or an ally hunting in plain view alerts it.
+fn notice(
+    enemy: &mut Enemy,
+    id: EnemyId,
+    senses: &Senses,
+    events: &mut TickEvents,
+) -> Option<FxVec2> {
+    let tuning = &senses.tuning;
+    let pos = enemy.pos;
+    let within = |p: FxVec2, radius: u16| overlaps(p, pos, Fx::from_num(radius));
+    let nearest = |p: &FxVec2| dist_sq(*p, pos);
+    let hunting = enemy.awareness != Awareness::Unaware;
+    let seen = senses
+        .players
+        .iter()
+        .copied()
+        .filter(|&p| {
+            (hunting || within(p, tuning.sight_radius)) && line_of_fire(senses.tiles, pos, p)
+        })
+        .min_by_key(nearest);
+    let heard = || {
+        senses
+            .shots
+            .iter()
+            .copied()
+            .filter(|&p| within(p, tuning.hearing_radius))
+            .min_by_key(nearest)
+    };
+    let told = || {
+        senses
+            .hunters
+            .iter()
+            .filter(|&&(ally, _)| {
+                !hunting
+                    && within(ally, tuning.alert_radius)
+                    && line_of_fire(senses.tiles, ally, pos)
+            })
+            .min_by_key(|(ally, _)| nearest(ally))
+            .map(|&(_, last_seen)| last_seen)
+    };
+    if let Some(at) = seen.or_else(heard).or_else(told) {
+        enemy.alert(id, at, events);
+    }
+    seen
+}
+
+/// Where `enemy` heads this tick: the player it sees, else the spot it last saw one,
+/// where it searches for `forget_ticks` before giving up, unaware where it stands.
+/// `None` = unaware: it stays put.
+fn hunt(enemy: &mut Enemy, seen: Option<FxVec2>, forget_ticks: u16) -> Option<FxVec2> {
+    let Awareness::Alert {
+        last_seen,
+        searching,
+    } = &mut enemy.awareness
+    else {
+        return None;
+    };
+    if seen.is_some() {
+        return seen;
+    }
+    if overlaps(enemy.pos, *last_seen, ARRIVED) {
+        *searching = searching.saturating_add(1);
+        if *searching >= forget_ticks {
+            enemy.awareness = Awareness::Unaware;
+            return None;
+        }
+    }
+    Some(*last_seen)
+}
+
+fn enemies(state: &mut SimState, senses: &Senses, events: &mut TickEvents) {
+    let (config, tiles) = (state.config, senses.tiles);
+    let telegraph = config.tuning.shooter_telegraph;
+    let rusher_speed = per_tick(config.tuning.rusher_speed);
+    let mut fields = FlowFields::new(tiles);
+    for (id, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
+        // With no targetable player (all falling or dead), enemies hold still, timers
+        // paused.
+        if senses.players.is_empty() {
+            continue;
+        }
+        let seen = notice(enemy, id, senses, events);
+        let Some(target) = hunt(enemy, seen, config.tuning.forget_ticks) else {
             continue;
         };
         // No direction when exactly on the target: stay put (contact still applies).
         let Some(angle) = trig::angle_of(sub(target, enemy.pos)) else {
             continue;
         };
-        let pursue = |pos, speed, side: &mut i8| chase(tiles, &field, pos, target, speed, side);
+        let field = fields.toward(target);
+        let pursue = |pos, speed, side: &mut i8| chase(tiles, field, pos, target, speed, side);
         match &mut enemy.behavior {
             Behavior::Rusher { contact_cooldown } => {
                 *contact_cooldown = contact_cooldown.saturating_sub(1);
@@ -358,7 +527,8 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
                 strafe,
             } => {
                 if *shot_timer <= telegraph {
-                    // Aiming: stand still, then fire at wherever the target is now.
+                    // Aiming: stand still, then fire at wherever the target is now (where
+                    // the player was last seen, if it has slipped out of sight).
                     *shot_timer = shot_timer.saturating_sub(1);
                     if *shot_timer == 0 {
                         fire(
@@ -373,7 +543,8 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
                     }
                     continue;
                 }
-                let clear = line_of_fire(tiles, enemy.pos, target);
+                // Seeing a player is a clear line of fire to it.
+                let clear = seen.is_some();
                 // Only start aiming with a clear line of fire; otherwise keep repositioning.
                 if *shot_timer > telegraph.saturating_add(1) || clear {
                     *shot_timer = shot_timer.saturating_sub(1);
@@ -476,9 +647,9 @@ fn progressed(from: FxVec2, to: FxVec2, speed: Fx) -> bool {
 /// One step of an enemy at `pos` closing in on `target`.
 ///
 /// Straight at it while its body fits the whole way, else toward the next cell along
-/// `field` (around walls, pits and pockets; `field` may lead to a different player when
-/// another is nearer by path). Either way [`steer`] detours around what the heading
-/// clips. `side` is [`Enemy::steer`].
+/// `field` (around walls, pits and pockets; `field` may lead elsewhere when it was built
+/// toward several goals). Either way [`steer`] detours around what the heading clips.
+/// `side` is [`Enemy::steer`].
 #[must_use]
 pub fn chase(
     tiles: Tiles,
@@ -566,13 +737,7 @@ fn line_of_fire(tiles: Tiles, from: FxVec2, to: FxVec2) -> bool {
 /// the last, so the result is deterministic, and a crowd pressing on a player settles
 /// into a still ring around it instead of stacking.
 fn separate(state: &mut SimState, tiles: Tiles) {
-    let players: Vec<FxVec2> = state
-        .players
-        .iter()
-        .flatten()
-        .filter(|p| p.targetable())
-        .map(|p| p.pos)
-        .collect();
+    let players = targetable(state);
     let mut bodies: Vec<FxVec2> = state
         .enemies
         .iter()

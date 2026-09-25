@@ -28,8 +28,9 @@ pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS, Enemy,
-    EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS, SPREAD_SHOOTER_HP, chase,
+    Awareness, BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS,
+    Enemy, EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS, SPREAD_SHOOTER_HP,
+    chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use derelict::DERELICT;
@@ -209,6 +210,10 @@ pub enum Event {
         slot: usize,
     },
     EnemyHit {
+        enemy: EnemyId,
+    },
+    /// An unaware enemy noticed the party (see [`Awareness`]).
+    EnemyAlerted {
         enemy: EnemyId,
     },
     /// Also preceded by the killing `EnemyHit`. `pos` is where it died; the ID is stale.
