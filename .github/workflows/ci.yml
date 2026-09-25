@@ -13,7 +13,7 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install toolchain from rust-toolchain.toml
         run: |
           if ! command -v rustup >/dev/null; then
