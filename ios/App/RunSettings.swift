@@ -17,6 +17,8 @@ enum RunSettingsStore {
         ("rollIframeFraction", \.rollIframeFraction),
         ("fireRate", \.fireRate),
         ("ventSecs", \.ventSecs),
+        ("regenDelaySecs", \.regenDelaySecs),
+        ("regenChargeSecs", \.regenChargeSecs),
     ]
     /// Absent = the difficulty's value.
     private static let overrides: [(key: String, path: WritableKeyPath<RunSettings, Float?>)] = [
@@ -106,6 +108,14 @@ struct RunSettingsSections: View {
             Toggle("Vent style B (regenerating charges)", isOn: Binding(
                 get: { model.runSettings.ventStyle == .regen },
                 set: { model.runSettings.ventStyle = $0 ? .regen : .clip }))
+            if model.runSettings.ventStyle == .regen {
+                SliderRow(label: "Regen pause", value: $model.runSettings.regenDelaySecs, range: 0.1...3, step: 0.05) {
+                    String(format: "%.2f s", $0)
+                }
+                SliderRow(label: "Regen per charge", value: $model.runSettings.regenChargeSecs, range: 0.05...2, step: 0.05) {
+                    String(format: "%.2f s", $0)
+                }
+            }
             Toggle("Spread shooters", isOn: $model.runSettings.spreadShooter)
             Button("Reset to defaults") { model.resetTuning() }
         } header: {

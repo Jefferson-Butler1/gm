@@ -5,10 +5,6 @@
 use crate::config::{Tuning, VentStyle};
 use serde::{Deserialize, Serialize};
 
-/// Vent style B: ticks without a shot before the first charge regenerates: 0.35 s.
-pub const REGEN_DELAY: u16 = 21;
-/// Vent style B: ticks per further regenerated charge: 0.15 s.
-pub const REGEN_TICKS: u16 = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PhasePistol {
@@ -61,7 +57,7 @@ impl PhasePistol {
         if fired {
             self.charges = self.charges.saturating_sub(1);
             self.cooldown = tuning.fire_interval;
-            self.regen_ticks = REGEN_DELAY;
+            self.regen_ticks = tuning.regen_delay_ticks;
             if self.charges == 0 {
                 self.start_vent(match tuning.vent_style {
                     VentStyle::Clip => tuning.vent_ticks,
@@ -75,7 +71,7 @@ impl PhasePistol {
             self.regen_ticks = self.regen_ticks.saturating_sub(1);
             if self.regen_ticks == 0 {
                 self.charges = self.charges.saturating_add(1);
-                self.regen_ticks = REGEN_TICKS;
+                self.regen_ticks = tuning.regen_charge_ticks;
             }
         }
         self.cooldown = self.cooldown.saturating_sub(1);
@@ -175,16 +171,18 @@ mod tests {
         shots(&mut gun, &tuning, 35, held); // 3 shots: ticks 0, 17, 34
         assert_eq!(gun.charges, 3);
         let mut counts = Vec::new();
-        for _ in 0..60 {
+        for _ in 0..120 {
             gun.tick(&tuning, false, false);
             counts.push(gun.charges);
         }
-        // The first charge REGEN_DELAY ticks after the last shot, then one per REGEN_TICKS.
+        // The first charge `regen_delay_ticks` after the last shot, then one per
+        // `regen_charge_ticks`.
+        let (delay, per) = (tuning.regen_delay_ticks, tuning.regen_charge_ticks);
         let at = |tick: u16| counts[usize::from(tick) - 1];
-        assert_eq!(at(REGEN_DELAY - 1), 3);
-        assert_eq!(at(REGEN_DELAY), 4);
-        assert_eq!(at(REGEN_DELAY + REGEN_TICKS), 5);
-        assert_eq!(at(REGEN_DELAY + 2 * REGEN_TICKS), 6);
+        assert_eq!(at(delay - 1), 3);
+        assert_eq!(at(delay), 4);
+        assert_eq!(at(delay + per), 5);
+        assert_eq!(at(delay + 2 * per), 6);
         assert_eq!(counts.last(), Some(&6), "stops at full");
     }
 

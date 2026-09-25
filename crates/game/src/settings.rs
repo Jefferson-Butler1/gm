@@ -39,6 +39,10 @@ pub struct RunSettings {
     /// `None` = the difficulty's.
     pub shooter_interval_secs: Option<f32>,
     pub vent_style: VentStyle,
+    /// Vent style B: pause after a shot before charges regenerate.
+    pub regen_delay_secs: f32,
+    /// Vent style B: time per regenerated charge.
+    pub regen_charge_secs: f32,
     pub spread_shooter: bool,
 }
 
@@ -66,6 +70,8 @@ pub fn default_run_settings() -> RunSettings {
         enemy_bullet_speed: None,
         shooter_interval_secs: None,
         vent_style: VentStyle::Clip,
+        regen_delay_secs: secs(t.regen_delay_ticks),
+        regen_charge_secs: secs(t.regen_charge_ticks),
         spread_shooter: t.spread_shooter,
     }
 }
@@ -102,6 +108,8 @@ impl RunSettings {
                     VentStyle::Clip => sim::VentStyle::Clip,
                     VentStyle::Regen => sim::VentStyle::Regen,
                 },
+                regen_delay_ticks: ticks(self.regen_delay_secs),
+                regen_charge_ticks: ticks(self.regen_charge_secs),
                 spread_shooter: self.spread_shooter,
                 ..Tuning::NORMAL
             },
