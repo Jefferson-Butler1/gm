@@ -1,10 +1,11 @@
-//! Gun, bullets, the melee rusher, and the temporary spawner. Systems run in a fixed
-//! order over arenas iterated in slot order, so every tie resolves the same way on every
-//! machine. Tuning values are first guesses for combat tuning (issue #15).
+//! Gun, bullets and the melee rusher, colliding with the room's tiles. Systems run in a
+//! fixed order over arenas iterated in slot order, so every tie resolves the same way on
+//! every machine. Tuning values are first guesses for combat tuning (issue #15).
 
 use crate::arena::Id;
-use crate::player::{PLAYER_RADIUS, Player, ROOM_HALF, clamp, dist_sq, scale};
-use crate::{Event, Fx, FxVec2, Rng, Run, SimState, TickEvents, TickInputs, trig};
+use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
+use crate::room::{Body, Tiles};
+use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
 use serde::{Deserialize, Serialize};
 
 pub type EnemyId = Id<Enemy>;
@@ -18,7 +19,7 @@ pub const BULLET_RADIUS: Fx = Fx::from_bits(4 << 32);
 /// Bullets leave the gun this far ahead of the player's center.
 const MUZZLE: Fx = Fx::from_bits(22 << 32);
 
-/// Hitbox radius.
+/// Hitbox radius; also its half-extent against tiles.
 pub const RUSHER_RADIUS: Fx = Fx::from_bits(13 << 32);
 pub const RUSHER_HP: u8 = 3;
 /// Rusher chase speed: 3 pt/tick = 180 pt/s (the player runs 420).
@@ -48,15 +49,6 @@ pub const SPAWN_TELEGRAPH_TICKS: u8 = 30;
 /// Ticks from all players dying until restart is accepted: 0.75 s, so a panicked tap
 /// doesn't skip the death.
 pub const DEATH_TICKS: u32 = 45;
-
-/// TEMPORARY spawner until rooms and waves land (Rooms step): keep this many rushers
-/// alive in the placeholder room, adding one every [`SPAWN_INTERVAL`] ticks.
-const RUSHERS_ALIVE: usize = 4;
-const SPAWN_INTERVAL: u16 = 40;
-/// Grace period at run start before the first spawn: 1 s.
-pub const FIRST_SPAWN_TICKS: u16 = 60;
-/// A spawn point this close to a living player flips to the far side of the room.
-const SPAWN_CLEARANCE: Fx = Fx::from_bits(160 << 32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Bullet {
@@ -95,22 +87,26 @@ impl Enemy {
     }
 }
 
-/// One live tick of combat, in order: players (move, fire), bullets, enemies (chase,
-/// separate, contact, telegraph countdown), death check, spawner.
+/// One live tick, in order: players (move, fire), bullets, enemies (chase, separate,
+/// contact, telegraph countdown), the death check, then the room (waves, exits).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
-    players(state, inputs, events);
-    bullets(state, events);
-    enemies(state, events);
+    let Some(tiles) = state.tiles() else {
+        return;
+    };
+    players(state, inputs, tiles, events);
+    bullets(state, tiles, events);
+    enemies(state, tiles, events);
     if !state.players.iter().flatten().any(Player::alive) {
         state.run = Run::Dead {
+            room: state.run.room().unwrap_or_default(),
             ticks_until_restart: DEATH_TICKS,
         };
         return;
     }
-    spawner(state);
+    encounter::tick(state, events);
 }
 
-fn players(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
+fn players(state: &mut SimState, inputs: &TickInputs, tiles: Tiles, events: &mut TickEvents) {
     let targets: Vec<FxVec2> = state
         .enemies
         .iter()
@@ -121,7 +117,7 @@ fn players(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
         let Some(player) = player.as_mut().filter(|p| p.alive()) else {
             continue;
         };
-        if let Some(angle) = player.update(*input, &targets) {
+        if let Some(angle) = player.update(*input, &targets, tiles) {
             let dir = trig::unit(angle);
             state.bullets.insert(Bullet {
                 pos: add(player.pos, scale(dir, MUZZLE)),
@@ -133,13 +129,14 @@ fn players(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
     }
 }
 
-fn bullets(state: &mut SimState, events: &mut TickEvents) {
-    // Each bullet hits at most the first live enemy it overlaps, in slot order.
+fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
+    // Each bullet hits at most the first live enemy it overlaps, in slot order. Walls,
+    // void and sealed doors stop it; it flies over pits.
     let enemies = &mut state.enemies;
     state.bullets.retain(|_, bullet| {
         bullet.pos = add(bullet.pos, bullet.vel);
         bullet.ticks_left = bullet.ticks_left.saturating_sub(1);
-        if bullet.ticks_left == 0 || !inside_room(bullet.pos) {
+        if bullet.ticks_left == 0 || tiles.blocks_point(bullet.pos, Body::Shot) {
             return false;
         }
         let reach = BULLET_RADIUS.saturating_add(RUSHER_RADIUS);
@@ -159,7 +156,7 @@ fn bullets(state: &mut SimState, events: &mut TickEvents) {
     enemies.retain(|_, e| e.hp > 0);
 }
 
-fn enemies(state: &mut SimState, events: &mut TickEvents) {
+fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
     for (_, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
         enemy.contact_cooldown = enemy.contact_cooldown.saturating_sub(1);
         // Nearest living player; `min_by_key` keeps the first, so ties go to the lower slot.
@@ -174,11 +171,12 @@ fn enemies(state: &mut SimState, events: &mut TickEvents) {
             .and_then(|p| trig::angle_of(sub(p.pos, enemy.pos)))
             .map(|a| scale(trig::unit(a), RUSHER_SPEED))
         {
-            enemy.pos = add(enemy.pos, step);
+            // No pathfinding yet: it slides along whatever is in the way.
+            enemy.pos = tiles.slide(enemy.pos, RUSHER_RADIUS, step, Body::Walker);
         }
     }
 
-    separate(state);
+    separate(state, tiles);
 
     let reach = PLAYER_RADIUS.saturating_add(RUSHER_RADIUS);
     for (_, enemy) in state.enemies.iter_mut() {
@@ -206,11 +204,13 @@ fn enemies(state: &mut SimState, events: &mut TickEvents) {
     }
 }
 
-/// Resolves overlaps among active enemies: pushes them apart, out of living players, and
-/// back inside the room. Pairs resolve in slot order, each pass building on the last, so
-/// the result is deterministic, and a crowd pressing on a player settles into a still
-/// ring around it instead of stacking.
-fn separate(state: &mut SimState) {
+/// Resolves overlaps among active enemies: pushes them apart and out of living players.
+/// Every push slides through `tiles` like a walk, so nobody is shoved into a wall, pit,
+/// void or sealed door; a body pinned against one leaves the rest of the correction to
+/// later passes and to its neighbors. Pairs resolve in slot order, each pass building on
+/// the last, so the result is deterministic, and a crowd pressing on a player settles
+/// into a still ring around it instead of stacking.
+fn separate(state: &mut SimState, tiles: Tiles) {
     let players: Vec<FxVec2> = state
         .players
         .iter()
@@ -224,30 +224,25 @@ fn separate(state: &mut SimState) {
         .filter(|(_, e)| e.active())
         .map(|(_, e)| e.pos)
         .collect();
-    let bound = FxVec2 {
-        x: ROOM_HALF.x.saturating_sub(RUSHER_RADIUS),
-        y: ROOM_HALF.y.saturating_sub(RUSHER_RADIUS),
-    };
+    // Pushes stay under a cell, as `slide` needs: a pair's half is at most
+    // ENEMY_SPACING / 2 and a player's push at most PLAYER_SPACING.
+    let slide = |pos: FxVec2, push: FxVec2| tiles.slide(pos, RUSHER_RADIUS, push, Body::Walker);
     for _ in 0..SEPARATION_PASSES {
         let mut rest = bodies.as_mut_slice();
         while let Some((a, tail)) = rest.split_first_mut() {
             for b in tail.iter_mut() {
                 // Each side of the pair takes half the correction.
                 let push = scale(push_out(*a, *b, ENEMY_SPACING), HALF);
-                *a = sub(*a, push);
-                *b = add(*b, push);
+                *a = slide(*a, sub(FxVec2::default(), push));
+                *b = slide(*b, push);
             }
             rest = tail;
         }
         for body in &mut bodies {
             // Players don't budge.
             for &player in &players {
-                *body = add(*body, push_out(player, *body, PLAYER_SPACING));
+                *body = slide(*body, push_out(player, *body, PLAYER_SPACING));
             }
-            *body = FxVec2 {
-                x: clamp(body.x, bound.x),
-                y: clamp(body.y, bound.y),
-            };
         }
     }
     let active = state.enemies.iter_mut().filter(|(_, e)| e.active());
@@ -275,66 +270,6 @@ fn push_out(a: FxVec2, b: FxVec2, spacing: Fx) -> FxVec2 {
         },
     };
     scale(dir, spacing.saturating_sub(gap))
-}
-
-/// TEMPORARY: see [`RUSHERS_ALIVE`].
-fn spawner(state: &mut SimState) {
-    state.spawn_cooldown = state.spawn_cooldown.saturating_sub(1);
-    if state.spawn_cooldown == 0 && state.enemies.len() < RUSHERS_ALIVE {
-        state.spawn_cooldown = SPAWN_INTERVAL;
-        let mut pos = edge_point(&mut state.rng);
-        let crowded = |pos: FxVec2| {
-            let clear = i128::from(SPAWN_CLEARANCE.to_bits());
-            let clear_sq = clear.saturating_mul(clear);
-            state
-                .players
-                .iter()
-                .flatten()
-                .any(|p| p.alive() && dist_sq(p.pos, pos) < clear_sq)
-        };
-        if crowded(pos) {
-            pos = FxVec2 {
-                x: pos.x.saturating_neg(),
-                y: pos.y.saturating_neg(),
-            };
-        }
-        state.enemies.insert(Enemy::rusher(pos));
-    }
-}
-
-/// A random point on the placeholder room's edge, inset so the rusher fits.
-fn edge_point(rng: &mut Rng) -> FxVec2 {
-    let half = FxVec2 {
-        x: ROOM_HALF.x.saturating_sub(RUSHER_RADIUS),
-        y: ROOM_HALF.y.saturating_sub(RUSHER_RADIUS),
-    };
-    let edge = rng.below(4);
-    let mut along = |half: Fx| {
-        let span = half.saturating_mul_int(2).saturating_to_num::<u32>();
-        Fx::from_num(rng.below(span)).saturating_sub(half)
-    };
-    match edge {
-        0 => FxVec2 {
-            x: along(half.x),
-            y: half.y.saturating_neg(),
-        },
-        1 => FxVec2 {
-            x: along(half.x),
-            y: half.y,
-        },
-        2 => FxVec2 {
-            x: half.x.saturating_neg(),
-            y: along(half.y),
-        },
-        _ => FxVec2 {
-            x: half.x,
-            y: along(half.y),
-        },
-    }
-}
-
-fn inside_room(p: FxVec2) -> bool {
-    p.x.saturating_abs() <= ROOM_HALF.x && p.y.saturating_abs() <= ROOM_HALF.y
 }
 
 /// Circles whose radii sum to `reach` overlap.

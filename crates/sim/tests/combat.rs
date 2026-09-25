@@ -1,30 +1,32 @@
 //! Combat rules through the public `step`: gun vs rusher, contact damage, i-frames, and
 //! death -> restart.
 
+use sim::room::{Body, Tiles, cell_center, cell_of};
 use sim::{
-    Buttons, DEATH_TICKS, Enemy, Event, FIRST_SPAWN_TICKS, Fx, FxVec2, MAX_HP, PlayerInput,
-    RUSHER_HP, RUSHER_RADIUS, Rng, Run, SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, step,
+    Buttons, DEATH_TICKS, Enemy, Event, Fx, FxVec2, MAX_HP, PlayerInput, RUSHER_HP, RUSHER_RADIUS,
+    Rng, RoomId, Run, SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, step,
 };
 
 const SEED: u64 = 7;
 
 const DOWN: u16 = 16384;
 
+/// A fresh run: the party alone in the empty start room.
+fn empty_arena() -> SimState {
+    SimState::new(SEED)
+}
+
+/// A point (`x`, `y`) from where the player starts.
 fn point(x: i32, y: i32) -> FxVec2 {
+    let start = empty_arena().players[0].map(|p| p.pos).unwrap_or_default();
     FxVec2 {
-        x: Fx::from_num(x),
-        y: Fx::from_num(y),
+        x: start.x.saturating_add(Fx::from_num(x)),
+        y: start.y.saturating_add(Fx::from_num(y)),
     }
 }
 
-/// A fresh run with the spawner held off.
-fn empty_arena() -> SimState {
-    let mut state = SimState::new(SEED);
-    state.spawn_cooldown = u16::MAX;
-    state
-}
-
-/// An empty arena plus one rusher at (`x`, 0), already past its spawn telegraph.
+/// An empty arena plus one rusher `x` points right of the player, already past its
+/// spawn telegraph.
 fn arena_with_rusher(x: i32) -> SimState {
     let mut state = empty_arena();
     state.enemies.insert(Enemy {
@@ -55,7 +57,7 @@ fn count(events: &[Event], f: impl Fn(&Event) -> bool) -> usize {
 
 #[test]
 fn held_fire_kills_a_rusher() {
-    let mut state = arena_with_rusher(250);
+    let mut state = arena_with_rusher(200);
     let events = run(&mut state, 40, &press(Buttons::FIRE)); // aim 0 = straight right
     let hits = count(&events, |e| matches!(e, Event::EnemyHit { .. }));
     let kills = count(&events, |e| matches!(e, Event::EnemyKilled { .. }));
@@ -104,6 +106,7 @@ fn death_goes_to_dead_and_restart_starts_a_fresh_run() {
     assert_eq!(
         state.run,
         Run::Dead {
+            room: RoomId(0),
             ticks_until_restart: DEATH_TICKS
         }
     );
@@ -121,34 +124,39 @@ fn death_goes_to_dead_and_restart_starts_a_fresh_run() {
 
 fn restart_now(state: &mut SimState) {
     state.run = Run::Dead {
+        room: state.run.room().unwrap_or_default(),
         ticks_until_restart: 0,
     };
     assert_eq!(run(state, 1, &press(Buttons::RESTART)), [Event::Restarted]);
 }
 
-/// Where this run's spawner puts its first rusher.
-fn first_spawn(state: &SimState) -> Option<FxVec2> {
-    let mut state = state.clone();
-    run(
-        &mut state,
-        usize::from(FIRST_SPAWN_TICKS),
-        &TickInputs::default(),
-    );
-    state.enemies.iter().next().map(|(_, e)| e.pos)
+#[test]
+fn restart_abandons_a_live_run_at_once() {
+    let mut state = arena_with_rusher(40);
+    state.cleared = 0b1;
+    assert_eq!(run(&mut state, 1, &press(Buttons::RESTART)), [Event::Restarted]);
+    let mut fresh = SimState::new(Rng::next_seed(SEED));
+    fresh.tick = state.tick;
+    assert_eq!(state, fresh);
 }
 
 #[test]
-fn each_restart_derives_the_next_run_seed() {
+fn each_restart_resets_the_rooms_and_derives_the_next_run_seed() {
     let mut state = SimState::new(SEED);
-    let first = first_spawn(&state);
+    // As if the party had cleared the airlock and died in the cargo hold.
+    state.cleared = 0b1;
+    state.run = Run::Dead {
+        room: RoomId(1),
+        ticks_until_restart: 0,
+    };
     restart_now(&mut state);
     let second_seed = state.seed;
     assert_eq!(second_seed, Rng::next_seed(SEED));
-    let second = first_spawn(&state);
+    let mut fresh = SimState::new(second_seed);
+    fresh.tick = state.tick;
+    assert_eq!(state, fresh, "back in the start room, nothing cleared");
     restart_now(&mut state);
     assert_eq!(state.seed, Rng::next_seed(second_seed));
-    assert!(first.is_some());
-    assert_ne!(first, second, "a new seed plays a different run");
 }
 
 #[test]
@@ -239,8 +247,9 @@ fn two_stacked_rushers_part_and_never_overlap() {
 fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
     let touching = RUSHER_RADIUS.saturating_mul_int(2);
     let min = touching.saturating_sub(Fx::from_num(OVERLAP_TOLERANCE));
-    // A column of 8 at x = 200, 30 pt apart.
-    let column = (-105..).step_by(30).take(8).map(|y| point(200, y));
+    // A column of 8, 30 pt apart, 200 pt right of the player and spanning the airlock's
+    // height (the player starts in its lower half).
+    let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
     let mut state = rushers_at(column);
     let mut last: Vec<FxVec2> = Vec::new();
     for tick in 0..300 {
@@ -256,5 +265,33 @@ fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
             }
         }
         last = now;
+    }
+}
+
+/// Whether an enemy's box overlaps any cell that stops walkers.
+fn in_blocking_tiles(tiles: Tiles, pos: FxVec2) -> bool {
+    let cells = |c: Fx| {
+        cell_of(c.saturating_sub(RUSHER_RADIUS))
+            ..=cell_of(c.saturating_add(RUSHER_RADIUS).saturating_sub(Fx::DELTA))
+    };
+    cells(pos.y).any(|y| cells(pos.x).any(|x| tiles.blocks(x, y, Body::Walker)))
+}
+
+#[test]
+fn separation_never_pushes_a_rusher_into_walls_or_pits() {
+    let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
+    let mut state = rushers_at(column);
+    // The player stands just below the airlock's pit, near its west wall, so the ring the
+    // crowd forms around it overlaps both.
+    state.players[0].as_mut().unwrap().pos = cell_center(3, 4);
+    for tick in 0..300 {
+        step(&mut state, &TickInputs::default());
+        let tiles = state.tiles().unwrap();
+        for (_, enemy) in state.enemies.iter() {
+            assert!(
+                !in_blocking_tiles(tiles, enemy.pos),
+                "tick {tick}: {enemy:?}"
+            );
+        }
     }
 }
