@@ -1,7 +1,6 @@
 //! Determinism checks (issue #5): replay, rollback-every-tick, and a committed golden
 //! checksum that CI verifies on both `x86_64` and `aarch64`.
 
-use sim::camera::View;
 use sim::{
     Buttons, Event, PlayerInput, Rng, RoomId, Run, RunConfig, SimState, TickEvents, TickInputs,
     Tuning, step,
@@ -26,12 +25,6 @@ const STAND_STILL: Range<u64> = 130..1200;
 const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
 const AUTO_FIGHT: Range<u64> = 1335..TICKS;
-/// Both players' screens show the whole room, so the idle party still draws the cargo
-/// hold's fight (on a phone-sized screen it would stand unnoticed at the entrance).
-const WHOLE_ROOM: View = View {
-    width: u16::MAX,
-    height: u16::MAX,
-};
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
@@ -66,7 +59,6 @@ fn script() -> Vec<TickInputs> {
                         } else {
                             Buttons::default()
                         },
-                    view: WHOLE_ROOM,
                 };
             }
             let scripted = if STAND_STILL.contains(&tick) {
@@ -105,10 +97,7 @@ fn script() -> Vec<TickInputs> {
                     })
             };
             if let Some(input) = scripted {
-                inputs.players[..2].fill(PlayerInput {
-                    view: WHOLE_ROOM,
-                    ..input
-                });
+                inputs.players[..2].fill(input);
             }
             if AUTO_FIGHT.contains(&tick) {
                 for input in &mut inputs.players[..2] {

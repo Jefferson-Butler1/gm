@@ -1,23 +1,16 @@
-//! Enemy awareness: room enemies stand unaware until they see (on the player's screen,
-//! in plain view), hear or are hit by a player, then hunt it, and give up where they lost
-//! it. All in the cargo hold, 32 x 16 cells: an L (void top-right) with a pillar at cells
+//! Enemy awareness: room enemies stand unaware until they see (in plain view, at any
+//! range), hear or are hit by a player, then hunt it, and give up where they lost it.
+//! All in the cargo hold, 32 x 16 cells: an L (void top-right) with a pillar at cells
 //! (5..=6, 3..=4) and a pit strip at (10..=13, 10..=11).
 
-use sim::camera::View;
 use sim::room::cell_center;
 use sim::{
-    Awareness, Buttons, Enemy, EnemyId, Event, Fx, FxVec2, Pattern, PlayerInput, RoomId, Run,
-    RunConfig, SimState, TickInputs, Tuning, step,
+    Awareness, Buttons, Enemy, EnemyId, Event, Fx, FxVec2, PlayerInput, RoomId, Run, RunConfig,
+    SimState, TickInputs, Tuning, step,
 };
 
 const SEED: u64 = 5;
 const CARGO_HOLD: RoomId = RoomId(1);
-/// A phone held upright: the hold's whole height fits on screen, but only 12 cells across.
-/// (No view = the default landscape one, 852 x 393 pt.)
-const PORTRAIT: View = View {
-    width: 393,
-    height: 852,
-};
 
 /// The party (slot 0) standing in the cargo hold at cell `at`, no enemies, doors open.
 fn hold(at: (usize, usize)) -> SimState {
@@ -42,17 +35,12 @@ fn rusher(state: &mut SimState, (x, y): (usize, usize)) -> EnemyId {
     })
 }
 
-/// Slot 0 stands still for `ticks`, looking through `view`.
-fn watch(state: &mut SimState, view: View, ticks: usize) -> Vec<Event> {
-    let mut inputs = TickInputs::default();
-    inputs.players[0].view = view;
+/// Slot 0 stands still for `ticks`.
+fn idle(state: &mut SimState, ticks: usize) -> Vec<Event> {
+    let inputs = TickInputs::default();
     (0..ticks)
         .flat_map(|_| step(state, &inputs).events)
         .collect()
-}
-
-fn idle(state: &mut SimState, ticks: usize) -> Vec<Event> {
-    watch(state, View::default(), ticks)
 }
 
 fn enemy(state: &SimState, id: EnemyId) -> Option<Enemy> {
@@ -72,38 +60,24 @@ fn cells_apart(a: FxVec2, b: FxVec2) -> Fx {
 }
 
 #[test]
-fn unaware_enemies_ignore_an_idle_player_off_screen_or_behind_a_wall() {
+fn an_unaware_enemy_behind_a_wall_ignores_an_idle_player() {
     let mut state = hold((6, 1));
-    // On screen, 4 cells down, but behind the pillar.
-    let hidden = rusher(&mut state, (6, 5));
-    // In plain view (past the pillar, across the pit), but below the bottom of a
-    // landscape screen.
-    let below = state.enemies.insert(Enemy {
-        spawn_ticks: 0,
-        ..Enemy::shooter(cell_center(12, 14), Pattern::Aimed, &state.config, 0)
-    });
+    // 4 cells down, behind the pillar.
+    let id = rusher(&mut state, (6, 5));
     let before = state.enemies.clone();
     let events = idle(&mut state, 600);
     assert!(events.is_empty(), "{events:?}");
     assert_eq!(state.enemies, before, "nobody moved");
-    assert_eq!(enemy(&state, hidden).unwrap().awareness, Awareness::Unaware);
-    assert_eq!(enemy(&state, below).unwrap().awareness, Awareness::Unaware);
-    assert!(
-        state.enemy_bullets.is_empty(),
-        "shooters only fire when aware"
-    );
-    // Turned upright, the screen shows the whole height: the shooter is on it now.
-    let events = watch(&mut state, PORTRAIT, 1);
-    assert_eq!(events, [Event::EnemyAlerted { enemy: below }]);
-    assert_eq!(enemy(&state, hidden).unwrap().awareness, Awareness::Unaware);
+    assert_eq!(enemy(&state, id).unwrap().awareness, Awareness::Unaware);
 }
 
 #[test]
-fn an_enemy_on_screen_notices_a_player_in_plain_view_across_a_pit() {
-    let mut state = hold((11, 14));
-    // 9 cells straight up, the pit strip in between: pits don't block sight.
-    let id = rusher(&mut state, (11, 5));
-    let events = watch(&mut state, PORTRAIT, 1);
+fn an_enemy_notices_a_player_in_plain_view_at_any_range_across_a_pit() {
+    // 29 cells apart along row 11, past the far side of any phone screen, the pit strip
+    // in between: pits don't block sight.
+    let mut state = hold((1, 11));
+    let id = rusher(&mut state, (30, 11));
+    let events = idle(&mut state, 1);
     assert_eq!(events, [Event::EnemyAlerted { enemy: id }]);
     assert_eq!(
         enemy(&state, id).unwrap().awareness,
@@ -112,26 +86,17 @@ fn an_enemy_on_screen_notices_a_player_in_plain_view_across_a_pit() {
             searching: 0
         }
     );
-    // It comes round the pit for the player.
-    let start = cells_apart(enemy(&state, id).unwrap().pos, player_pos(&state));
-    watch(&mut state, PORTRAIT, 60);
-    let now = cells_apart(enemy(&state, id).unwrap().pos, player_pos(&state));
-    assert!(now < start, "{now} cells, from {start}");
 }
 
 #[test]
-fn a_shot_alerts_enemies_in_earshot_and_the_enemy_it_hits() {
+fn a_shot_alerts_an_enemy_in_earshot_behind_a_wall() {
     let mut state = hold((6, 1));
     // Behind the pillar but within earshot (4 cells).
-    let heard = rusher(&mut state, (6, 5));
-    // Straight down the line of fire, 10 cells off: out of earshot, and off the side of
-    // a portrait screen.
-    let hit = rusher(&mut state, (16, 1));
+    let id = rusher(&mut state, (6, 5));
     let mut fire = TickInputs::default();
     fire.players[0] = PlayerInput {
         aim: 0, // straight right
         buttons: Buttons::FIRE,
-        view: PORTRAIT,
         ..PlayerInput::default()
     };
     let events = step(&mut state, &fire).events;
@@ -139,23 +104,9 @@ fn a_shot_alerts_enemies_in_earshot_and_the_enemy_it_hits() {
         events,
         [
             Event::ShotFired { slot: 0 },
-            Event::EnemyAlerted { enemy: heard }
+            Event::EnemyAlerted { enemy: id }
         ]
     );
-    let events = watch(&mut state, PORTRAIT, 30);
-    assert_eq!(
-        events,
-        [
-            Event::EnemyHit { enemy: hit },
-            Event::EnemyAlerted { enemy: hit }
-        ]
-    );
-    for id in [heard, hit] {
-        assert!(matches!(
-            enemy(&state, id).unwrap().awareness,
-            Awareness::Alert { .. }
-        ));
-    }
 }
 
 #[test]
