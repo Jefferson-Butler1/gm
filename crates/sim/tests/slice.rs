@@ -3,8 +3,8 @@
 
 use sim::room::{Body, Category, Tiles, cell_center, cell_of};
 use sim::{
-    Buttons, DERELICT, Event, FxVec2, MAX_HP, MOVE_BUCKETS, PlayerInput, Rng, RoomId, Run,
-    RunConfig, SimState, TickInputs, step, trig,
+    Buttons, DERELICT, Difficulty, Event, FxVec2, MAX_HP, MOVE_BUCKETS, PlayerInput, Rng, RoomId,
+    Run, RunConfig, SimState, TickInputs, step, trig,
 };
 use std::collections::VecDeque;
 
@@ -123,6 +123,26 @@ fn next_cell(tiles: Tiles, from: (i32, i32), to: (i32, i32)) -> Option<(i32, i32
         .map(|(_, n)| n)
 }
 
+/// Whether a shot from `from` to `to` clears every wall (sampled every 4 pt).
+fn clear_shot(tiles: Tiles, from: FxVec2, to: FxVec2) -> bool {
+    let steps = 64;
+    (1..steps).all(|i| {
+        let at = |a: sim::Fx, b: sim::Fx| {
+            a.saturating_add(
+                b.saturating_sub(a)
+                    .saturating_mul_int(i)
+                    .checked_div_int(steps)
+                    .unwrap_or_default(),
+            )
+        };
+        let p = FxVec2 {
+            x: at(from.x, to.x),
+            y: at(from.y, to.y),
+        };
+        !tiles.blocks_point(p, Body::Shot)
+    })
+}
+
 fn cell(p: FxVec2) -> (i32, i32) {
     (cell_of(p.x), cell_of(p.y))
 }
@@ -178,7 +198,7 @@ fn waypoint(pos: FxVec2, here: (i32, i32), next: (i32, i32)) -> Option<FxVec2> {
 }
 
 /// One tick of the scripted player: in a fight, walk toward the nearest active enemy
-/// until within ~3 cells, auto-firing throughout; once the room is clear, walk to the
+/// until within ~3 cells with a clear shot, auto-firing throughout; once the room is clear, walk to the
 /// extraction pad, else to the exit into the next room.
 fn scripted_input(state: &SimState) -> Option<PlayerInput> {
     let player = state.players[0]?;
@@ -192,7 +212,10 @@ fn scripted_input(state: &SimState) -> Option<PlayerInput> {
                 .filter(|(_, e)| e.active())
                 .map(|(_, e)| e.pos)
                 .min_by_key(|&e| cells_apart(cell(e), here));
-            nearest.map(cell).filter(|&c| cells_apart(c, here) > 3)
+            // Pillars can block the auto-aimed shot: then close in regardless.
+            nearest
+                .filter(|&e| cells_apart(cell(e), here) > 3 || !clear_shot(tiles, player.pos, e))
+                .map(cell)
         }
         Run::Boarding { room } => tiles.room.extraction.map_or_else(
             || {
@@ -211,17 +234,24 @@ fn scripted_input(state: &SimState) -> Option<PlayerInput> {
         .and_then(|next| waypoint(player.pos, here, next))
         .map_or_else(PlayerInput::default, |to| stick_toward(player.pos, to));
     if matches!(state.run, Run::Encounter { .. }) {
+        // Held fire: the pistol auto-vents whenever it runs dry.
         input.buttons = Buttons::FIRE | Buttons::AUTO_AIM;
+    } else if player.gun.charges < state.config.tuning.charges {
+        // Between fights, top up before the next room.
+        input.buttons = Buttons::VENT;
     }
     Some(input)
 }
 
-/// Plays the whole derelict with the scripted player and a test-only cheat: slot 0 is
-/// topped back up to full HP every tick, so the run can't die.
+/// Plays the whole derelict on Normal with the scripted player and a test-only cheat:
+/// slot 0 is topped back up to full HP every tick, so the run can't die. It fights through
+/// the phase pistol's vents and vents manually between rooms.
 #[test]
 fn a_scripted_player_clears_every_room_and_extracts() {
     let mut state = SimState::new(SEED, RunConfig::default());
+    assert_eq!(state.config.difficulty, Difficulty::Normal);
     let mut events = Vec::new();
+    let (mut auto_vents, mut manual_vents) = (0, 0);
     let budget = 60 * 60 * 5; // 5 minutes of play
     for _ in 0..budget {
         if let Some(player) = &mut state.players[0] {
@@ -232,7 +262,15 @@ fn a_scripted_player_clears_every_room_and_extracts() {
         };
         let mut inputs = TickInputs::default();
         inputs.players[0] = input;
+        let was_venting = state.players[0].is_some_and(|p| p.gun.venting());
         events.extend(step(&mut state, &inputs).events);
+        if !was_venting && state.players[0].is_some_and(|p| p.gun.venting()) {
+            if input.buttons.contains(Buttons::VENT) {
+                manual_vents += 1;
+            } else {
+                auto_vents += 1;
+            }
+        }
     }
     let cleared: Vec<RoomId> = events
         .iter()
@@ -250,8 +288,13 @@ fn a_scripted_player_clears_every_room_and_extracts() {
         .filter(|e| matches!(e, Event::PlayerHit { .. }))
         .count();
     println!(
-        "won after {} ticks: cleared {cleared:?}, {kills} kills, took {hits} hits",
+        "won after {} ticks: cleared {cleared:?}, {kills} kills, took {hits} hits, \
+         {auto_vents} auto vents, {manual_vents} manual vents",
         state.tick
+    );
+    assert!(
+        auto_vents >= 5 && manual_vents >= 1,
+        "{auto_vents} {manual_vents}"
     );
     assert_eq!(state.run, Run::Won { room: exit_room() }, "{cleared:?}");
     assert_eq!(cleared, [RoomId(1), RoomId(2), RoomId(3), RoomId(4)]);

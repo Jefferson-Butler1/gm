@@ -535,4 +535,29 @@ mod tests {
             .collect();
         assert_eq!(shots, [0, 17, 34]);
     }
+
+    #[test]
+    fn vent_button_vents_and_the_vent_keeps_ticking_through_a_roll() {
+        let mut p = player();
+        p.update(fire(DOWN, 0), &[], tiles(), &Tuning::NORMAL);
+        p.update(
+            with(PlayerInput::default(), Buttons::VENT),
+            &[],
+            tiles(),
+            &Tuning::NORMAL,
+        );
+        assert_eq!((p.gun.charges, p.gun.vent_ticks), (0, 66));
+        // Roll right away: the whole roll counts toward the vent.
+        for _ in 0..ROLL_TICKS {
+            p.update(dodge(), &[], tiles(), &Tuning::NORMAL);
+        }
+        assert_eq!(p.gun.vent_ticks, 66 - ROLL_TICKS);
+        let shots: Vec<u16> = (1..=40)
+            .filter(|_| {
+                p.update(fire(DOWN, 0), &[], tiles(), &Tuning::NORMAL)
+                    .is_some()
+            })
+            .collect();
+        assert_eq!(shots, [66 - ROLL_TICKS], "fires the tick the vent refills");
+    }
 }
