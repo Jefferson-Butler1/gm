@@ -4,13 +4,15 @@
 //! Pits (ETG rules): walking onto one, judged by the player's center cell, is a fall. The
 //! whole roll is airborne, so only where it lands counts. A fall always costs 1 HP (even
 //! mid post-hit invulnerability), leaves the player unable to act or be hit for
-//! `fall_ticks`, then respawns them where they last stood on solid ground, with the
-//! post-hit invulnerability.
+//! `fall_ticks`, then respawns them on the last safe spot they stood on, with the
+//! post-hit invulnerability. A safe spot is grounded (not mid-roll) with no pit within
+//! [`PIT_CLEARANCE`] (one cell) of the center along either axis, so a respawn never
+//! lands on a pit's lip.
 
 use crate::config::{Tuning, per_tick};
 use crate::gun::PhasePistol;
 use crate::input::{Buttons, MOVE_BUCKETS, PlayerInput};
-use crate::room::{Body, Tiles};
+use crate::room::{Body, CELL, Tiles};
 use crate::{Fx, FxVec2, trig};
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +22,9 @@ pub const ASSIST_CONE: i16 = 3641;
 pub const MAX_HP: u8 = 5;
 /// Hitbox radius of the placeholder player; also its half-extent against tiles.
 pub const PLAYER_RADIUS: Fx = Fx::from_bits(14 << 32);
+/// A respawn spot keeps every pit at least this far from the player's center: one cell,
+/// over twice the player's radius.
+pub const PIT_CLEARANCE: Fx = CELL;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Player {
@@ -41,7 +46,8 @@ pub struct Player {
     /// Fall left; nonzero = falling into a pit: no acting, no hits. Ends in a respawn at
     /// [`Self::solid`].
     pub fall_ticks: u16,
-    /// Where the player last stood grounded (not mid-roll) outside a pit.
+    /// Where the player last stood grounded (not mid-roll) at least [`PIT_CLEARANCE`]
+    /// from any pit; entering a room resets it to the arrival spot.
     pub solid: FxVec2,
     pub gun: PhasePistol,
 }
@@ -166,7 +172,9 @@ impl Player {
                 self.hurt_ticks = 0;
                 return None;
             }
-            self.solid = self.pos;
+            if !tiles.pit_within(self.pos, PIT_CLEARANCE) {
+                self.solid = self.pos;
+            }
         }
 
         // No aiming or firing mid-roll (Gungeon-style); the roll owns the facing. Venting
@@ -431,13 +439,11 @@ mod tests {
             .count()
     }
 
-    #[test]
-    fn walking_into_a_pit_falls_costs_a_hit_and_respawns_on_the_last_solid_spot() {
-        // Mid post-hit invulnerability: the fall costs the hit anyway.
-        let mut p = Player {
-            hurt_ticks: 1000,
-            ..player()
-        };
+    /// The pit strip's right edge (its cells end at x = 4 * 32).
+    const STRIP_EDGE: Fx = CELL.saturating_mul_int(4);
+
+    /// Walks `p` left until it falls into the pit strip; returns where it stood last.
+    fn walk_into_the_strip(p: &mut Player) -> FxVec2 {
         let mut last = p.pos;
         for _ in 0..200 {
             if p.falling() {
@@ -446,11 +452,29 @@ mod tests {
             last = p.pos;
             p.update(walk(16), &[], tiles(), &Tuning::NORMAL);
         }
+        last
+    }
+
+    #[test]
+    fn walking_into_a_pit_falls_costs_a_hit_and_respawns_a_cell_back_from_its_edge() {
+        // Mid post-hit invulnerability: the fall costs the hit anyway.
+        let mut p = Player {
+            hurt_ticks: 1000,
+            ..player()
+        };
+        let last = walk_into_the_strip(&mut p);
         assert!(p.falling());
         assert_eq!((p.hp, p.fall_ticks), (MAX_HP - 1, FALL_TICKS));
         // Judged by the center: it just crossed from floor into the pit.
         assert!(tiles().pit_at(p.pos) && !tiles().pit_at(last));
-        assert_eq!(p.solid, last);
+        // The respawn is the last spot a full cell clear of the pit, not its lip: the
+        // first step (3.8 pt) within a cell of the edge stopped updating it.
+        let clearance = p.solid.x.saturating_sub(STRIP_EDGE);
+        assert!(
+            clearance >= CELL && clearance < CELL.saturating_add(Fx::from_num(4)),
+            "{clearance}"
+        );
+        let last = p.solid;
 
         // Falling: no moving, rolling, firing or getting hit, for the rest of the fall.
         let flail = with(walk(0), Buttons::DODGE | Buttons::FIRE);
@@ -462,12 +486,37 @@ mod tests {
 
         p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
         assert!(!p.falling());
-        assert_eq!(p.pos, last, "back on the last solid spot");
+        assert_eq!(p.pos, last, "back on the last safe spot");
         assert_eq!(
             p.hurt_ticks,
             Tuning::NORMAL.hurt_ticks,
             "with post-hit invulnerability"
         );
+    }
+
+    #[test]
+    fn a_fall_from_the_pit_edge_respawns_at_least_a_cell_from_every_pit() {
+        // Standing on the strip's lip (8 pt from it) since the room was entered, then
+        // strolling around its corner: every spot so far is within a cell of the pit.
+        let lip = FxVec2 {
+            x: STRIP_EDGE.saturating_add(Fx::from_num(8)),
+            y: cell_center(4, 12).y,
+        };
+        let mut p = player_at(lip);
+        hold(&mut p, walk(24), 20); // up along the strip
+        let tiles = tiles();
+        assert!(tiles.pit_within(p.pos, PIT_CLEARANCE) && p.solid == lip);
+        // Wander clear of it, then walk back in along its row.
+        hold(&mut p, walk(0), 30); // right, out to 123 pt from the edge
+        let far = p.pos;
+        hold(&mut p, walk(24), 10); // up, still clear
+        walk_into_the_strip(&mut p);
+        assert!(p.falling());
+        hold(&mut p, PlayerInput::default(), FALL_TICKS);
+        assert!(!p.falling());
+        assert!(!tiles.pit_within(p.pos, PIT_CLEARANCE), "{:?}", p.pos);
+        let clearance = p.pos.x.saturating_sub(STRIP_EDGE);
+        assert!(clearance >= CELL && p.pos.x < far.x, "{clearance}");
     }
 
     #[test]

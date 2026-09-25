@@ -805,6 +805,17 @@ impl Tiles {
         self.room.cell(cell_of(p.x), cell_of(p.y)) == Cell::Pit
     }
 
+    /// Whether any pit cell overlaps the square of half-size `reach` around `p`: some pit
+    /// lies closer than `reach` to `p` along both axes.
+    #[must_use]
+    pub fn pit_within(self, p: FxVec2, reach: Fx) -> bool {
+        let span = |v: Fx| {
+            cell_of(v.saturating_sub(reach))
+                ..=cell_of(v.saturating_add(reach).saturating_sub(Fx::DELTA))
+        };
+        span(p.y).any(|y| span(p.x).any(|x| self.room.cell(x, y) == Cell::Pit))
+    }
+
     /// Whether the cell containing `p` blocks `body`.
     #[must_use]
     pub fn blocks_point(self, p: FxVec2, body: Body) -> bool {
