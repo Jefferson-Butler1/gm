@@ -3,7 +3,8 @@
 //! Reads the previous and current [`SimState`] and interpolates between them; it never
 //! mutates the sim. Hit flashes, muzzle flashes, death puffs and the "!" over an enemy
 //! that notices the party come from sim [`Event`]s. Placeholder art is flat colored
-//! squares, circles and rings, converted to NDC on the CPU so there are no bind groups.
+//! squares, circles, rings and carets, converted to NDC on the CPU so there are no bind
+//! groups.
 //! On-screen controls arrive as an [`Overlay`] in view points, since their layout belongs
 //! to `game`.
 
@@ -73,9 +74,17 @@ const VENT_COLOR: [f32; 3] = [1.0, 0.75, 0.25];
 const BUTTON_READY_ALPHA: f32 = 0.35;
 const BUTTON_UNREADY_ALPHA: f32 = 0.1;
 
+/// With no enemy on screen, a caret at the screen edge points to the nearest one: its
+/// half-size, and its inset from the edge, in view points.
+const CARET_COLOR: [f32; 4] = [1.0, 0.2, 0.2, 0.9];
+const CARET_HALF: f32 = 9.0;
+const CARET_MARGIN: f32 = 16.0;
+
 const SQUARE: f32 = 0.0;
 const CIRCLE: f32 = 1.0;
 const RING: f32 = 2.0;
+/// A triangle pointing along the quad's `dir`.
+const CARET: f32 = 3.0;
 
 const SHADER: &str = r"
 struct Inst {
@@ -83,12 +92,14 @@ struct Inst {
     @location(1) half_size: vec2f,
     @location(2) color: vec4f,
     @location(3) shape: f32,
+    @location(4) dir: vec2f,
 };
 struct VOut {
     @builtin(position) pos: vec4f,
     @location(0) uv: vec2f,
     @location(1) color: vec4f,
     @location(2) shape: f32,
+    @location(3) dir: vec2f,
 };
 @vertex fn vs(@builtin(vertex_index) vi: u32, i: Inst) -> VOut {
     var corners = array<vec2f, 6>(
@@ -100,11 +111,17 @@ struct VOut {
     o.uv = c;
     o.color = i.color;
     o.shape = i.shape;
+    o.dir = i.dir;
     return o;
 }
-// shape: 0 = square, 1 = filled circle, 2 = ring.
+// shape: 0 = square, 1 = filled circle, 2 = ring, 3 = caret.
 @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    if (v.shape > 0.5) {
+    if (v.shape > 2.5) {
+        // In the caret's frame (x along dir): a triangle inscribed in the unit circle,
+        // tip at (1, 0), base at x = -0.5.
+        let p = vec2f(dot(v.uv, v.dir), dot(v.uv, vec2f(-v.dir.y, v.dir.x)));
+        if (p.x < -0.5 || abs(p.y) > (1.0 - p.x) * 0.57735) { discard; }
+    } else if (v.shape > 0.5) {
         let d = length(v.uv);
         if (d > 1.0) { discard; }
         if (v.shape > 1.5 && d < 0.88) { discard; }
@@ -121,6 +138,9 @@ struct Quad {
     half: [f32; 2],
     color: [f32; 4],
     shape: f32,
+    /// Unit direction a caret points, NDC-oriented (+y up); ignored by other shapes. True
+    /// to angle only on a quad that is square in points.
+    dir: [f32; 2],
 }
 
 /// On-screen controls, in view points (origin top-left).
@@ -435,13 +455,17 @@ impl Renderer {
         }
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
         let telegraph = current.config.tuning.shooter_telegraph;
+        // Where each enemy is drawn, spawns telegraphing in included.
+        let mut enemies = Vec::with_capacity(current.enemies.len());
         for (id, e) in current.enemies.iter() {
             if !e.active() {
                 self.push_telegraph(e, radius, alpha);
+                enemies.push([e.pos.x.to_num(), e.pos.y.to_num()]);
                 continue;
             }
             let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
             let pos = lerp(from, e.pos, alpha);
+            enemies.push(pos);
             let color = if self.flashing(Flash::Enemy(id)) {
                 HIT_COLOR
             } else {
@@ -499,6 +523,54 @@ impl Renderer {
             self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
         }
         self.push_effects(&players, current.tick, alpha);
+        if let Some((focus, _)) = players.iter().flatten().next() {
+            self.push_enemy_caret(*focus, &enemies);
+        }
+    }
+
+    /// With enemies in the room but none on screen, a caret on the screen edge points to
+    /// the nearest one: where the line from the player (`focus`) to it leaves the screen,
+    /// inset by [`CARET_MARGIN`]. `enemies` are room-space positions, as drawn.
+    fn push_enemy_caret(&mut self, focus: [f32; 2], enemies: &[[f32; 2]]) {
+        let [w, h] = self.size_pt;
+        let on_screen = |[x, y]: [f32; 2]| (0.0..=w).contains(&x) && (0.0..=h).contains(&y);
+        if enemies.iter().any(|&e| on_screen(self.view_point(e))) {
+            return;
+        }
+        let offset = |[x, y]: [f32; 2]| [x - focus[0], y - focus[1]];
+        let dist_sq = |e: [f32; 2]| {
+            let [dx, dy] = offset(e);
+            dx.mul_add(dx, dy * dy)
+        };
+        let Some(&nearest) = enemies
+            .iter()
+            .min_by(|a, b| dist_sq(**a).total_cmp(&dist_sq(**b)))
+        else {
+            return;
+        };
+        let [dx, dy] = offset(nearest);
+        let len = dx.hypot(dy);
+        if len <= f32::EPSILON {
+            return;
+        }
+        let [px, py] = self.view_point(focus);
+        // How far along (dx, dy) to the inset edge on one axis; the nearer axis wins.
+        let reach = |d: f32, p: f32, size: f32| {
+            if d > 0.0 {
+                (size - CARET_MARGIN - p) / d
+            } else if d < 0.0 {
+                (CARET_MARGIN - p) / d
+            } else {
+                f32::INFINITY
+            }
+        };
+        let t = reach(dx, px, w).min(reach(dy, py, h)).max(0.0);
+        let at = [dx.mul_add(t, px), dy.mul_add(t, py)];
+        self.push_screen(at, CARET_HALF, CARET_COLOR, CARET);
+        if let Some(caret) = self.quads.last_mut() {
+            // View points are +y down; the shader's frame is +y up.
+            caret.dir = [dx / len, -dy / len];
+        }
     }
 
     /// Muzzle flashes and death puffs, fading over their lifetimes. `players` are the
@@ -756,6 +828,7 @@ impl Renderer {
             half: [hx * sx, hy * sy],
             color,
             shape,
+            dir: [1.0, 0.0],
         });
     }
 
@@ -767,6 +840,7 @@ impl Renderer {
             half: [radius / w * 2.0, radius / h * 2.0],
             color,
             shape,
+            dir: [1.0, 0.0],
         });
     }
 }
@@ -813,8 +887,7 @@ fn make_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Re
         bind_group_layouts: &[],
         immediate_size: 0,
     });
-    let attrs =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
+    let attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32, 4 => Float32x2];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("quad"),
         layout: Some(&layout),
