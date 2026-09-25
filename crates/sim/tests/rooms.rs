@@ -405,7 +405,12 @@ fn aware(state: &mut SimState, hunting: bool) {
 fn with_doors_lock_on_aggro_doors_seal_only_while_an_enemy_hunts() {
     let (mut state, _) = enter_cargo_hold(true);
     assert!(matches!(state.run, Run::Encounter { wave: 0, .. }));
-    // The base wave telegraphs in and stands unaware, off screen: the doors stay open.
+    // Hidden from the base wave behind the pillar, the party is not seen as it
+    // telegraphs in: it stands unaware, and the doors stay open.
+    if let Some(player) = &mut state.players[0] {
+        player.pos = cell_center(4, 4);
+        player.solid = player.pos;
+    }
     run(&mut state, 60, &TickInputs::default());
     assert!(!locked(&state));
 

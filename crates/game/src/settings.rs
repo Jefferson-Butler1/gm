@@ -47,7 +47,7 @@ pub struct RunSettings {
     /// A fall into a pit, before the respawn.
     pub fall_secs: f32,
     /// Enemy awareness, pt: how far an unaware enemy hears a shot, and how far a hunting
-    /// one alerts its allies. (Sight is the player's screen.)
+    /// one alerts its allies. (Sight is line of sight, at any range.)
     pub hearing_radius: f32,
     pub alert_radius: f32,
     /// How long a hunter searches where it lost the player before giving up.
