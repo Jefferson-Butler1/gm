@@ -26,6 +26,7 @@ const WALL_COLOR: [f32; 4] = [0.22, 0.25, 0.33, 1.0];
 const PIT_COLOR: [f32; 4] = [0.0, 0.0, 0.01, 1.0];
 const DOOR_OPEN_COLOR: [f32; 4] = [0.1, 0.3, 0.2, 1.0];
 const DOOR_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
+const PAD_COLOR: [f32; 4] = [0.3, 1.0, 0.6, 1.0];
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
 const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
@@ -284,7 +285,8 @@ impl Renderer {
                 | Event::Restarted
                 | Event::RoomEntered { .. }
                 | Event::WaveStarted { .. }
-                | Event::RoomCleared { .. } => continue,
+                | Event::RoomCleared { .. }
+                | Event::Won => continue,
             };
             if !self.flashes.contains(&(flash, tick)) {
                 self.flashes.push((flash, tick));
@@ -398,10 +400,11 @@ impl Renderer {
                     .map(|(a, b)| (lerp(lerp_from(a.pos, b.pos), b.pos, alpha), b))
             })
             .collect();
-        if let Some(room) = current.run.room().and_then(|id| sim::DERELICT.room(id)) {
+        if let Some(room) = sim::DERELICT.room(current.run.room()) {
             let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
             self.camera = self.camera_for(room, focus);
-            self.push_room(room, current.run.doors_locked());
+            let pad_live = !matches!(current.run, sim::Run::Encounter { .. });
+            self.push_room(room, current.run.doors_locked(), pad_live);
         }
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
         for (id, e) in current.enemies.iter() {
@@ -559,8 +562,9 @@ impl Renderer {
         ]
     }
 
-    /// One quad per non-void cell. Exit gaps draw as doors: open or sealed.
-    fn push_room(&mut self, room: &PrototypeRoom, sealed: bool) {
+    /// One quad per non-void cell. Exit gaps draw as doors: open or sealed. The extraction
+    /// pad, if any, is dim until `pad_live`.
+    fn push_room(&mut self, room: &PrototypeRoom, sealed: bool, pad_live: bool) {
         let half = sim::room::CELL.to_num::<f32>() / 2.0;
         for y in 0..room.height() {
             for x in 0..room.width() {
@@ -584,6 +588,16 @@ impl Renderer {
                     SQUARE,
                 );
             }
+        }
+        if let Some((x, y)) = room.extraction {
+            // The ring marks the pad's reach: touching the cell with any part of the body.
+            let center = sim::room::cell_center(x, y);
+            let at = [center.x.to_num(), center.y.to_num()];
+            let [r, g, b, _] = PAD_COLOR;
+            let alpha = if pad_live { 1.0 } else { 0.3 };
+            self.push_world(at, [half, half], [r, g, b, alpha], SQUARE);
+            let reach = half + sim::PLAYER_RADIUS.to_num::<f32>();
+            self.push_world(at, [reach, reach], [r, g, b, alpha * 0.8], RING);
         }
     }
 

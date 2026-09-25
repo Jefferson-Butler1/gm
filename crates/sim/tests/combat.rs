@@ -125,7 +125,7 @@ fn death_goes_to_dead_and_restart_starts_a_fresh_run() {
 
 fn restart_now(state: &mut SimState) {
     state.run = Run::Dead {
-        room: state.run.room().unwrap_or_default(),
+        room: state.run.room(),
         ticks_until_restart: 0,
     };
     assert_eq!(run(state, 1, &press(Buttons::RESTART)), [Event::Restarted]);

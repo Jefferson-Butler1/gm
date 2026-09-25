@@ -181,7 +181,7 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
     enemy_bullets(state, tiles, events);
     if !state.players.iter().flatten().any(Player::alive) {
         state.run = Run::Dead {
-            room: state.run.room().unwrap_or_default(),
+            room: state.run.room(),
             ticks_until_restart: DEATH_TICKS,
         };
         return;

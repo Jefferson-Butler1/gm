@@ -76,18 +76,21 @@ pub enum Run {
         room: RoomId,
         ticks_until_restart: u32,
     },
-    Won,
+    /// Extracted from `room` (the exit room), which presentation keeps drawing.
+    Won {
+        room: RoomId,
+    },
 }
 
 impl Run {
-    /// The room the party is in; `None` once the run is won.
+    /// The room the party is in (or ended the run in).
     #[must_use]
-    pub const fn room(self) -> Option<RoomId> {
+    pub const fn room(self) -> RoomId {
         match self {
-            Self::Boarding { room } | Self::Encounter { room, .. } | Self::Dead { room, .. } => {
-                Some(room)
-            }
-            Self::Won => None,
+            Self::Boarding { room }
+            | Self::Encounter { room, .. }
+            | Self::Dead { room, .. }
+            | Self::Won { room } => room,
         }
     }
 
@@ -156,10 +159,10 @@ impl SimState {
         fresh
     }
 
-    /// Collision for the party's current room; `None` once the run is won.
+    /// Collision for the party's current room.
     #[must_use]
     pub fn tiles(&self) -> Option<room::Tiles> {
-        let room = DERELICT.room(self.run.room()?)?;
+        let room = DERELICT.room(self.run.room())?;
         Some(room::Tiles {
             room,
             sealed: self.run.doors_locked(),
@@ -219,6 +222,8 @@ pub enum Event {
     RoomCleared {
         room: RoomId,
     },
+    /// A player reached the extraction pad: the run is won.
+    Won,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -249,11 +254,11 @@ pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
         } if *ticks_until_restart > 0 => {
             *ticks_until_restart = ticks_until_restart.saturating_sub(1);
         }
-        Run::Dead { .. } | Run::Won if restart_pressed => {
+        Run::Dead { .. } | Run::Won { .. } if restart_pressed => {
             *state = state.restarted();
             events.events.push(Event::Restarted);
         }
-        Run::Dead { .. } | Run::Won => {}
+        Run::Dead { .. } | Run::Won { .. } => {}
     }
 
     state.tick = state.tick.wrapping_add(1);

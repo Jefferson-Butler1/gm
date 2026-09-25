@@ -1,8 +1,9 @@
-//! Rooms in play: walking through exits, room events (seal/unseal), and waves from object
-//! layers. Drives `Run::Boarding` <-> `Run::Encounter`.
+//! Rooms in play: walking through exits, room events (seal/unseal), waves from object
+//! layers, and extraction. Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
 use crate::combat::{Enemy, SHOOTER_STAGGER};
 use crate::derelict::DERELICT;
+use crate::player::PLAYER_RADIUS;
 use crate::room::{
     EnemyKind, LayerTrigger, Placement, PrototypeRoom, RoomAction, RoomTrigger, cell_center,
     cell_of,
@@ -36,8 +37,8 @@ pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEven
     };
 }
 
-/// After combat: advance waves or finish the room, then take any open exit a living
-/// player stands in.
+/// After combat: advance waves or finish the room, then win if a living player touches
+/// a clear room's extraction pad, else take any open exit a living player stands in.
 pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     if let Run::Encounter {
         room: id,
@@ -56,14 +57,22 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     if tiles.sealed {
         return;
     }
+    let mut living = state.players.iter().flatten().filter(|p| p.alive());
+    if let Run::Boarding { room } = state.run
+        && living.any(|p| tiles.room.on_extraction(p.pos, PLAYER_RADIUS))
+    {
+        state.run = Run::Won { room };
+        events.events.push(Event::Won);
+        return;
+    }
     let exit = state
         .players
         .iter()
         .flatten()
         .filter(|p| p.alive())
         .find_map(|p| tiles.room.exit_at(cell_of(p.pos.x), cell_of(p.pos.y)));
-    if let Some(from) = state.run.room()
-        && let Some(exit) = exit
+    let from = state.run.room();
+    if let Some(exit) = exit
         && let Some((to, to_exit)) = DERELICT.link(from, exit)
         && let Some(arrival) = DERELICT
             .room(to)

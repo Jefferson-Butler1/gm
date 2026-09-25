@@ -69,7 +69,7 @@ impl RunState {
             } => Self::Dead {
                 can_restart: ticks_until_restart == 0,
             },
-            Run::Won => Self::Won,
+            Run::Won { .. } => Self::Won,
         }
     }
 }
