@@ -192,6 +192,15 @@ impl SimState {
             .is_some_and(|bits| bits & 1 == 1)
     }
 
+    /// Whether the party's room has nothing left to fight: every wave cleared, or none
+    /// to begin with. Its extraction pad, if any, wins only then; presentation lights it
+    /// from this too.
+    #[must_use]
+    pub fn extraction_live(&self) -> bool {
+        let room = self.run.room();
+        self.cleared(room) || DERELICT.room(room).is_some_and(|r| !r.has_enemies())
+    }
+
     fn set_cleared(&mut self, room: RoomId) {
         self.cleared |= 1_u64.checked_shl(u32::from(room.0)).unwrap_or(0);
     }
