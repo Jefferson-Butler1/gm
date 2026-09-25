@@ -715,6 +715,27 @@ impl Renderer {
                         }
                     }
                 }
+                // Corner stones, so the lip turns corners cleanly: outside a pit's corner
+                // (only the diagonal is pit) to join the two runs, and inside one (both
+                // sides are pit) to cover where the runs cross.
+                for (dx, dy) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                    let pit = |x: Option<i32>, y: Option<i32>| {
+                        x.zip(y).is_some_and(|(x, y)| room.cell(x, y) == Cell::Pit)
+                    };
+                    let (nx, ny) = (cx.checked_add(dx), cy.checked_add(dy));
+                    let (side_x, side_y) = (pit(nx, Some(cy)), pit(Some(cx), ny));
+                    let outside = pit(nx, ny) && !side_x && !side_y;
+                    if !(outside || side_x && side_y) {
+                        continue;
+                    }
+                    let [sx, sy] = [
+                        f32::from(i8::try_from(dx).unwrap_or(0)),
+                        f32::from(i8::try_from(dy).unwrap_or(0)),
+                    ];
+                    let inset = cell / 2.0 - course;
+                    let at = [sx.mul_add(inset, mx), sy.mul_add(inset, my)];
+                    self.push_world(at, [course - 0.5, course - 0.5], PIT_LIP_COLOR, SQUARE);
+                }
             }
         }
     }
