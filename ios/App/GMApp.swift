@@ -59,7 +59,7 @@ final class GameModel {
         if paused { game?.pause() } else { game?.resume() }
     }
 
-    /// Restart (death overlay tap or the settings button); Rust turns it into the sim's RESTART input.
+    /// Restart (end-of-run overlay tap or the settings button); Rust turns it into the sim's RESTART input.
     func restart() {
         game?.restart()
     }
@@ -90,12 +90,24 @@ struct ContentView: View {
                     }
                     .font(.system(size: 16))
                     .foregroundStyle(.red)
+                    // Room, and the wave while a fight is on.
+                    Text(hud.wave > 0 ? "\(hud.room.capitalized) · wave \(hud.wave)/\(hud.waves)" : hud.room.capitalized)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.5))
                 }
                 .allowsHitTesting(false)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.leading, 8)
-                if case .dead(let canRestart) = hud.run {
-                    DeadOverlay(canRestart: canRestart) { model.restart() }
+                switch hud.run {
+                case .dead(let canRestart):
+                    EndOverlay(title: "You died", prompt: "Tap to restart", canRestart: canRestart) { model.restart() }
+                case .won:
+                    EndOverlay(title: "Derelict cleared", prompt: "Tap to start a new run", canRestart: true) { model.restart() }
+                case .playing:
+                    EmptyView()
                 }
             }
             Button { model.settingsOpen = true } label: {
@@ -115,15 +127,18 @@ struct ContentView: View {
     }
 }
 
-/// Covers the game while dead. Taps restart once the sim's death pause is over.
-struct DeadOverlay: View {
+/// Covers the game once the run is over (died or won). Taps restart once allowed: after a
+/// death, when the sim's death pause is over.
+struct EndOverlay: View {
+    let title: String
+    let prompt: String
     let canRestart: Bool
     let restart: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
-            Text("You died").font(.largeTitle.bold())
-            Text("Tap to restart").font(.title3).opacity(canRestart ? 1 : 0)
+            Text(title).font(.largeTitle.bold())
+            Text(prompt).font(.title3).opacity(canRestart ? 1 : 0)
         }
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
