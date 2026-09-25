@@ -59,7 +59,7 @@ final class GameModel {
         if paused { game?.pause() } else { game?.resume() }
     }
 
-    /// Tap-to-restart; Rust turns it into the sim's RESTART input.
+    /// Restart (death overlay tap or the settings button); Rust turns it into the sim's RESTART input.
     func restart() {
         game?.restart()
     }
@@ -154,6 +154,14 @@ struct ControlsSettings: View {
                             Text(String(format: "%.2f", model.assist))
                                 .font(.system(.body, design: .monospaced))
                         }
+                    }
+                }
+                Section {
+                    // Pending restart survives the pause; it lands on the first tick after
+                    // the sheet closes.
+                    Button("Restart run", role: .destructive) {
+                        model.restart()
+                        dismiss()
                     }
                 }
             }

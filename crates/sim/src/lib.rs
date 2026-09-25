@@ -231,8 +231,14 @@ pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
         .players
         .iter()
         .any(|input| input.buttons.contains(Buttons::RESTART));
-    // Only a live run simulates; the world stays frozen while Dead or Won.
+    // Only a live run simulates; the world stays frozen while Dead or Won. RESTART
+    // abandons a live run at once (the settings sheet's Restart button); after a death it
+    // waits out the death pause.
     match &mut state.run {
+        Run::Boarding { .. } | Run::Encounter { .. } if restart_pressed => {
+            *state = state.restarted();
+            events.events.push(Event::Restarted);
+        }
         Run::Boarding { .. } | Run::Encounter { .. } => combat::tick(state, inputs, &mut events),
         Run::Dead {
             ticks_until_restart,

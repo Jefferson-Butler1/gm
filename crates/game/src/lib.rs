@@ -185,8 +185,8 @@ impl Game {
         self.lock().controls.set_assist(strength);
     }
 
-    /// Tap to restart: sends RESTART on the next tick. The sim ignores it unless the run
-    /// is over and the death pause has elapsed.
+    /// Restart: sends RESTART on the next tick. A live run restarts at once; after a
+    /// death the sim ignores it until the death pause has elapsed.
     pub fn restart(&self) {
         self.lock().controls.request_restart();
     }

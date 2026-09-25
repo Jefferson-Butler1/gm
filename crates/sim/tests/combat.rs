@@ -131,6 +131,16 @@ fn restart_now(state: &mut SimState) {
 }
 
 #[test]
+fn restart_abandons_a_live_run_at_once() {
+    let mut state = arena_with_rusher(40);
+    state.cleared = 0b1;
+    assert_eq!(run(&mut state, 1, &press(Buttons::RESTART)), [Event::Restarted]);
+    let mut fresh = SimState::new(Rng::next_seed(SEED));
+    fresh.tick = state.tick;
+    assert_eq!(state, fresh);
+}
+
+#[test]
 fn each_restart_resets_the_rooms_and_derives_the_next_run_seed() {
     let mut state = SimState::new(SEED);
     // As if the party had cleared the airlock and died in the cargo hold.

@@ -7,6 +7,8 @@ use std::ops::Range;
 const SEED: u64 = 0x5EED;
 const TICKS: u64 = 1500;
 /// Ticks when the party holds only RESTART (the scripted start, then after the death).
+/// RESTART also abandons a live run, so each window presses it on its last tick only:
+/// once the death pause is over, not every tick after the run has restarted.
 const RESTARTS: [Range<u64>; 2] = [0..40, 900..950];
 /// Ticks when the party walks from the start cell out of the airlock's east exit and into
 /// the cargo hold's encounter: [`WALK_NORTH`] ticks up, then east.
@@ -19,11 +21,11 @@ const AUTO_FIGHT: Range<u64> = 1010..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x019f_d6d1_a18d_a2ab;
+const GOLDEN_TRACE: u64 = 0x80ad_7fa5_cb33_803a;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
-/// and buttons elsewhere. Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and
+/// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and
 /// walking all show up; FIRE is held about half the time.
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
@@ -37,7 +39,7 @@ fn script() -> Vec<TickInputs> {
                     move_mag: bits[1],
                     aim: u16::from_le_bytes([bits[2], bits[3]]),
                     assist: bits[5],
-                    buttons: Buttons(bits[4] & !Buttons::DODGE.0 & 0b1_1111)
+                    buttons: Buttons(bits[4] & !Buttons::DODGE.0 & !Buttons::RESTART.0 & 0b1_1111)
                         | if bits[6] < 32 {
                             Buttons::DODGE
                         } else {
@@ -47,9 +49,13 @@ fn script() -> Vec<TickInputs> {
             }
             let scripted = if STAND_STILL.contains(&tick) {
                 Some(PlayerInput::default())
-            } else if RESTARTS.iter().any(|r| r.contains(&tick)) {
+            } else if let Some(window) = RESTARTS.iter().find(|r| r.contains(&tick)) {
                 Some(PlayerInput {
-                    buttons: Buttons::RESTART,
+                    buttons: if tick == window.end.saturating_sub(1) {
+                        Buttons::RESTART
+                    } else {
+                        Buttons::default()
+                    },
                     ..PlayerInput::default()
                 })
             } else {
