@@ -343,6 +343,14 @@ impl Controls {
             .as_ref()
             .map(Stick::polar)
             .filter(|&(_, mag)| mag > AIM_DEADZONE);
+        // A deflected aim stick turns the player even when it doesn't fire (tap and
+        // release); a shot below overrides the aim with its own.
+        if let Some((t, _)) = aim
+            && self.scheme != Scheme::AutoAim
+        {
+            input.aim = aim_angle(t);
+            input.buttons |= Buttons::AIM;
+        }
         // Hold fires from the held stick; tap and release only through pending shots.
         let held = self.fire_mode == FireMode::Hold;
         let shot = match self.scheme {
@@ -353,7 +361,7 @@ impl Controls {
         };
         match self.shot.take().or(shot) {
             Some(Shot::At(t)) => {
-                input.aim = u16::try_from(quantize(t, 1 << 16) & 0xFFFF).unwrap_or(0);
+                input.aim = aim_angle(t);
                 input.buttons |= Buttons::FIRE;
             }
             Some(Shot::Auto) => input.buttons |= Buttons::FIRE | Buttons::AUTO_AIM,
@@ -424,6 +432,11 @@ fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
 /// Angle of (`dx`, `dy`) in turns `0..1` from +x toward +y.
 fn turns(dx: f32, dy: f32) -> f32 {
     (dy.atan2(dx) / TAU).rem_euclid(1.0)
+}
+
+/// `turns` as a sim angle: one full turn = 65536, wrapping.
+fn aim_angle(turns: f32) -> u16 {
+    u16::try_from(quantize(turns, 1 << 16) & 0xFFFF).unwrap_or(0)
 }
 
 fn move_bucket(turns: f32) -> u8 {
@@ -511,6 +524,12 @@ mod tests {
         input.buttons.contains(Buttons::FIRE).then_some(input.aim)
     }
 
+    /// (fired angle, aim-only angle) of one input.
+    fn aimed(input: PlayerInput) -> (Option<u16>, Option<u16>) {
+        let only_aim = input.buttons.contains(Buttons::AIM) && fired(input).is_none();
+        (fired(input), only_aim.then_some(input.aim))
+    }
+
     #[test]
     fn hold_fires_every_tick_the_aim_stick_is_deflected() {
         let mut c = controls(Scheme::FixedSticks);
@@ -532,9 +551,9 @@ mod tests {
         assert_eq!(fired(c.next_input()), Some(32768));
         c.touch(1, TouchPhase::Moved, x, y + STICK_RADIUS);
         assert_eq!(
-            fired(c.next_input()),
-            None,
-            "held and dragged: no more shots"
+            aimed(c.next_input()),
+            (None, Some(16384)),
+            "held and dragged: aims down, no more shots"
         );
         c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
         c.touch(2, TouchPhase::Began, x, y - STICK_RADIUS); // straight up
@@ -555,7 +574,11 @@ mod tests {
         c.set_fire_mode(FireMode::Release);
         c.touch(1, TouchPhase::Began, 600.0, 200.0);
         c.touch(1, TouchPhase::Moved, 600.0, 200.0 + STICK_RADIUS); // aim down
-        assert_eq!(fired(c.next_input()), None, "dragging only aims");
+        assert_eq!(
+            aimed(c.next_input()),
+            (None, Some(16384)),
+            "dragging only aims"
+        );
         c.touch(1, TouchPhase::Ended, 600.0, 200.0 + STICK_RADIUS);
         assert_eq!(fired(c.next_input()), Some(16384));
         assert_eq!(fired(c.next_input()), None);

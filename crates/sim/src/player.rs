@@ -29,8 +29,8 @@ pub const PIT_CLEARANCE: Fx = CELL;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Player {
     pub pos: FxVec2,
-    /// Move direction while moving, overridden by the resolved aim while firing; one
-    /// full turn = 65536.
+    /// Move direction while moving, overridden by the resolved aim while firing or the
+    /// raw aim while aiming (`Buttons::AIM`); one full turn = 65536.
     pub facing: u16,
     /// Ticks of the current roll left, including this tick; nonzero = rolling: locked
     /// direction, no firing, no new roll.
@@ -189,6 +189,8 @@ impl Player {
         let trigger = !self.rolling() && input.buttons.contains(Buttons::FIRE);
         if trigger {
             self.facing = self.resolve_aim(input, targets);
+        } else if !self.rolling() && input.buttons.contains(Buttons::AIM) {
+            self.facing = input.aim;
         }
         let vent = input.buttons.contains(Buttons::VENT);
         let shot = self.gun.tick(tuning, trigger, vent).then_some(self.facing);
@@ -676,6 +678,40 @@ mod tests {
         let mut p = player();
         p.update(fire(4192, 255), &target, tiles(), &Tuning::NORMAL); // ~22 degrees off: outside the cone
         assert_eq!(p.facing, 4192);
+    }
+
+    #[test]
+    fn aim_without_fire_faces_the_raw_aim_over_the_move_without_shooting() {
+        let target = [point(100, 100)]; // in the assist cone of 5192
+        let aiming = with(walk(16), Buttons::AIM); // walking left
+        let mut p = player();
+        let shots = (0..40)
+            .filter(|_| {
+                p.update(
+                    PlayerInput {
+                        aim: 5192,
+                        assist: 255,
+                        ..aiming
+                    },
+                    &target,
+                    tiles(),
+                    &Tuning::NORMAL,
+                )
+                .is_some()
+            })
+            .count();
+        assert_eq!((shots, p.facing), (0, 5192), "no shots, no assist bend");
+        assert_eq!(p.gun.charges, PhasePistol::new(&Tuning::NORMAL).charges);
+        // Mid-roll the roll still owns the facing.
+        p.update(with(dodge(), Buttons::AIM), &[], tiles(), &Tuning::NORMAL);
+        assert_eq!(p.facing, 5192);
+        p.update(
+            with(PlayerInput::default(), Buttons::AIM),
+            &[],
+            tiles(),
+            &Tuning::NORMAL,
+        );
+        assert_eq!(p.facing, 5192);
     }
 
     #[test]
