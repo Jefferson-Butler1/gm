@@ -137,8 +137,6 @@ fn next_wave(
         return;
     }
     let doors_locked = react(room, RoomTrigger::OnEnemiesCleared, doors_locked);
-    // Gungeon-style: clearing the room clears its enemy fire too.
-    state.enemy_bullets.retain(|_, _| false);
     state.set_cleared(id);
     events.events.push(Event::RoomCleared { room: id });
     state.run = if doors_locked {
