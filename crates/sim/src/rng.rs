@@ -21,6 +21,14 @@ impl Rng {
         }
     }
 
+    /// The seed of the run after one seeded with `seed`: one `SplitMix64` step, so a
+    /// session's run seeds are a fixed sequence from its first.
+    #[must_use]
+    pub const fn next_seed(seed: u64) -> u64 {
+        let mut state = seed;
+        splitmix64(&mut state)
+    }
+
     pub const fn next_u64(&mut self) -> u64 {
         let [s0, s1, s2, s3] = self.s;
         let result = s1.wrapping_mul(5).rotate_left(7).wrapping_mul(9);
@@ -31,6 +39,12 @@ impl Rng {
         let s0 = s0 ^ s3;
         self.s = [s0, s1, s2 ^ t, s3.rotate_left(45)];
         result
+    }
+
+    /// Uniform-enough integer in `0..n` (0 when `n` is 0): the top 32 bits scaled by `n`.
+    pub fn below(&mut self, n: u32) -> u32 {
+        let scaled = (self.next_u64() >> 32).wrapping_mul(u64::from(n)) >> 32;
+        u32::try_from(scaled).unwrap_or(0)
     }
 }
 

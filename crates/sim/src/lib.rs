@@ -12,14 +12,24 @@
     clippy::wildcard_enum_match_arm
 )]
 
+mod arena;
 mod checksum;
+mod combat;
 mod input;
 mod player;
 mod rng;
 pub mod trig;
 
+pub use arena::{Arena, Id};
+pub use combat::{
+    BULLET_RADIUS, Bullet, DEATH_TICKS, Enemy, EnemyId, FIRST_SPAWN_TICKS, RUSHER_HP,
+    RUSHER_RADIUS, SPAWN_TELEGRAPH_TICKS,
+};
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
-pub use player::{ASSIST_CONE, PLAYER_HALF, Player, ROLL_COOLDOWN_TICKS, ROLL_TICKS, ROOM_HALF};
+pub use player::{
+    ASSIST_CONE, FIRE_INTERVAL, HURT_TICKS, MAX_HP, PLAYER_RADIUS, Player, ROLL_COOLDOWN_TICKS,
+    ROLL_TICKS, ROOM_HALF,
+};
 pub use rng::Rng;
 
 use serde::{Deserialize, Serialize};
@@ -69,9 +79,18 @@ impl Run {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SimState {
     pub tick: u64,
+    /// The run seed. The first comes from the host (random per session); each restart
+    /// derives the next with [`Rng::next_seed`], so replays stay deterministic.
+    pub seed: u64,
     pub rng: Rng,
     pub run: Run,
+    /// `None` = empty slot. An occupied slot with 0 HP is a dead player.
     pub players: [Option<Player>; MAX_PLAYERS],
+    pub enemies: Arena<Enemy>,
+    pub bullets: Arena<Bullet>,
+    /// TEMPORARY (until the Rooms step): ticks until the placeholder spawner may add a
+    /// rusher.
+    pub spawn_cooldown: u16,
 }
 
 impl SimState {
@@ -80,10 +99,26 @@ impl SimState {
     pub fn new(seed: u64) -> Self {
         Self {
             tick: 0,
+            seed,
             rng: Rng::from_seed(seed),
             run: Run::START,
             players: [Some(Player::default()), None, None, None],
+            enemies: Arena::default(),
+            bullets: Arena::default(),
+            spawn_cooldown: FIRST_SPAWN_TICKS,
         }
+    }
+
+    /// A fresh run from the next run seed, with the same occupied slots. The tick keeps
+    /// counting: it is session time, and presentation keys effects by it.
+    #[must_use]
+    pub fn restarted(&self) -> Self {
+        let mut fresh = Self::new(Rng::next_seed(self.seed));
+        fresh.tick = self.tick;
+        for (slot, old) in fresh.players.iter_mut().zip(&self.players) {
+            *slot = old.map(|_| Player::default());
+        }
+        fresh
     }
 
     /// Endianness-pinned hash of the whole state, comparable across machines.
@@ -97,6 +132,24 @@ impl SimState {
 /// rollback, so effects must be keyed by tick, not assumed unique.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
+    ShotFired {
+        slot: usize,
+    },
+    EnemyHit {
+        enemy: EnemyId,
+    },
+    /// Also preceded by the killing `EnemyHit`. `pos` is where it died; the ID is stale.
+    EnemyKilled {
+        enemy: EnemyId,
+        pos: FxVec2,
+    },
+    PlayerHit {
+        slot: usize,
+    },
+    /// Also preceded by the killing `PlayerHit`.
+    PlayerDied {
+        slot: usize,
+    },
     Restarted,
 }
 
@@ -109,31 +162,23 @@ pub struct TickEvents {
 pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
     let mut events = TickEvents::default();
 
-    // Players act only while the run is live. Nothing is targetable until enemies land
-    // (Combat step), so assist and auto-aim fall back to raw aim.
-    if matches!(state.run, Run::Boarding { .. } | Run::Encounter { .. }) {
-        for (player, input) in state.players.iter_mut().zip(&inputs.players) {
-            if let Some(player) = player {
-                player.update(*input, &[]);
-            }
-        }
-    }
-
     let restart_pressed = inputs
         .players
         .iter()
         .any(|input| input.buttons.contains(Buttons::RESTART));
+    // Only a live run simulates; the world stays frozen while Dead or Won.
     match &mut state.run {
+        Run::Boarding { .. } | Run::Encounter { .. } => combat::tick(state, inputs, &mut events),
         Run::Dead {
             ticks_until_restart,
         } if *ticks_until_restart > 0 => {
             *ticks_until_restart = ticks_until_restart.saturating_sub(1);
         }
         Run::Dead { .. } | Run::Won if restart_pressed => {
-            state.run = Run::START;
+            *state = state.restarted();
             events.events.push(Event::Restarted);
         }
-        Run::Boarding { .. } | Run::Encounter { .. } | Run::Dead { .. } | Run::Won => {}
+        Run::Dead { .. } | Run::Won => {}
     }
 
     state.tick = state.tick.wrapping_add(1);

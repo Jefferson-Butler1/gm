@@ -23,10 +23,10 @@ final class GameUIView: UIView {
         isMultipleTouchEnabled = true
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.link?.isPaused = true
-            self?.game?.pause()
+            self?.model.appActive = false
         }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.game?.resume()
+            self?.model.appActive = true
             self?.link?.isPaused = false
         }
     }
@@ -65,7 +65,7 @@ final class GameUIView: UIView {
         // Rust holds a raw pointer to the layer; this view keeps it alive for the Game's lifetime.
         let ptr = UInt64(UInt(bitPattern: Unmanaged.passUnretained(layer).toOpaque()))
         do {
-            let game = try Game(layerPtr: ptr, viewport: viewport)
+            let game = try Game(layerPtr: ptr, viewport: viewport, seed: UInt64.random(in: .min ... .max))
             model.attach(game)
             self.game = game
         } catch {

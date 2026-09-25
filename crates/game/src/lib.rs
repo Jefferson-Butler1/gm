@@ -9,7 +9,7 @@ mod stats;
 
 use controls::{Controls, Scheme, Viewport};
 use render::Renderer;
-use sim::{SimState, TICK_HZ, TickInputs};
+use sim::{MAX_HP, Run, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -29,8 +29,9 @@ pub enum TouchPhase {
     Ended,
 }
 
-/// What `SwiftUI` renders over the game. Refreshed a few times a second; `seq` bumps on
-/// change so Swift only touches view state when needed.
+/// What `SwiftUI` renders over the game. Perf numbers refresh a few times a second; HP
+/// and run state publish the frame they change. `seq` bumps on any change so Swift only
+/// touches view state when needed.
 #[derive(uniffi::Record, Clone, Default)]
 pub struct HudData {
     pub seq: u64,
@@ -40,6 +41,36 @@ pub struct HudData {
     /// Whole `frame()` call: sim steps, render and drawable acquire.
     pub rust_ms_avg: f64,
     pub tick: u64,
+    /// Slot 0's HP.
+    pub hp: u8,
+    pub max_hp: u8,
+    pub run: RunState,
+}
+
+/// The run as the HUD needs it.
+#[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RunState {
+    #[default]
+    Playing,
+    /// `can_restart` flips once the death pause is over; a tap then restarts.
+    Dead {
+        can_restart: bool,
+    },
+    Won,
+}
+
+impl RunState {
+    const fn of(run: Run) -> Self {
+        match run {
+            Run::Boarding { .. } | Run::Encounter { .. } => Self::Playing,
+            Run::Dead {
+                ticks_until_restart,
+            } => Self::Dead {
+                can_restart: ticks_until_restart == 0,
+            },
+            Run::Won => Self::Won,
+        }
+    }
 }
 
 #[derive(Debug, uniffi::Error)]
@@ -87,11 +118,13 @@ impl Game {
 #[uniffi::export]
 impl Game {
     /// `layer_ptr` is a `CAMetalLayer*` that Swift keeps alive for the Game's lifetime.
+    /// `seed` seeds the session's first run (Swift picks it at random); restarts derive
+    /// the next run's seed inside the sim.
     ///
     /// # Errors
     /// If the pointer is null or wgpu cannot set up rendering on the layer.
     #[uniffi::constructor]
-    pub fn new(layer_ptr: u64, viewport: Viewport) -> Result<Arc<Self>, GameError> {
+    pub fn new(layer_ptr: u64, viewport: Viewport, seed: u64) -> Result<Arc<Self>, GameError> {
         let addr = usize::try_from(layer_ptr).map_err(|_| GameError::NullLayer)?;
         let layer = NonNull::new(std::ptr::with_exposed_provenance_mut::<c_void>(addr))
             .ok_or(GameError::NullLayer)?;
@@ -107,9 +140,8 @@ impl Game {
             )
         }
         .map_err(GameError::Render)?;
-        eprintln!("[gm] Game::new {viewport:?}");
-        // The session seed arrives with run setup; nothing draws from the RNG yet.
-        let state = SimState::new(0);
+        eprintln!("[gm] Game::new {viewport:?} seed={seed:#018x}");
+        let state = SimState::new(seed);
         Ok(Arc::new(Self {
             inner: Mutex::new(Inner {
                 renderer,
@@ -152,14 +184,24 @@ impl Game {
         self.lock().controls.set_assist(strength);
     }
 
+    /// Tap to restart: sends RESTART on the next tick. The sim ignores it unless the run
+    /// is over and the death pause has elapsed.
+    pub fn restart(&self) {
+        self.lock().controls.request_restart();
+    }
+
     /// Touch in view points.
     pub fn touch(&self, id: u64, phase: TouchPhase, x: f32, y: f32) {
         self.lock().controls.touch(id, phase, x, y);
     }
 
-    /// Stop stepping and drawing (app backgrounded). Pause lives outside the sim.
+    /// Stop stepping the sim (settings open, app inactive); frames keep drawing the frozen
+    /// state. Pause lives outside the sim. Held sticks and a pending dodge are dropped:
+    /// their touches may never report an end.
     pub fn pause(&self) {
-        self.lock().paused = true;
+        let mut g = self.lock();
+        g.paused = true;
+        g.controls.release();
     }
 
     /// Resume without replaying the time spent paused.
@@ -176,39 +218,47 @@ impl Game {
         let started = Instant::now();
         let mut guard = self.lock();
         let g = &mut *guard;
-        if g.paused {
-            return g.stats.hud();
-        }
 
         let dt = 1.0 / f64::from(TICK_HZ);
-        let mut clock = match g.sim_clock {
-            Some(c) if target_timestamp - c <= MAX_CATCH_UP_SECS => c,
-            _ => {
-                g.prev.clone_from(&g.current);
-                target_timestamp
-            }
-        };
-        // Fixed-step accumulator; the float comparison is the point.
-        #[allow(clippy::while_float)]
-        while clock + dt <= target_timestamp {
-            let mut inputs = TickInputs::default();
-            inputs.players[0] = g.controls.next_input();
+        let alpha = if g.paused {
+            // Frozen on `current`; `resume` resyncs the clock so nothing fast-forwards.
             g.prev.clone_from(&g.current);
-            // Events will drive render effects; nothing consumes them yet.
-            let _events = sim::step(&mut g.current, &inputs);
-            clock += dt;
-        }
-        g.sim_clock = Some(clock);
-
-        // No From<f64> for f32; precision loss is fine for an interpolation factor.
-        #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-        let alpha = ((target_timestamp - clock) / dt).clamp(0.0, 1.0) as f32;
+            1.0
+        } else {
+            let mut clock = match g.sim_clock {
+                Some(c) if target_timestamp - c <= MAX_CATCH_UP_SECS => c,
+                _ => {
+                    g.prev.clone_from(&g.current);
+                    target_timestamp
+                }
+            };
+            // Fixed-step accumulator; the float comparison is the point.
+            #[allow(clippy::while_float)]
+            while clock + dt <= target_timestamp {
+                let mut inputs = TickInputs::default();
+                inputs.players[0] = g.controls.next_input();
+                g.prev.clone_from(&g.current);
+                let events = sim::step(&mut g.current, &inputs);
+                g.renderer.note_events(g.current.tick, &events.events);
+                clock += dt;
+            }
+            g.sim_clock = Some(clock);
+            // No From<f64> for f32; precision loss is fine for an interpolation factor.
+            #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+            let alpha = ((target_timestamp - clock) / dt).clamp(0.0, 1.0) as f32;
+            alpha
+        };
         let roll_ready = g.current.players[0].is_none_or(|p| p.can_roll());
         let overlay = g.controls.overlay(roll_ready);
         let presented = g
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)
             .is_some();
+        g.stats.set_status(
+            g.current.players[0].map_or(0, |p| p.hp),
+            MAX_HP,
+            RunState::of(g.current.run),
+        );
         g.stats.record(
             timestamp,
             started.elapsed().as_secs_f64(),

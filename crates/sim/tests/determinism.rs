@@ -1,21 +1,25 @@
 //! Determinism checks (issue #5): replay, rollback-every-tick, and a committed golden
 //! checksum that CI verifies on both `x86_64` and `aarch64`.
 
-use sim::{Buttons, Player, PlayerInput, Rng, Run, SimState, TickEvents, TickInputs, step};
+use sim::{Buttons, Event, Player, PlayerInput, Rng, Run, SimState, TickEvents, TickInputs, step};
 
 const SEED: u64 = 0x5EED;
-const TICKS: u64 = 600;
+const TICKS: u64 = 1300;
+/// Both players stand idle through this range so the rushers kill them; random input
+/// (which includes RESTART) resumes afterwards.
+const STAND_STILL: std::ops::Range<u64> = 600..1100;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xd748_3c7a_9784_830b;
+const GOLDEN_TRACE: u64 = 0x7643_0391_03cd_51f1;
 
 /// A reproducible input script: pseudo-random sticks, assist and buttons for two players.
-/// Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and walking all show up.
+/// Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and walking all show up;
+/// FIRE is held about half the time. See [`STAND_STILL`] for the scripted death.
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
     (0..TICKS)
-        .map(|_| {
+        .map(|tick| {
             let mut inputs = TickInputs::default();
             for input in &mut inputs.players[..2] {
                 let bits = rng.next_u64().to_le_bytes();
@@ -31,6 +35,9 @@ fn script() -> Vec<TickInputs> {
                             Buttons::default()
                         },
                 };
+            }
+            if STAND_STILL.contains(&tick) {
+                inputs = TickInputs::default();
             }
             inputs
         })
@@ -94,16 +101,30 @@ fn golden_trace_matches_committed_value() {
     assert_eq!(trace, GOLDEN_TRACE, "got {trace:#018x}");
 }
 
-/// Guards the script's purpose: the golden trace must cover walking and rolling.
+/// Guards the script's purpose: the golden trace must cover walking, rolling, shooting,
+/// kills, player deaths and restarts.
 #[test]
-fn script_exercises_movement_and_dodge() {
+fn script_exercises_movement_dodge_and_combat() {
     let mut state = start();
     let (mut rolls, mut moved) = (0, false);
+    let mut events = Vec::new();
     for i in script() {
-        step(&mut state, &i);
-        let p = state.players[0].unwrap();
-        rolls += usize::from(p.roll_ticks == sim::ROLL_TICKS);
-        moved |= p.pos != Player::default().pos;
+        events.extend(step(&mut state, &i).events);
+        if let Some(p) = state.players[0] {
+            rolls += usize::from(p.roll_ticks == sim::ROLL_TICKS);
+            moved |= p.pos != Player::default().pos;
+        }
     }
+    let count = |f: fn(&Event) -> bool| events.iter().filter(|e| f(e)).count();
+    let shots = count(|e| matches!(e, Event::ShotFired { .. }));
+    let kills = count(|e| matches!(e, Event::EnemyKilled { .. }));
+    let deaths = count(|e| matches!(e, Event::PlayerDied { .. }));
+    let restarts = count(|e| matches!(e, Event::Restarted));
+    println!("rolls={rolls} shots={shots} kills={kills} deaths={deaths} restarts={restarts}");
     assert!(moved && rolls >= 10, "moved={moved} rolls={rolls}");
+    // Restarts: the scripted start plus at least one after a full-party death.
+    assert!(
+        shots >= 50 && kills >= 5 && deaths >= 2 && restarts >= 2,
+        "shots={shots} kills={kills} deaths={deaths} restarts={restarts}"
+    );
 }
