@@ -164,6 +164,8 @@ impl Exit {
 pub enum EnemyKind {
     Rusher,
     Shooter,
+    /// A spread shooter while the run's `spread_shooter` experiment is on, else a shooter.
+    SpreadShooter,
 }
 
 /// An enemy spawned at the center of cell (`x`, `y`).

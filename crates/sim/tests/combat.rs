@@ -3,14 +3,15 @@
 
 use sim::room::{Body, Tiles, cell_center, cell_of};
 use sim::{
-    Behavior, Bullet, Buttons, DEATH_TICKS, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, MAX_HP,
-    PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig, SPAWN_TELEGRAPH_TICKS, SimState,
-    TickInputs, Tuning, step,
+    Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2,
+    MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig, SPAWN_TELEGRAPH_TICKS,
+    SimState, TickInputs, Tuning, step, trig,
 };
 
 const SEED: u64 = 7;
 
 const DOWN: u16 = 16384;
+const LEFT: u16 = 32768;
 /// The shot telegraph.
 const AIM_TICKS: u16 = Tuning::NORMAL.shooter_telegraph;
 
@@ -314,10 +315,11 @@ fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
         behavior: Behavior::Shooter {
+            pattern: Pattern::Aimed,
             shot_timer: AIM_TICKS.saturating_add(ticks),
             strafe: 1,
         },
-        ..Enemy::shooter(at, 0, 0)
+        ..Enemy::shooter(at, Pattern::Aimed, &RunConfig::default(), 0)
     });
     state
 }
@@ -446,4 +448,86 @@ fn a_rusher_steers_around_a_pit_between_it_and_the_player() {
     };
     let events = run(&mut state, 150, &TickInputs::default());
     assert!(events.contains(&Event::PlayerHit { slot: 0 }), "{events:?}");
+}
+
+// --- spread shooter (the pattern experiment) ------------------------------------------
+
+#[test]
+fn spread_shooter_fans_slow_pellets_at_the_target() {
+    for (difficulty, pellets, speed, interval) in [
+        (Difficulty::Normal, 5, 162, 210),
+        (Difficulty::Hard, 7, 200, 157),
+    ] {
+        let config = RunConfig {
+            difficulty,
+            tuning: Tuning::NORMAL,
+        };
+        let mut state = SimState::new(SEED, config);
+        state.enemies.insert(Enemy {
+            spawn_ticks: 0,
+            behavior: Behavior::Shooter {
+                pattern: Pattern::Spread,
+                shot_timer: 1,
+                strafe: 1,
+            },
+            ..Enemy::shooter(point(160, 0), Pattern::Spread, &config, 0)
+        });
+        run(&mut state, 1, &TickInputs::default());
+        let vels: Vec<FxVec2> = state.enemy_bullets.iter().map(|(_, b)| b.vel).collect();
+        assert_eq!(vels.len(), pellets, "{difficulty:?}");
+        for vel in &vels {
+            let per_tick = vel
+                .x
+                .saturating_mul(vel.x)
+                .saturating_add(vel.y.saturating_mul(vel.y))
+                .sqrt();
+            let per_second: i64 = per_tick.saturating_mul_int(60).round().to_num();
+            assert_eq!(per_second, speed, "5/8 of the aimed speed ({difficulty:?})");
+        }
+        // Fanned 12 degrees (~2184 units) apart, centered on the target (straight left).
+        let offsets: Vec<i16> = vels
+            .iter()
+            .map(|&v| trig::angle_diff(LEFT, trig::angle_of(v).unwrap()))
+            .collect();
+        let half = i16::try_from(pellets / 2).unwrap();
+        for (i, offset) in (-half..=half).zip(&offsets) {
+            assert!(
+                (offset - i * 2184).abs() <= 8,
+                "{difficulty:?}: {offsets:?}"
+            );
+        }
+        let Behavior::Shooter { shot_timer, .. } = first_enemy(&state).unwrap().behavior else {
+            panic!("not a shooter");
+        };
+        assert_eq!(shot_timer, interval, "next volley ({difficulty:?})");
+    }
+}
+
+#[test]
+fn spread_placements_follow_the_experiment_toggle() {
+    for (on, spread) in [(true, 1), (false, 0)] {
+        let mut config = RunConfig::default();
+        config.tuning.spread_shooter = on;
+        let mut state = SimState::new(SEED, config);
+        // The bridge with its base wave dead: the next tick spawns its second wave, two
+        // shooters of which one is a spread placement.
+        state.run = Run::Encounter {
+            room: RoomId(3),
+            wave: 0,
+            doors_locked: true,
+        };
+        state.players[0].as_mut().unwrap().pos = cell_center(7, 6);
+        step(&mut state, &TickInputs::default());
+        let patterns: Vec<Pattern> = state
+            .enemies
+            .iter()
+            .filter_map(|(_, e)| match e.behavior {
+                Behavior::Shooter { pattern, .. } => Some(pattern),
+                Behavior::Rusher { .. } => None,
+            })
+            .collect();
+        assert_eq!(patterns.len(), 2);
+        let spreads = patterns.iter().filter(|&&p| p == Pattern::Spread).count();
+        assert_eq!(spreads, spread, "spread_shooter = {on}");
+    }
 }

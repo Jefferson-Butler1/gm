@@ -3,9 +3,12 @@
 //! 1. airlock (entrance): empty, to get your hands on the controls.
 //! 2. cargo hold: rushers with a shooter in each wave; a pillar and a pit strip.
 //! 3. engine room: shooter-heavy, with six pillars to hide behind.
-//! 4. bridge: four pillars; the mix gets thicker.
-//! 5. shuttle bay (exit): a pit trench the shooters fire across, two last waves, then
-//!    the extraction pad wins the run.
+//! 4. bridge: four pillars; the mix gets thicker, and its second wave brings a spread
+//!    shooter.
+//! 5. shuttle bay (exit): a pit trench the shooters fire across, two last waves (the
+//!    second led by a spread shooter), then the extraction pad wins the run.
+//!
+//! Spread shooters are the pattern experiment (issue #15); with it off they're shooters.
 //!
 //! Every room and the derelict are validated when the crate builds.
 
@@ -31,6 +34,15 @@ const fn rusher(x: usize, y: usize) -> Placement {
 const fn shooter(x: usize, y: usize) -> Placement {
     Placement {
         kind: EnemyKind::Shooter,
+        x,
+        y,
+    }
+}
+
+/// The pattern experiment's placements (issue #15): a plain shooter when it's off.
+const fn spread_shooter(x: usize, y: usize) -> Placement {
+    Placement {
+        kind: EnemyKind::SpreadShooter,
         x,
         y,
     }
@@ -178,7 +190,7 @@ const BRIDGE: PrototypeRoom = PrototypeRoom {
         rusher(13, 5),
         rusher(7, 1),
         shooter(2, 1),
-        shooter(13, 1),
+        spread_shooter(13, 1),
     ])],
     events: LOCKDOWN,
     extraction: None,
@@ -212,7 +224,7 @@ const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
         rusher(20, 9),
     ],
     reinforcements: &[then(&[
-        shooter(18, 5),
+        spread_shooter(18, 5),
         shooter(4, 1),
         shooter(4, 10),
         rusher(21, 1),

@@ -28,7 +28,7 @@ pub mod trig;
 pub use arena::{Arena, Id};
 pub use combat::{
     BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS, Enemy,
-    EnemyId, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS,
+    EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS, SPREAD_SHOOTER_HP,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use derelict::DERELICT;

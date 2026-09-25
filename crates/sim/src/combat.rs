@@ -1,10 +1,11 @@
-//! Gun, bullets, and the two enemies (melee rusher, ranged shooter), colliding with the
+//! Gun, bullets, and the enemies (melee rusher, ranged shooter in two patterns), colliding
+//! with the
 //! room's tiles. Systems run in a fixed order over arenas iterated in slot order, so every
 //! tie resolves the same way on every machine. Speeds and timings come from the run's
 //! [`RunConfig`](crate::RunConfig) (issue #15).
 
-use crate::arena::Id;
-use crate::config::per_tick;
+use crate::arena::{Arena, Id};
+use crate::config::{RunConfig, per_tick};
 use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
 use crate::room::{Body, Tiles};
 use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
@@ -34,6 +35,10 @@ const CONTACT_COOLDOWN: u8 = 30;
 
 /// 2 hits at Normal damage.
 pub const SHOOTER_HP: u8 = 10;
+/// 3 hits: the spread shooter is the heavier threat (ETG's Shotgun Kin has 2x the HP).
+pub const SPREAD_SHOOTER_HP: u8 = 15;
+/// Angle between neighboring spread pellets: 12 degrees.
+const PELLET_SPACING: i16 = 2185;
 /// Shooter walk speed: 2 pt/tick = 120 pt/s.
 const SHOOTER_SPEED: Fx = Fx::from_bits(2 << 32);
 /// Shooters back off inside this range of their target...
@@ -94,6 +99,25 @@ pub struct Enemy {
     pub behavior: Behavior,
 }
 
+/// What a shooter fires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Pattern {
+    /// One bullet at the target, every `RunConfig::shooter_interval`.
+    Aimed,
+    /// The pattern experiment: a fan of slow pellets centered on the target (5, or 7 on
+    /// Hard), every `RunConfig::spread_interval`.
+    Spread,
+}
+
+impl Pattern {
+    fn interval(self, config: &RunConfig) -> u16 {
+        match self {
+            Self::Aimed => config.shooter_interval(),
+            Self::Spread => config.spread_interval(),
+        }
+    }
+}
+
 /// Each enemy type's own state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Behavior {
@@ -101,7 +125,8 @@ pub enum Behavior {
     Rusher { contact_cooldown: u8 },
     /// Keeps its distance, strafing, and shoots at the nearest living player.
     Shooter {
-        /// Ticks until the next shot. The run's shot interval (`RunConfig`) restarts it;
+        pattern: Pattern,
+        /// Ticks until the next shot. The run's interval for the pattern restarts it;
         /// its last `shooter_telegraph` ticks are the shot telegraph: standing still,
         /// aiming. The telegraph only starts with a clear line of fire, and once started
         /// always ends in a shot (at wherever the target is by then).
@@ -128,17 +153,21 @@ impl Enemy {
         }
     }
 
-    /// A shooter arriving at `pos`, which fires its first shot `interval` + `delay`
-    /// ticks after its spawn telegraph.
+    /// A shooter arriving at `pos`, which fires its first shot a full interval (for its
+    /// pattern, under `config`) plus `delay` ticks after its spawn telegraph.
     #[must_use]
-    pub const fn shooter(pos: FxVec2, interval: u16, delay: u16) -> Self {
+    pub fn shooter(pos: FxVec2, pattern: Pattern, config: &RunConfig, delay: u16) -> Self {
         Self {
             pos,
-            hp: SHOOTER_HP,
+            hp: match pattern {
+                Pattern::Aimed => SHOOTER_HP,
+                Pattern::Spread => SPREAD_SHOOTER_HP,
+            },
             spawn_ticks: SPAWN_TELEGRAPH_TICKS,
             steer: 0,
             behavior: Behavior::Shooter {
-                shot_timer: interval.saturating_add(delay),
+                pattern,
+                shot_timer: pattern.interval(config).saturating_add(delay),
                 strafe: 1,
             },
         }
@@ -290,18 +319,23 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
                 *contact_cooldown = contact_cooldown.saturating_sub(1);
                 enemy.pos = steer(tiles, enemy.pos, angle, rusher_speed, &mut enemy.steer);
             }
-            Behavior::Shooter { shot_timer, strafe } => {
+            Behavior::Shooter {
+                pattern,
+                shot_timer,
+                strafe,
+            } => {
                 if *shot_timer <= telegraph {
                     // Aiming: stand still, then fire at wherever the target is now.
                     *shot_timer = shot_timer.saturating_sub(1);
                     if *shot_timer == 0 {
-                        let dir = trig::unit(angle);
-                        state.enemy_bullets.insert(Bullet {
-                            pos: add(enemy.pos, scale(dir, ENEMY_RADIUS)),
-                            vel: scale(dir, per_tick(config.enemy_bullet_speed())),
-                            ticks_left: ENEMY_BULLET_TICKS,
-                        });
-                        *shot_timer = config.shooter_interval();
+                        fire(
+                            &mut state.enemy_bullets,
+                            enemy.pos,
+                            angle,
+                            *pattern,
+                            &config,
+                        );
+                        *shot_timer = pattern.interval(&config);
                         *strafe = strafe.saturating_neg();
                     }
                     continue;
@@ -360,6 +394,33 @@ fn enemies(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
                 break;
             }
         }
+    }
+}
+
+/// A shooter at `from` fires its `pattern` centered on `angle`.
+fn fire(
+    bullets: &mut Arena<Bullet>,
+    from: FxVec2,
+    angle: u16,
+    pattern: Pattern,
+    config: &RunConfig,
+) {
+    let (count, speed) = match pattern {
+        Pattern::Aimed => (1, config.enemy_bullet_speed()),
+        Pattern::Spread => (config.difficulty.spread_pellets(), config.pellet_speed()),
+    };
+    for i in 0..count {
+        // Offsets from the center: (2i - (count - 1)) half-spacings.
+        let halves = i16::from(i)
+            .saturating_mul(2)
+            .saturating_sub(i16::from(count).saturating_sub(1));
+        let offset = halves.saturating_mul(PELLET_SPACING / 2);
+        let dir = trig::unit(angle.wrapping_add_signed(offset));
+        bullets.insert(Bullet {
+            pos: add(from, scale(dir, ENEMY_RADIUS)),
+            vel: scale(dir, per_tick(speed)),
+            ticks_left: ENEMY_BULLET_TICKS,
+        });
     }
 }
 

@@ -2,8 +2,8 @@
 //! the config is run state (checksummed, kept across restarts unless replaced).
 
 use sim::{
-    Buttons, Difficulty, Enemy, Fx, FxVec2, PlayerInput, RunConfig, SimState, TickInputs, Tuning,
-    step,
+    Buttons, Difficulty, Enemy, Fx, FxVec2, Pattern, PlayerInput, RunConfig, SimState, TickInputs,
+    Tuning, step,
 };
 
 const SEED: u64 = 3;
@@ -27,7 +27,8 @@ fn first_shot(config: RunConfig) -> Option<(u64, i64)> {
                 x: at.x.saturating_add(Fx::from_num(160)),
                 y: at.y,
             },
-            state.config.shooter_interval(),
+            Pattern::Aimed,
+            &state.config,
             0,
         )
     });

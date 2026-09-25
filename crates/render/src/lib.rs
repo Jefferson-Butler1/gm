@@ -8,7 +8,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use sim::room::{Cell, PrototypeRoom};
-use sim::{Behavior, Enemy, EnemyId, Event, Fx, FxVec2, Player, SimState};
+use sim::{Behavior, Enemy, EnemyId, Event, Fx, FxVec2, Pattern, Player, SimState};
 use std::f32::consts::TAU;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -37,6 +37,7 @@ const HURT_COLOR: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
 const BLINK_TICKS: u16 = 4;
 const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
 const SHOOTER_COLOR: [f32; 4] = [0.7, 0.4, 1.0, 1.0];
+const SPREAD_SHOOTER_COLOR: [f32; 4] = [1.0, 0.35, 0.75, 1.0];
 /// A shooter's aim telegraph: a white core swelling to this fraction of its body.
 const AIM_CORE: f32 = 0.7;
 const ENEMY_BULLET_COLOR: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
@@ -646,7 +647,14 @@ impl Renderer {
 const fn enemy_color(e: &Enemy) -> [f32; 4] {
     match e.behavior {
         Behavior::Rusher { .. } => RUSHER_COLOR,
-        Behavior::Shooter { .. } => SHOOTER_COLOR,
+        Behavior::Shooter {
+            pattern: Pattern::Aimed,
+            ..
+        } => SHOOTER_COLOR,
+        Behavior::Shooter {
+            pattern: Pattern::Spread,
+            ..
+        } => SPREAD_SHOOTER_COLOR,
     }
 }
 

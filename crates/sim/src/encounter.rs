@@ -1,7 +1,7 @@
 //! Rooms in play: walking through exits, room events (seal/unseal), waves from object
 //! layers, and extraction. Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
-use crate::combat::{Enemy, SHOOTER_STAGGER};
+use crate::combat::{Enemy, Pattern, SHOOTER_STAGGER};
 use crate::derelict::DERELICT;
 use crate::player::PLAYER_RADIUS;
 use crate::room::{
@@ -142,10 +142,18 @@ fn spawn(state: &mut SimState, placements: &[Placement]) {
         let pos = cell_center(placement.x, placement.y);
         state.enemies.insert(match placement.kind {
             EnemyKind::Rusher => Enemy::rusher(pos),
-            EnemyKind::Shooter => {
+            EnemyKind::Shooter | EnemyKind::SpreadShooter => {
+                // Spread placements field plain shooters unless the experiment is on.
+                let pattern = if placement.kind == EnemyKind::SpreadShooter
+                    && state.config.tuning.spread_shooter
+                {
+                    Pattern::Spread
+                } else {
+                    Pattern::Aimed
+                };
                 let delay = state.rng.below(SHOOTER_STAGGER);
                 let delay = u16::try_from(delay).unwrap_or(0);
-                Enemy::shooter(pos, state.config.shooter_interval(), delay)
+                Enemy::shooter(pos, pattern, &state.config, delay)
             }
         });
     }
