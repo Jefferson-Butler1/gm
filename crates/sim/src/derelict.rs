@@ -237,6 +237,102 @@ const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
 }
 .valid();
 
+// PROTOTYPE (Hallways ticket): four hallway shapes between the slice's rooms. Throwaway.
+const HALL_LONG: PrototypeRoom = PrototypeRoom {
+    name: "hallway: long",
+    category: Category::Connector,
+    cells: &[
+        "################",
+        "................",
+        "................",
+        "################",
+    ],
+    exits: &[
+        exit(Dir::West, 0, 1, ExitKind::Entrance),
+        exit(Dir::East, 15, 1, ExitKind::Exit),
+    ],
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+    extraction: None,
+}
+.valid();
+
+const HALL_BEND: PrototypeRoom = PrototypeRoom {
+    name: "hallway: bend",
+    category: Category::Connector,
+    cells: &[
+        "      #..##",
+        "      #...#",
+        "      #...#",
+        "      #...#",
+        "      #...#",
+        "#######...#",
+        "#.........#",
+        "#.........#",
+        "#.........#",
+        "#...#######",
+        "#...#      ",
+        "#...#      ",
+        "#...#      ",
+        "#..##      ",
+    ],
+    exits: &[
+        exit(Dir::South, 1, 13, ExitKind::Entrance),
+        exit(Dir::North, 7, 0, ExitKind::Exit),
+    ],
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+    extraction: None,
+}
+.valid();
+
+const HALL_GUARDED: PrototypeRoom = PrototypeRoom {
+    name: "hallway: guarded",
+    category: Category::Connector,
+    cells: &[
+        "##..##",
+        "#....#",
+        "#....#",
+        "#....#",
+        "#.##.#",
+        "#....#",
+        "#....#",
+        "#o...#",
+        "#o...#",
+        "#....#",
+        "#.##.#",
+        "#....#",
+        "#....#",
+        "##..##",
+    ],
+    exits: &[
+        exit(Dir::South, 2, 13, ExitKind::Entrance),
+        exit(Dir::North, 2, 0, ExitKind::Exit),
+    ],
+    base: &[rusher(2, 2), rusher(3, 6)],
+    reinforcements: &[],
+    events: LOCKDOWN,
+    extraction: None,
+}
+.valid();
+
+const HALL_STUB: PrototypeRoom = PrototypeRoom {
+    name: "hallway: stub",
+    category: Category::Connector,
+    cells: &["####", "....", "....", "####"],
+    exits: &[
+        exit(Dir::West, 0, 1, ExitKind::Entrance),
+        exit(Dir::East, 3, 1, ExitKind::Exit),
+    ],
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+    extraction: None,
+}
+.valid();
+
 /// A door from (room, exit) to (room, exit), as indices.
 const fn link(from: (usize, usize), to: (usize, usize)) -> Connection {
     Connection {
@@ -252,12 +348,26 @@ const fn link(from: (usize, usize), to: (usize, usize)) -> Connection {
 }
 
 pub const DERELICT: Derelict = Derelict {
-    rooms: &[AIRLOCK, CARGO_HOLD, ENGINE_ROOM, BRIDGE, SHUTTLE_BAY],
+    rooms: &[
+        AIRLOCK,
+        HALL_LONG,
+        CARGO_HOLD,
+        HALL_BEND,
+        ENGINE_ROOM,
+        HALL_GUARDED,
+        BRIDGE,
+        HALL_STUB,
+        SHUTTLE_BAY,
+    ],
     connections: &[
         link((0, 0), (1, 0)),
         link((1, 1), (2, 0)),
         link((2, 1), (3, 0)),
         link((3, 1), (4, 0)),
+        link((4, 1), (5, 0)),
+        link((5, 1), (6, 0)),
+        link((6, 1), (7, 0)),
+        link((7, 1), (8, 0)),
     ],
     start_room: 0,
     start_cell: (5, 6),
