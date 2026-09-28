@@ -88,6 +88,7 @@ const NUB_OFFSET: f32 = 22.0;
 const STICK_KNOB_R: f32 = 22.0;
 const DODGE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
 const VENT_COLOR: [f32; 3] = [1.0, 0.75, 0.25];
+const FIRE_COLOR: [f32; 3] = [1.0, 0.35, 0.3];
 const BUTTON_READY_ALPHA: f32 = 0.35;
 const BUTTON_UNREADY_ALPHA: f32 = 0.1;
 
@@ -185,6 +186,8 @@ pub struct Overlay {
     pub sticks: [Option<StickView>; 2],
     pub dodge: Option<ButtonView>,
     pub vent: Option<ButtonView>,
+    /// A separate fire button (the claw grip's index finger).
+    pub fire: Option<ButtonView>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -733,7 +736,11 @@ impl Renderer {
             self.push_screen(s.base, s.radius, [1.0, 1.0, 1.0, 0.25 * a], RING);
             self.push_screen(s.knob, STICK_KNOB_R, [1.0, 1.0, 1.0, 0.35 * a], CIRCLE);
         }
-        let buttons = [(overlay.dodge, DODGE_COLOR), (overlay.vent, VENT_COLOR)];
+        let buttons = [
+            (overlay.dodge, DODGE_COLOR),
+            (overlay.vent, VENT_COLOR),
+            (overlay.fire, FIRE_COLOR),
+        ];
         for (button, [r, g, b]) in buttons {
             let Some(d) = button else {
                 continue;

@@ -30,6 +30,14 @@ const MOVE_DEADZONE: f32 = 0.1;
 const AIM_DEADZONE: f32 = 0.2;
 /// Scheme F: a drag this far out of the stick's travel fires; short of it, it only aims.
 const FIRE_PUSH: f32 = 0.75;
+/// Claw: the right index finger's fire button, in from the top-right safe corner and clear
+/// of the settings button.
+const CLAW_FIRE_INSET: [f32; 2] = [90.0, 130.0];
+const CLAW_FIRE_RADIUS: f32 = 44.0;
+const CLAW_FIRE_HIT_RADIUS: f32 = CLAW_FIRE_RADIUS * 1.3;
+/// Claw: the left index finger's dodge button, in from the top-left safe corner and below
+/// the HUD.
+const CLAW_DODGE_INSET: [f32; 2] = [90.0, 150.0];
 /// Scheme C: a right-half swipe this far within [`FLICK_TIME`] rolls in its direction.
 const FLICK_DISTANCE: f32 = 45.0;
 const FLICK_TIME: Duration = Duration::from_millis(200);
@@ -51,6 +59,11 @@ pub enum Scheme {
     AimAssist,
     /// E: C with B's anchored move stick.
     FixedAutoAim,
+    /// G: claw grip (PUBG, Call of Duty Mobile). Thumbs on B's anchored sticks, the right one
+    /// aiming only; the right index finger holds a fire button in the top-right corner
+    /// (at the nearest target while the aim stick is idle), the left index finger swipes a
+    /// dodge button top-left.
+    Claw,
     /// F: Brawl Stars / Soul Knight style. B's anchored sticks, but the right one is a
     /// fire button: held still it fires at the nearest target; dragged a little it only
     /// aims, pushed out past [`FIRE_PUSH`] it fires along the aim. Dodge button.
@@ -67,7 +80,7 @@ impl Scheme {
     /// Whether `side`'s stick (0 move, 1 aim) is anchored at its base.
     const fn fixed(self, side: usize) -> bool {
         match self {
-            Self::FixedSticks | Self::FireButton => true,
+            Self::FixedSticks | Self::FireButton | Self::Claw => true,
             Self::FixedAutoAim => side == 0,
             Self::FloatingSticks | Self::AutoAim | Self::AimAssist => false,
         }
@@ -122,6 +135,9 @@ struct Layout {
     bases: [[f32; 2]; 2],
     dodge: [f32; 2],
     vent: [f32; 2],
+    /// Claw's fire and dodge buttons, for the index fingers.
+    claw_fire: [f32; 2],
+    claw_dodge: [f32; 2],
 }
 
 impl Layout {
@@ -133,6 +149,14 @@ impl Layout {
             bases: [[v.safe_left + BASE_INSET, y], right],
             dodge: [right[0] + DODGE_OFFSET[0], right[1] + DODGE_OFFSET[1]],
             vent: [right[0] + VENT_OFFSET[0], right[1] + VENT_OFFSET[1]],
+            claw_fire: [
+                v.point_width - v.safe_right - CLAW_FIRE_INSET[0],
+                v.safe_top + CLAW_FIRE_INSET[1],
+            ],
+            claw_dodge: [
+                v.safe_left + CLAW_DODGE_INSET[0],
+                v.safe_top + CLAW_DODGE_INSET[1],
+            ],
         }
     }
 }
@@ -214,6 +238,8 @@ pub struct Controls {
     dodge: Option<Dodge>,
     /// A touch that started on the dodge button and hasn't swiped yet: (id, start).
     dodge_touch: Option<(u64, [f32; 2])>,
+    /// Claw: the touch holding the fire button.
+    fire_touch: Option<u64>,
     shot: Option<Shot>,
     /// Where slot 0 was last drawn, in view points; tap-to-fire aims from here.
     player_view: Option<[f32; 2]>,
@@ -237,6 +263,7 @@ impl Controls {
             sticks: [None, None],
             dodge: None,
             dodge_touch: None,
+            fire_touch: None,
             shot: None,
             player_view: None,
             vent: false,
@@ -272,6 +299,7 @@ impl Controls {
         self.sticks = [None, None];
         self.dodge = None;
         self.dodge_touch = None;
+        self.fire_touch = None;
         self.shot = None;
         self.vent = false;
     }
@@ -330,6 +358,9 @@ impl Controls {
                 }
             }
             TouchPhase::Ended => {
+                if self.fire_touch == Some(id) {
+                    self.fire_touch = None;
+                }
                 if self.dodge_touch.is_some_and(|(touch, _)| touch == id) {
                     self.dodge = Some(Dodge::Button);
                     self.dodge_touch = None;
@@ -358,7 +389,11 @@ impl Controls {
             self.vent = true;
             return;
         }
-        if !self.scheme.auto_aim() && dist(p, self.layout.dodge) < DODGE_HIT_RADIUS {
+        if self.scheme == Scheme::Claw && dist(p, self.layout.claw_fire) < CLAW_FIRE_HIT_RADIUS {
+            self.fire_touch = Some(id);
+            return;
+        }
+        if !self.scheme.auto_aim() && dist(p, self.dodge_button()) < DODGE_HIT_RADIUS {
             self.dodge_touch = Some((id, p));
             return;
         }
@@ -397,6 +432,15 @@ impl Controls {
                 Shot::At(turns(dx, dy))
             });
             self.shot = self.aimed_shot(right).or(toward_touch);
+        }
+    }
+
+    /// Where the dodge button sits: under the right thumb, or top-left for the claw.
+    fn dodge_button(&self) -> [f32; 2] {
+        if self.scheme == Scheme::Claw {
+            self.layout.claw_dodge
+        } else {
+            self.layout.dodge
         }
     }
 
@@ -518,6 +562,9 @@ impl Controls {
                 Some((t, mag)) => (mag >= FIRE_PUSH).then_some(Shot::At(t)),
             }),
             Scheme::FireButton => None,
+            Scheme::Claw => self
+                .fire_touch
+                .map(|_| aim.map_or(Shot::Auto, |(t, _)| Shot::At(t))),
             Scheme::FloatingSticks | Scheme::FixedSticks | Scheme::AimAssist => {
                 aim.filter(|_| held).map(|(t, _)| Shot::At(t))
             }
@@ -557,9 +604,14 @@ impl Controls {
             };
         }
         overlay.dodge = (!self.scheme.auto_aim()).then_some(ButtonView {
-            center: self.layout.dodge,
+            center: self.dodge_button(),
             radius: DODGE_RADIUS,
             ready: roll_ready,
+        });
+        overlay.fire = (self.scheme == Scheme::Claw).then_some(ButtonView {
+            center: self.layout.claw_fire,
+            radius: CLAW_FIRE_RADIUS,
+            ready: true,
         });
         overlay.vent = Some(ButtonView {
             center: self.layout.vent,
@@ -871,6 +923,25 @@ mod tests {
         assert!(overlay.sticks.iter().all(Option::is_none) && overlay.dodge.is_none());
         c.set_gamepad(None);
         assert!(c.overlay(true, true).dodge.is_some(), "back on disconnect");
+    }
+
+    #[test]
+    fn the_claw_aims_with_the_thumb_and_fires_with_the_index_finger() {
+        let mut c = controls(Scheme::Claw);
+        let [x, y] = c.layout.bases[1];
+        c.touch(1, TouchPhase::Began, x, y + STICK_RADIUS); // thumb aims down
+        assert_eq!(aimed(c.next_input()), (None, Some(1 << 14)), "aims only");
+        let [fx, fy] = c.layout.claw_fire;
+        c.touch(2, TouchPhase::Began, fx, fy);
+        assert_eq!(fired(c.next_input()), Some(1 << 14));
+        c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
+        let input = c.next_input();
+        assert!(
+            input.buttons.contains(Buttons::FIRE | Buttons::AUTO_AIM),
+            "thumb idle"
+        );
+        c.touch(2, TouchPhase::Ended, fx, fy);
+        assert_eq!(fired(c.next_input()), None);
     }
 
     #[test]

@@ -16,14 +16,11 @@ final class GameModel {
     /// The Controls options: each a touch scheme with the fire mode it plays best with,
     /// with a stable key for persistence. The first is the default.
     static let controls: [(key: String, label: String, scheme: Scheme, fireMode: FireMode)] = [
-        ("F-hold", "Fire button · hold to auto-fire, drag to aim, push out to fire", .fireButton, .hold),
-        ("E-tap", "Auto-aim · tap to fire", .fixedAutoAim, .tap),
-        ("E-hold", "Auto-aim · hold to fire, flick to dodge", .fixedAutoAim, .hold),
-        ("C-hold", "Auto-aim, floating stick · hold to fire, flick to dodge", .autoAim, .hold),
-        ("B-hold", "Fixed twin sticks · aim fires", .fixedSticks, .hold),
-        ("B-release", "Fixed twin sticks · drag to aim, lift to fire", .fixedSticks, .release),
-        ("A-hold", "Floating twin sticks · aim fires", .floatingSticks, .hold),
-        ("D-hold", "Twin sticks + aim assist · aim fires", .aimAssist, .hold),
+        ("soulKnight", "Soul Knight · fire button: hold to auto-aim, drag to aim", .fireButton, .hold),
+        ("brawlStars", "Brawl Stars · tap for a quick auto shot, drag to aim, release to fire", .fireButton, .release),
+        ("twinStick", "Twin-stick (ETG, Nuclear Throne) · aiming fires", .fixedSticks, .hold),
+        ("tapToFire", "Tap to fire · auto-aim", .fixedAutoAim, .tap),
+        ("claw", "Claw (PUBG, CoD Mobile) · thumbs move and aim, index fingers fire and dodge", .claw, .hold),
     ]
     /// Camera look options, with stable keys for persistence.
     static let looks: [(look: LookMode, key: String, label: String)] = [
