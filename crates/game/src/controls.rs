@@ -1,7 +1,7 @@
 //! Touch -> quantized [`PlayerInput`] for the four control schemes (issue #7), ported from
 //! the feel spike, and the three fire modes (issue #15). Schemes and fire modes only
 //! change how touches become input; aim assist, auto-aim and the gun's fire cap are sim
-//! rules.
+//! rules. A connected gamepad replaces touch with one fixed mapping.
 
 use crate::TouchPhase;
 use render::{ButtonView, Overlay, StickView};
@@ -98,6 +98,22 @@ pub struct Viewport {
     pub safe_left: f32,
     pub safe_bottom: f32,
     pub safe_right: f32,
+}
+
+/// A connected game controller this frame, from Swift. Sticks are `-1..=1` in view axes
+/// (+x right, +y down), after the controller's own deadzone.
+#[derive(uniffi::Record, Clone, Copy, Debug, Default, PartialEq)]
+pub struct GamepadState {
+    pub move_x: f32,
+    pub move_y: f32,
+    pub aim_x: f32,
+    pub aim_y: f32,
+    /// Fires while held: along the aim stick, or at the nearest target with it centered.
+    pub fire: bool,
+    /// Rolls on press.
+    pub dodge: bool,
+    /// Vents on press.
+    pub vent: bool,
 }
 
 /// Where the on-screen controls sit for a viewport.
@@ -205,6 +221,10 @@ pub struct Controls {
     vent: bool,
     /// A restart tap waiting for the next sim tick.
     restart: bool,
+    /// While connected, the gamepad replaces the touch sticks and buttons.
+    gamepad: Option<GamepadState>,
+    /// The gamepad as the last tick saw it: dodge and vent act on the press.
+    last_pad: GamepadState,
 }
 
 impl Controls {
@@ -221,7 +241,19 @@ impl Controls {
             player_view: None,
             vent: false,
             restart: false,
+            gamepad: None,
+            last_pad: GamepadState::default(),
         }
+    }
+
+    /// This frame's gamepad, `None` without one. Connecting drops held touch sticks.
+    pub fn set_gamepad(&mut self, pad: Option<GamepadState>) {
+        match (self.gamepad, pad) {
+            (None, Some(_)) => self.sticks = [None, None],
+            (Some(_), None) => self.last_pad = GamepadState::default(),
+            _ => {}
+        }
+        self.gamepad = pad;
     }
 
     pub const fn request_restart(&mut self) {
@@ -318,6 +350,10 @@ impl Controls {
     }
 
     fn begin(&mut self, id: u64, p: [f32; 2]) {
+        // The overlay is hidden while a gamepad is connected.
+        if self.gamepad.is_some() {
+            return;
+        }
         if dist(p, self.layout.vent) < VENT_HIT_RADIUS {
             self.vent = true;
             return;
@@ -382,14 +418,13 @@ impl Controls {
     /// deflection past its deadzone, or full while scheme C's fire side is held.
     pub fn aim_push(&self) -> f32 {
         let [_, right] = &self.sticks;
-        match (self.scheme, right) {
-            (_, None) => 0.0,
-            (Scheme::AutoAim | Scheme::FixedAutoAim, Some(_)) => 1.0,
-            (_, Some(stick)) => {
-                let (_, mag) = stick.polar();
-                ((mag - AIM_DEADZONE) / (1.0 - AIM_DEADZONE)).clamp(0.0, 1.0)
-            }
-        }
+        let mag = match (self.gamepad, self.scheme, right) {
+            (Some(pad), _, _) => pad.aim_x.hypot(pad.aim_y).min(1.0),
+            (None, _, None) => 0.0,
+            (None, Scheme::AutoAim | Scheme::FixedAutoAim, Some(_)) => return 1.0,
+            (None, _, Some(stick)) => stick.polar().1,
+        };
+        ((mag - AIM_DEADZONE) / (1.0 - AIM_DEADZONE)).clamp(0.0, 1.0)
     }
 
     /// Input for the next sim tick. A pending dodge, vent or restart goes out once, on the
@@ -402,39 +437,9 @@ impl Controls {
         if std::mem::take(&mut self.vent) {
             input.buttons |= Buttons::VENT;
         }
-        let [left, right] = &self.sticks;
-        if let Some((t, mag)) = left.as_ref().map(Stick::polar)
-            && mag > MOVE_DEADZONE
-        {
-            input.move_dir = move_bucket(t);
-            input.move_mag = u8::try_from(quantize(mag, 255)).unwrap_or(u8::MAX);
-        }
-        let aim = right
-            .as_ref()
-            .map(Stick::polar)
-            .filter(|&(_, mag)| mag > AIM_DEADZONE);
-        // A deflected aim stick turns the player even when it doesn't fire (tap and
-        // release); a shot below overrides the aim with its own.
-        if let Some((t, _)) = aim
-            && !self.scheme.auto_aim()
-        {
-            input.aim = aim_angle(t);
-            input.buttons |= Buttons::AIM;
-        }
-        // Hold fires from the held stick; tap and release only through pending shots.
-        let held = self.fire_mode == FireMode::Hold;
-        let shot = match self.scheme {
-            Scheme::FireButton if held => right.as_ref().and_then(|_| match aim {
-                None => Some(Shot::Auto),
-                Some((t, mag)) => (mag >= FIRE_PUSH).then_some(Shot::At(t)),
-            }),
-            Scheme::FireButton => None,
-            Scheme::FloatingSticks | Scheme::FixedSticks | Scheme::AimAssist => {
-                aim.filter(|_| held).map(|(t, _)| Shot::At(t))
-            }
-            Scheme::AutoAim | Scheme::FixedAutoAim => {
-                (held && right.is_some()).then_some(Shot::Auto)
-            }
+        let shot = match self.gamepad {
+            Some(pad) => self.pad_sticks(pad, &mut input),
+            None => self.touch_sticks(&mut input),
         };
         match self.shot.take().or(shot) {
             Some(Shot::At(t)) => {
@@ -459,8 +464,75 @@ impl Controls {
         input
     }
 
+    /// The gamepad's sticks and buttons into `input`, ignoring the scheme and fire mode:
+    /// the left stick moves, the right stick aims, and a held fire button shoots along
+    /// the aim (at the nearest target with the stick centered, like scheme F). Returns
+    /// that held shot.
+    fn pad_sticks(&mut self, pad: GamepadState, input: &mut PlayerInput) -> Option<Shot> {
+        let last = std::mem::replace(&mut self.last_pad, pad);
+        if pad.dodge && !last.dodge {
+            self.dodge = Some(Dodge::Button);
+        }
+        if pad.vent && !last.vent {
+            input.buttons |= Buttons::VENT;
+        }
+        let mag = pad.move_x.hypot(pad.move_y).min(1.0);
+        if mag > MOVE_DEADZONE {
+            input.move_dir = move_bucket(turns(pad.move_x, pad.move_y));
+            input.move_mag = u8::try_from(quantize(mag, 255)).unwrap_or(u8::MAX);
+        }
+        let aim = (pad.aim_x.hypot(pad.aim_y) > AIM_DEADZONE).then(|| turns(pad.aim_x, pad.aim_y));
+        if let Some(t) = aim {
+            input.aim = aim_angle(t);
+            input.buttons |= Buttons::AIM;
+        }
+        pad.fire.then(|| aim.map_or(Shot::Auto, Shot::At))
+    }
+
+    /// The touch sticks into `input`. Returns the shot the held aim stick fires, if any.
+    fn touch_sticks(&self, input: &mut PlayerInput) -> Option<Shot> {
+        let [left, right] = &self.sticks;
+        if let Some((t, mag)) = left.as_ref().map(Stick::polar)
+            && mag > MOVE_DEADZONE
+        {
+            input.move_dir = move_bucket(t);
+            input.move_mag = u8::try_from(quantize(mag, 255)).unwrap_or(u8::MAX);
+        }
+        let aim = right
+            .as_ref()
+            .map(Stick::polar)
+            .filter(|&(_, mag)| mag > AIM_DEADZONE);
+        // A deflected aim stick turns the player even when it doesn't fire (tap and
+        // release); a shot below overrides the aim with its own.
+        if let Some((t, _)) = aim
+            && !self.scheme.auto_aim()
+        {
+            input.aim = aim_angle(t);
+            input.buttons |= Buttons::AIM;
+        }
+        // Hold fires from the held stick; tap and release only through pending shots.
+        let held = self.fire_mode == FireMode::Hold;
+        match self.scheme {
+            Scheme::FireButton if held => right.as_ref().and_then(|_| match aim {
+                None => Some(Shot::Auto),
+                Some((t, mag)) => (mag >= FIRE_PUSH).then_some(Shot::At(t)),
+            }),
+            Scheme::FireButton => None,
+            Scheme::FloatingSticks | Scheme::FixedSticks | Scheme::AimAssist => {
+                aim.filter(|_| held).map(|(t, _)| Shot::At(t))
+            }
+            Scheme::AutoAim | Scheme::FixedAutoAim => {
+                (held && right.is_some()).then_some(Shot::Auto)
+            }
+        }
+    }
+
+    /// The touch controls to draw: none while a gamepad is connected.
     pub fn overlay(&self, roll_ready: bool, vent_ready: bool) -> Overlay {
         let mut overlay = Overlay::default();
+        if self.gamepad.is_some() {
+            return overlay;
+        }
         for (side, ((view, stick), &base)) in overlay
             .sticks
             .iter_mut()
@@ -730,6 +802,75 @@ mod tests {
         assert_eq!(fired(input), Some(1 << 14));
         c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
         assert_eq!(fired(c.next_input()), None);
+    }
+
+    #[test]
+    fn gamepad_moves_aims_and_fires_along_the_aim_or_at_the_nearest_target() {
+        let mut c = controls(Scheme::FixedSticks);
+        c.set_fire_mode(FireMode::Tap); // the gamepad ignores the fire mode
+        let mut pad = GamepadState {
+            move_x: 1.0,
+            aim_y: 1.0, // straight down
+            ..GamepadState::default()
+        };
+        c.set_gamepad(Some(pad));
+        let input = c.next_input();
+        assert_eq!((input.move_dir, input.move_mag), (0, 255));
+        assert_eq!(
+            aimed(input),
+            (None, Some(1 << 14)),
+            "aims without the trigger"
+        );
+        pad.fire = true;
+        c.set_gamepad(Some(pad));
+        assert_eq!(fired(c.next_input()), Some(1 << 14));
+        assert_eq!(fired(c.next_input()), Some(1 << 14), "held: every tick");
+        pad.aim_y = 0.1; // inside the deadzone
+        c.set_gamepad(Some(pad));
+        let input = c.next_input();
+        assert!(input.buttons.contains(Buttons::FIRE | Buttons::AUTO_AIM));
+    }
+
+    #[test]
+    fn gamepad_dodge_and_vent_act_once_per_press() {
+        let mut c = controls(Scheme::FireButton);
+        let pad = GamepadState {
+            dodge: true,
+            vent: true,
+            ..GamepadState::default()
+        };
+        c.set_gamepad(Some(pad));
+        assert!(
+            c.next_input()
+                .buttons
+                .contains(Buttons::DODGE | Buttons::VENT)
+        );
+        let held = c.next_input().buttons;
+        assert!(!held.contains(Buttons::DODGE) && !held.contains(Buttons::VENT));
+        c.set_gamepad(Some(GamepadState::default()));
+        c.next_input();
+        c.set_gamepad(Some(pad));
+        assert!(
+            c.next_input()
+                .buttons
+                .contains(Buttons::DODGE | Buttons::VENT)
+        );
+    }
+
+    #[test]
+    fn gamepad_replaces_the_touch_controls_while_connected() {
+        let mut c = controls(Scheme::FixedSticks);
+        let [x, y] = c.layout.bases[0];
+        c.touch(1, TouchPhase::Began, x + STICK_RADIUS, y); // held full right
+        c.set_gamepad(Some(GamepadState::default()));
+        assert_eq!(c.next_input().move_mag, 0, "connecting drops held sticks");
+        let [dx, dy] = c.layout.dodge;
+        c.touch(2, TouchPhase::Began, dx, dy);
+        assert!(!c.next_input().buttons.contains(Buttons::DODGE));
+        let overlay = c.overlay(true, true);
+        assert!(overlay.sticks.iter().all(Option::is_none) && overlay.dodge.is_none());
+        c.set_gamepad(None);
+        assert!(c.overlay(true, true).dodge.is_some(), "back on disconnect");
     }
 
     #[test]

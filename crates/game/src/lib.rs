@@ -11,7 +11,7 @@ mod settings;
 mod stats;
 
 use camera::{CameraLook, CameraSettings};
-use controls::{Controls, FireMode, Scheme, Viewport};
+use controls::{Controls, FireMode, GamepadState, Scheme, Viewport};
 use haptics::{Haptic, Haptics};
 use render::Renderer;
 use settings::RunSettings;
@@ -212,6 +212,12 @@ impl Game {
     pub fn set_scheme(&self, scheme: Scheme) {
         eprintln!("[gm] scheme={scheme:?}");
         self.lock().controls.set_scheme(scheme);
+    }
+
+    /// The connected game controller, polled by Swift every frame; `None` without one.
+    /// While connected it replaces touch.
+    pub fn set_gamepad(&self, pad: Option<GamepadState>) {
+        self.lock().controls.set_gamepad(pad);
     }
 
     /// Aim assist strength for [`Scheme::AimAssist`], `0..=1`.
