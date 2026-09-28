@@ -10,7 +10,7 @@
 //! to `game`.
 
 use bytemuck::{Pod, Zeroable};
-use sim::room::{Cell, Placed};
+use sim::room::Cell;
 use sim::ship::Spot;
 use sim::{
     Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, RoomId, Ship,
@@ -691,14 +691,12 @@ impl Renderer {
         ]
     }
 
-    /// Every revealed room, the hatches in their walls by state, and their extraction pads
-    /// (dim until the room is clear). Unrevealed rooms stay black.
+    /// Every revealed room and corridor, the hatches in their walls by state, and their
+    /// extraction pads (dim until the room is clear). Unrevealed rooms stay black.
     fn push_floor(&mut self, state: &SimState) {
         let ship = &state.ship;
         let rooms = (0..).map(RoomId).zip(ship.rooms());
-        for (_, placed) in rooms.clone().filter(|&(id, _)| state.visited(id)) {
-            self.push_room(ship, placed);
-        }
+        self.push_cells(state);
         let half = sim::room::CELL.to_num::<f32>() / 2.0;
         for (hatch, live) in ship.hatches().iter().zip(&state.hatches) {
             if !hatch.rooms.iter().any(|&r| state.visited(r)) {
@@ -732,120 +730,110 @@ impl Renderer {
         }
     }
 
-    /// One quad per non-void cell of a placed room, except its hatch cells (drawn by
-    /// state in [`Self::push_floor`]), then its pits' lips.
-    fn push_room(&mut self, ship: &Ship, placed: &Placed) {
-        let (room, (ox, oy)) = (&placed.room, placed.at);
+    /// One quad per cell of every revealed room and corridor, as the ship's grid has it
+    /// (unused hatch points walled), except hatch cells (drawn by state in
+    /// [`Self::push_floor`]); then the pits' lips.
+    fn push_cells(&mut self, state: &SimState) {
+        let ship = &state.ship;
         let half = sim::room::CELL.to_num::<f32>() / 2.0;
-        for y in 0..room.height() {
-            for x in 0..room.width() {
-                let (Ok(cx), Ok(cy)) = (i32::try_from(x), i32::try_from(y)) else {
-                    continue;
-                };
-                let (fx, fy) = (x.saturating_add(ox), y.saturating_add(oy));
-                if let (Ok(sx), Ok(sy)) = (i32::try_from(fx), i32::try_from(fy))
-                    && matches!(ship.spot(sx, sy), Spot::Hatch(_))
-                {
-                    continue;
-                }
-                // Tiles are inset a hair so the grid reads; pits a bit more, as holes.
-                let (color, inset) = match room.cell(cx, cy) {
-                    Cell::Floor => (FLOOR_COLOR, 0.5),
-                    Cell::Wall => (WALL_COLOR, 0.5),
-                    Cell::Pit => (PIT_COLOR, 3.0),
-                    Cell::Void => continue,
-                };
-                let center = sim::room::cell_center(fx, fy);
-                self.push_world(
-                    [center.x.to_num(), center.y.to_num()],
-                    [half - inset, half - inset],
-                    color,
-                    SQUARE,
-                );
-            }
+        for (x, y) in revealed(state) {
+            // Tiles are inset a hair so the grid reads; pits a bit more, as holes.
+            let (color, inset) = match ship.cell(x, y) {
+                Cell::Floor => (FLOOR_COLOR, 0.5),
+                Cell::Wall => (WALL_COLOR, 0.5),
+                Cell::Pit => (PIT_COLOR, 3.0),
+                Cell::Void => continue,
+            };
+            let (Ok(fx), Ok(fy)) = (usize::try_from(x), usize::try_from(y)) else {
+                continue;
+            };
+            let center = sim::room::cell_center(fx, fy);
+            self.push_world(
+                [center.x.to_num(), center.y.to_num()],
+                [half - inset, half - inset],
+                color,
+                SQUARE,
+            );
         }
-        self.push_pit_lips(placed);
+        self.push_pit_lips(state);
     }
 
-    /// A brick lip on every floor edge that drops into a pit, so pits read at a glance: two
-    /// staggered courses of half-tile bricks laid along the edge, on the floor side. Pits
-    /// are inside rooms, so a room's own cells say where its lips go.
-    fn push_pit_lips(&mut self, placed: &Placed) {
-        let (room, (ox, oy)) = (&placed.room, placed.at);
+    /// A brick lip on every revealed floor edge that drops into a pit, so pits read at a
+    /// glance: two staggered courses of half-tile bricks laid along the edge, on the floor
+    /// side.
+    fn push_pit_lips(&mut self, state: &SimState) {
+        let ship = &state.ship;
         let cell = sim::room::CELL.to_num::<f32>();
         let course = cell * PIT_LIP_COURSE;
-        for y in 0..room.height() {
-            for x in 0..room.width() {
-                let (Ok(cx), Ok(cy)) = (i32::try_from(x), i32::try_from(y)) else {
+        for (cx, cy) in revealed(state) {
+            if ship.cell(cx, cy) != Cell::Floor {
+                continue;
+            }
+            let (Ok(fx), Ok(fy)) = (usize::try_from(cx), usize::try_from(cy)) else {
+                continue;
+            };
+            let center = sim::room::cell_center(fx, fy);
+            let [mx, my] = [center.x.to_num::<f32>(), center.y.to_num::<f32>()];
+            // (dx, dy): the unit step toward the pit neighbor.
+            for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                let (Some(nx), Some(ny)) = (cx.checked_add(dx), cy.checked_add(dy)) else {
                     continue;
                 };
-                if room.cell(cx, cy) != Cell::Floor {
+                if ship.cell(nx, ny) != Cell::Pit {
                     continue;
                 }
-                let center = sim::room::cell_center(x.saturating_add(ox), y.saturating_add(oy));
-                let [mx, my] = [center.x.to_num::<f32>(), center.y.to_num::<f32>()];
-                // (dx, dy): the unit step toward the pit neighbor.
-                for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
-                    let (Some(nx), Some(ny)) = (cx.checked_add(dx), cy.checked_add(dy)) else {
-                        continue;
-                    };
-                    if room.cell(nx, ny) != Cell::Pit {
-                        continue;
-                    }
-                    let [nx, ny] = [
-                        f32::from(i8::try_from(dx).unwrap_or(0)),
-                        f32::from(i8::try_from(dy).unwrap_or(0)),
-                    ];
-                    // (course, color, bricks as (center along the edge, length), in cells).
-                    // The outer course sits on the edge; the inner one is staggered half a brick.
-                    for (row, color, bricks) in [
-                        (0.5, PIT_LIP_COLOR, &[(-0.25_f32, 0.5_f32), (0.25, 0.5)][..]),
-                        (
-                            1.5,
-                            PIT_LIP_DARK_COLOR,
-                            &[(-0.375, 0.25), (0.0, 0.5), (0.375, 0.25)][..],
-                        ),
-                    ] {
-                        let depth = course.mul_add(-row, cell / 2.0);
-                        for &(along, len) in bricks {
-                            let along = along * cell;
-                            let at = [
-                                ny.abs().mul_add(along, nx.mul_add(depth, mx)),
-                                nx.abs().mul_add(along, ny.mul_add(depth, my)),
-                            ];
-                            // Shrunk a hair on each side so mortar lines show between bricks.
-                            let (long, short) =
-                                (len.mul_add(cell / 2.0, -0.75), course / 2.0 - 0.5);
-                            let half = if dx == 0 {
-                                [long, short]
-                            } else {
-                                [short, long]
-                            };
-                            self.push_world(at, half, color, SQUARE);
-                        }
+                let [nx, ny] = [
+                    f32::from(i8::try_from(dx).unwrap_or(0)),
+                    f32::from(i8::try_from(dy).unwrap_or(0)),
+                ];
+                // (course, color, bricks as (center along the edge, length), in cells).
+                // The outer course sits on the edge; the inner one is staggered half a brick.
+                for (row, color, bricks) in [
+                    (0.5, PIT_LIP_COLOR, &[(-0.25_f32, 0.5_f32), (0.25, 0.5)][..]),
+                    (
+                        1.5,
+                        PIT_LIP_DARK_COLOR,
+                        &[(-0.375, 0.25), (0.0, 0.5), (0.375, 0.25)][..],
+                    ),
+                ] {
+                    let depth = course.mul_add(-row, cell / 2.0);
+                    for &(along, len) in bricks {
+                        let along = along * cell;
+                        let at = [
+                            ny.abs().mul_add(along, nx.mul_add(depth, mx)),
+                            nx.abs().mul_add(along, ny.mul_add(depth, my)),
+                        ];
+                        // Shrunk a hair on each side so mortar lines show between bricks.
+                        let (long, short) = (len.mul_add(cell / 2.0, -0.75), course / 2.0 - 0.5);
+                        let half = if dx == 0 {
+                            [long, short]
+                        } else {
+                            [short, long]
+                        };
+                        self.push_world(at, half, color, SQUARE);
                     }
                 }
-                // Corner stones, so the lip turns corners cleanly: outside a pit's corner
-                // (only the diagonal is pit) to join the two runs, and inside one (both
-                // sides are pit) to cover where the runs cross.
-                for (dx, dy) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
-                    let pit = |x: Option<i32>, y: Option<i32>| {
-                        x.zip(y).is_some_and(|(x, y)| room.cell(x, y) == Cell::Pit)
-                    };
-                    let (nx, ny) = (cx.checked_add(dx), cy.checked_add(dy));
-                    let (side_x, side_y) = (pit(nx, Some(cy)), pit(Some(cx), ny));
-                    let outside = pit(nx, ny) && !side_x && !side_y;
-                    if !(outside || side_x && side_y) {
-                        continue;
-                    }
-                    let [sx, sy] = [
-                        f32::from(i8::try_from(dx).unwrap_or(0)),
-                        f32::from(i8::try_from(dy).unwrap_or(0)),
-                    ];
-                    let inset = cell / 2.0 - course;
-                    let at = [sx.mul_add(inset, mx), sy.mul_add(inset, my)];
-                    self.push_world(at, [course - 0.5, course - 0.5], PIT_LIP_COLOR, SQUARE);
+            }
+            // Corner stones, so the lip turns corners cleanly: outside a pit's corner
+            // (only the diagonal is pit) to join the two runs, and inside one (both
+            // sides are pit) to cover where the runs cross.
+            for (dx, dy) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                let pit = |x: Option<i32>, y: Option<i32>| {
+                    x.zip(y).is_some_and(|(x, y)| ship.cell(x, y) == Cell::Pit)
+                };
+                let (nx, ny) = (cx.checked_add(dx), cy.checked_add(dy));
+                let (side_x, side_y) = (pit(nx, Some(cy)), pit(Some(cx), ny));
+                let outside = pit(nx, ny) && !side_x && !side_y;
+                if !(outside || side_x && side_y) {
+                    continue;
                 }
+                let [sx, sy] = [
+                    f32::from(i8::try_from(dx).unwrap_or(0)),
+                    f32::from(i8::try_from(dy).unwrap_or(0)),
+                ];
+                let inset = cell / 2.0 - course;
+                let at = [sx.mul_add(inset, mx), sy.mul_add(inset, my)];
+                self.push_world(at, [course - 0.5, course - 0.5], PIT_LIP_COLOR, SQUARE);
             }
         }
     }
@@ -898,6 +886,20 @@ const fn enemy_color(e: &Enemy) -> [f32; 4] {
             ..
         } => SPREAD_SHOOTER_COLOR,
     }
+}
+
+/// The floor cells of revealed rooms and corridors, row-major; not hatches.
+fn revealed(state: &SimState) -> impl Iterator<Item = (i32, i32)> {
+    let (width, height) = state.ship.size();
+    let (width, height) = (
+        i32::try_from(width).unwrap_or(0),
+        i32::try_from(height).unwrap_or(0),
+    );
+    (0..height)
+        .flat_map(move |y| (0..width).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            matches!(state.ship.spot(x, y), Spot::Room { room, .. } if state.visited(room))
+        })
 }
 
 fn lerp(a: FxVec2, b: FxVec2, t: f32) -> [f32; 2] {
