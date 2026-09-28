@@ -76,6 +76,10 @@ pub enum FireMode {
     Tap,
     /// Drag to aim; lifting the finger fires one shot along the aim.
     Release,
+    /// The phone's volume-up button is the trigger (Swift reports it); the aim side only
+    /// aims, and fires along the last aim when released. Auto-aim schemes fire at the
+    /// nearest target.
+    Trigger,
 }
 
 /// View size and safe-area insets, in points.
@@ -192,6 +196,10 @@ pub struct Controls {
     player_view: Option<[f32; 2]>,
     /// A vent tap waiting for the next sim tick.
     vent: bool,
+    /// [`FireMode::Trigger`]: the volume-up trigger is held.
+    trigger: bool,
+    /// The last aim stick angle, in turns: where a trigger shot goes with no stick held.
+    last_aim: f32,
     /// A restart tap waiting for the next sim tick.
     restart: bool,
 }
@@ -208,6 +216,8 @@ impl Controls {
             shot: None,
             player_view: None,
             vent: false,
+            trigger: false,
+            last_aim: 0.0,
             restart: false,
         }
     }
@@ -240,6 +250,15 @@ impl Controls {
         self.fire_mode = mode;
         self.sticks = [None, None];
         self.shot = None;
+    }
+
+    pub const fn set_trigger(&mut self, held: bool) {
+        self.trigger = held;
+    }
+
+    /// A dodge from outside the touch layout (the volume-down button).
+    pub const fn press_dodge(&mut self) {
+        self.dodge = Some(Dodge::Button);
     }
 
     pub const fn set_player_view(&mut self, at: Option<[f32; 2]>) {
@@ -382,10 +401,18 @@ impl Controls {
         {
             input.aim = aim_angle(t);
             input.buttons |= Buttons::AIM;
+            self.last_aim = t;
         }
         // Hold fires from the held stick; tap and release only through pending shots.
         let held = self.fire_mode == FireMode::Hold;
         let shot = match self.scheme {
+            _ if self.fire_mode == FireMode::Trigger => self.trigger.then(|| {
+                if self.scheme.auto_aim() {
+                    Shot::Auto
+                } else {
+                    Shot::At(aim.map_or(self.last_aim, |(t, _)| t))
+                }
+            }),
             Scheme::FloatingSticks | Scheme::FixedSticks | Scheme::AimAssist => {
                 aim.filter(|_| held).map(|(t, _)| Shot::At(t))
             }
@@ -655,6 +682,22 @@ mod tests {
             );
             assert_eq!((input.move_dir, input.move_mag), (24, 255), "{scheme:?}");
         }
+    }
+
+    #[test]
+    fn trigger_mode_aims_with_the_stick_and_fires_only_on_the_trigger() {
+        let mut c = controls(Scheme::FixedSticks);
+        c.set_fire_mode(FireMode::Trigger);
+        let [x, y] = c.layout.bases[1];
+        c.touch(1, TouchPhase::Began, x, y + STICK_RADIUS); // straight down
+        let (fired_angle, aimed_angle) = aimed(c.next_input());
+        assert_eq!((fired_angle, aimed_angle), (None, Some(1 << 14)));
+        c.set_trigger(true);
+        assert_eq!(fired(c.next_input()), Some(1 << 14));
+        c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
+        assert_eq!(fired(c.next_input()), Some(1 << 14), "along the last aim");
+        c.set_trigger(false);
+        assert_eq!(fired(c.next_input()), None);
     }
 
     #[test]
