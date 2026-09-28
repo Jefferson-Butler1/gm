@@ -31,6 +31,9 @@ const AIM_DEADZONE: f32 = 0.2;
 /// Scheme C: a right-half swipe this far within [`FLICK_TIME`] rolls in its direction.
 const FLICK_DISTANCE: f32 = 45.0;
 const FLICK_TIME: Duration = Duration::from_millis(200);
+/// A touch that starts on the dodge button and slides this far rolls that way at once;
+/// lifted sooner, it's a tap: a roll the way the player moves.
+const DODGE_SWIPE: f32 = 20.0;
 
 /// Touch control schemes, chosen in the Controls setting.
 #[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -181,7 +184,7 @@ enum Shot {
 #[derive(Clone, Copy)]
 enum Dodge {
     Button,
-    /// Scheme C: roll along the flick, whatever the move stick says.
+    /// Roll along a flick or a swipe off the dodge button, whatever the move stick says.
     Flick {
         move_dir: u8,
     },
@@ -195,6 +198,8 @@ pub struct Controls {
     layout: Layout,
     sticks: [Option<Stick>; 2],
     dodge: Option<Dodge>,
+    /// A touch that started on the dodge button and hasn't swiped yet: (id, start).
+    dodge_touch: Option<(u64, [f32; 2])>,
     shot: Option<Shot>,
     /// Where slot 0 was last drawn, in view points; tap-to-fire aims from here.
     player_view: Option<[f32; 2]>,
@@ -215,6 +220,7 @@ impl Controls {
             layout: Layout::new(viewport),
             sticks: [None, None],
             dodge: None,
+            dodge_touch: None,
             shot: None,
             player_view: None,
             vent: false,
@@ -238,6 +244,7 @@ impl Controls {
     pub const fn release(&mut self) {
         self.sticks = [None, None];
         self.dodge = None;
+        self.dodge_touch = None;
         self.shot = None;
         self.vent = false;
     }
@@ -285,6 +292,16 @@ impl Controls {
         match phase {
             TouchPhase::Began => self.begin(id, p),
             TouchPhase::Moved => {
+                if let Some((touch, start)) = self.dodge_touch
+                    && touch == id
+                    && dist(p, start) > DODGE_SWIPE
+                {
+                    let [dx, dy] = sub(p, start);
+                    self.dodge = Some(Dodge::Flick {
+                        move_dir: move_bucket(turns(dx, dy)),
+                    });
+                    self.dodge_touch = None;
+                }
                 for stick in self.sticks.iter_mut().flatten() {
                     if stick.id == id {
                         stick.drag(p);
@@ -305,6 +322,10 @@ impl Controls {
                 }
             }
             TouchPhase::Ended => {
+                if self.dodge_touch.is_some_and(|(touch, _)| touch == id) {
+                    self.dodge = Some(Dodge::Button);
+                    self.dodge_touch = None;
+                }
                 if self.fire_mode == FireMode::Release
                     && let [_, Some(right)] = &self.sticks
                     && right.id == id
@@ -326,7 +347,7 @@ impl Controls {
             return;
         }
         if !self.scheme.auto_aim() && dist(p, self.layout.dodge) < DODGE_HIT_RADIUS {
-            self.dodge = Some(Dodge::Button);
+            self.dodge_touch = Some((id, p));
             return;
         }
         let side = usize::from(p[0] >= self.layout.width * 0.5);
@@ -560,12 +581,27 @@ mod tests {
     }
 
     #[test]
-    fn dodge_button_sends_one_dodge() {
+    fn a_dodge_button_tap_sends_one_dodge_on_release() {
         let mut c = controls(Scheme::FixedSticks);
         let [x, y] = c.layout.dodge;
         c.touch(1, TouchPhase::Began, x, y);
+        assert!(!c.next_input().buttons.contains(Buttons::DODGE));
+        c.touch(1, TouchPhase::Ended, x, y);
         assert!(c.next_input().buttons.contains(Buttons::DODGE));
         assert!(!c.next_input().buttons.contains(Buttons::DODGE));
+    }
+
+    #[test]
+    fn a_swipe_off_the_dodge_button_rolls_that_way_at_once() {
+        let mut c = controls(Scheme::FireButton);
+        let [x, y] = c.layout.dodge;
+        c.touch(1, TouchPhase::Began, x, y);
+        c.touch(1, TouchPhase::Moved, x, y - 30.0); // straight up
+        let input = c.next_input();
+        assert!(input.buttons.contains(Buttons::DODGE));
+        assert_eq!((input.move_dir, input.move_mag), (24, 255));
+        c.touch(1, TouchPhase::Ended, x, y - 30.0);
+        assert!(!c.next_input().buttons.contains(Buttons::DODGE), "one roll");
     }
 
     #[test]
