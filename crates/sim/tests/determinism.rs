@@ -8,29 +8,28 @@ use sim::{
 use std::ops::Range;
 use std::sync::Arc;
 
-const SEED: u64 = 0x5EED;
+const SEED: u64 = 23;
 const TICKS: u64 = 2700;
 /// Ticks when the party holds only RESTART (the scripted start, then after the death).
 /// RESTART also abandons a live run, so each window presses it on its last tick only:
 /// once the death pause is over, not every tick after the run has restarted.
 const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
-/// Ticks when the party walks from the start cell through the airlock's hatch down into
-/// the cargo hold's encounter: [`WALK_EAST`] ticks right, lining up with the hatch, then
-/// down.
-const WALK_IN: [Range<u64>; 2] = [40..125, 1250..1335];
-const WALK_EAST: u64 = 16;
+/// Ticks when the party walks straight down from the start, the airlock's center, through
+/// its hatch and the passage below into the midship room's encounter, and on a few cells.
+/// At `SEED` that room is the cargo hold.
+const WALK_IN: [Range<u64>; 2] = [40..145, 1250..1355];
 /// Both players stand idle from just after entering the cargo hold, so its shooter lives
 /// long enough to fire and the rushers kill them; they only roll every
 /// [`STAND_STILL_ROLL`] ticks, alternately down and right, so some rolls land in the hold's
 /// pit strip and some hits land on a roll's vulnerable landing.
-const STAND_STILL: Range<u64> = 130..1200;
+const STAND_STILL: Range<u64> = 150..1200;
 const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
-const AUTO_FIGHT: Range<u64> = 1335..TICKS;
+const AUTO_FIGHT: Range<u64> = 1355..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xf6e5_e68b_82f2_c4f3;
+const GOLDEN_TRACE: u64 = 0x10a0_7960_0d27_5ff4;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -66,12 +65,12 @@ fn script() -> Vec<TickInputs> {
             let scripted = if STAND_STILL.contains(&tick) {
                 Some(if tick % STAND_STILL_ROLL == 0 {
                     // Only the roll moves: alternately straight down (bucket 8 of 32) and
-                    // straight right (bucket 0).
+                    // straight right (bucket 0), down first.
                     PlayerInput {
                         move_dir: if (tick / STAND_STILL_ROLL).is_multiple_of(2) {
-                            8
-                        } else {
                             0
+                        } else {
+                            8
                         },
                         move_mag: u8::MAX,
                         buttons: Buttons::DODGE,
@@ -93,13 +92,8 @@ fn script() -> Vec<TickInputs> {
                 WALK_IN
                     .iter()
                     .find(|r| r.contains(&tick))
-                    .map(|r| PlayerInput {
-                        // Buckets: 0 of 32 = straight right, 8 = straight down.
-                        move_dir: if tick.saturating_sub(r.start) < WALK_EAST {
-                            0
-                        } else {
-                            8
-                        },
+                    .map(|_| PlayerInput {
+                        move_dir: 8, // of 32: straight down
                         move_mag: u8::MAX,
                         ..PlayerInput::default()
                     })

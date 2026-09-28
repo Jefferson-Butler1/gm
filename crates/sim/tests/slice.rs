@@ -1,19 +1,20 @@
 //! The whole slice: extraction -> `Run::Won`, restart from Won, and a scripted player that
-//! walks the whole ship, fighting through every room of the derelict to the win.
+//! walks whole generated ships, fighting through every room to the win.
 
 use sim::room::{CELL, Category, Cell, cell_center, cell_of};
 use sim::ship::{Body, Tiles};
 use sim::{
-    Buttons, DERELICT, Difficulty, Event, FxVec2, MAX_HP, MOVE_BUCKETS, PlayerInput, Rng, RoomId,
-    Run, RunConfig, SimState, TickInputs, step, trig,
+    Buttons, Difficulty, Event, FxVec2, MAX_HP, MOVE_BUCKETS, PlayerInput, Rng, RoomId, Run,
+    RunConfig, Ship, SimState, TickInputs, step, trig,
 };
 use std::collections::VecDeque;
 
 const SEED: u64 = 11;
 
-fn exit_room() -> RoomId {
-    let index = DERELICT
-        .rooms
+/// The Corvette's exit room: the bridge.
+fn exit_room(ship: &Ship) -> RoomId {
+    let index = ship
+        .rooms()
         .iter()
         .position(|r| r.room.category == Category::Exit)
         .unwrap_or_default();
@@ -21,8 +22,8 @@ fn exit_room() -> RoomId {
 }
 
 /// The exit room's extraction pad, in floor cells.
-fn pad() -> (usize, usize) {
-    let placed = DERELICT.rooms.get(usize::from(exit_room().0));
+fn pad(ship: &Ship) -> (usize, usize) {
+    let placed = ship.room(exit_room(ship));
     let (x, y) = placed.and_then(|p| p.room.extraction).unwrap_or_default();
     let (ox, oy) = placed.map(|p| p.at).unwrap_or_default();
     (x.saturating_add(ox), y.saturating_add(oy))
@@ -32,7 +33,7 @@ fn pad() -> (usize, usize) {
 fn on_the_pad(run: Run) -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     state.run = run;
-    let (x, y) = pad();
+    let (x, y) = pad(&state.ship);
     if let Some(player) = &mut state.players[0] {
         player.pos = cell_center(x, y);
     }
@@ -41,7 +42,7 @@ fn on_the_pad(run: Run) -> SimState {
 
 #[test]
 fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
-    let room = exit_room();
+    let room = exit_room(&SimState::new(SEED, RunConfig::default()).ship);
     // Mid-fight (a wave still telegraphing in), the pad does nothing.
     let mut fighting = on_the_pad(Run::Encounter { room, wave: 1 });
     fighting
@@ -65,16 +66,16 @@ fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
     assert_eq!(clear.players, frozen.players);
 }
 
-/// Walks the party east from the hangar passage (every other room cleared) through its
-/// hatch into the exit room's encounter.
+/// Walks the party east from the passage fore of the hold (every other room cleared)
+/// through its hatch into the exit room's encounter.
 fn enter_the_exit_room() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
-    state.cleared = 0b1110;
+    state.cleared = !(1 << exit_room(&state.ship).0);
     if let Some(player) = &mut state.players[0] {
-        // In the passage's floor cells (44..=45, 30..=31), centered on its rows.
+        // In the passage's floor cells (56..=59, 19..=20), centered on its rows.
         player.pos = FxVec2 {
-            x: cell_center(44, 30).x,
-            y: CELL.saturating_mul_int(31),
+            x: cell_center(57, 19).x,
+            y: CELL.saturating_mul_int(20),
         };
         player.solid = player.pos;
     }
@@ -88,8 +89,8 @@ fn enter_the_exit_room() -> SimState {
 
 #[test]
 fn the_pad_stays_dead_while_the_exit_rooms_last_wave_lives() {
-    let room = exit_room();
     let mut state = enter_the_exit_room();
+    let room = exit_room(&state.ship);
     assert!(matches!(state.run, Run::Encounter { room: r, wave: 0, .. } if r == room));
     // The base wave dies: the last wave spawns.
     state.enemies.retain(|_, _| false);
@@ -100,7 +101,7 @@ fn the_pad_stays_dead_while_the_exit_rooms_last_wave_lives() {
     );
 
     // Stand on the pad through the whole telegraph and beyond, unhurt.
-    let (x, y) = pad();
+    let (x, y) = pad(&state.ship);
     for _ in 0..120 {
         if let Some(player) = &mut state.players[0] {
             player.pos = cell_center(x, y);
@@ -260,15 +261,13 @@ fn waypoint(pos: FxVec2, here: (i32, i32), next: (i32, i32)) -> Option<FxVec2> {
 }
 
 /// Where the scripted player heads between fights: into the first uncleared room with
-/// enemies (its first placement), else to the extraction pad.
+/// enemies (its first placement), the exit room last, then to the extraction pad.
 fn next_goal(state: &SimState) -> Option<(i32, i32)> {
-    let next = DERELICT
-        .rooms
-        .iter()
-        .enumerate()
-        .find(|&(i, r)| {
-            r.room.has_enemies() && !state.cleared(RoomId(u16::try_from(i).unwrap_or(0)))
-        })
+    let next = (0..)
+        .map(RoomId)
+        .zip(state.ship.rooms())
+        .filter(|&(id, r)| r.room.has_enemies() && !state.cleared(id))
+        .min_by_key(|(_, r)| r.room.category == Category::Exit)
         .and_then(|(_, r)| {
             let first = r.room.base.first()?;
             Some((
@@ -276,7 +275,7 @@ fn next_goal(state: &SimState) -> Option<(i32, i32)> {
                 first.y.saturating_add(r.at.1),
             ))
         });
-    let (x, y) = next.unwrap_or_else(pad);
+    let (x, y) = next.unwrap_or_else(|| pad(&state.ship));
     Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?))
 }
 
@@ -317,76 +316,90 @@ fn scripted_input(state: &SimState) -> Option<PlayerInput> {
     Some(input)
 }
 
-/// Plays the whole derelict on Normal with the scripted player and a test-only cheat:
-/// slot 0 is topped back up to full HP every tick, so the run can't die. It fights through
-/// the phase pistol's vents and vents manually between rooms.
+/// Plays whole Corvettes on Normal with the scripted player and a test-only cheat: slot 0
+/// is topped back up to full HP every tick, so the run can't die. It fights through the
+/// phase pistol's vents and vents manually between rooms. The seeds' ships hold every
+/// room in the pool between them.
 #[test]
 fn a_scripted_player_clears_every_room_and_extracts() {
-    let mut state = SimState::new(SEED, RunConfig::default());
-    assert_eq!(state.config.difficulty, Difficulty::Normal);
-    let mut events = Vec::new();
-    let (mut auto_vents, mut manual_vents) = (0, 0);
-    let budget = 60 * 60 * 5; // 5 minutes of play
-    for _ in 0..budget {
-        if let Some(player) = &mut state.players[0] {
-            player.hp = MAX_HP;
-        }
-        let Some(input) = scripted_input(&state) else {
-            break;
-        };
-        let mut inputs = TickInputs::default();
-        inputs.players[0] = input;
-        let was_venting = state.players[0].is_some_and(|p| p.gun.venting());
-        events.extend(step(&mut state, &inputs).events);
-        if !was_venting && state.players[0].is_some_and(|p| p.gun.venting()) {
-            if input.buttons.contains(Buttons::VENT) {
-                manual_vents += 1;
-            } else {
-                auto_vents += 1;
+    for seed in [1, 5] {
+        let mut state = SimState::new(seed, RunConfig::default());
+        assert_eq!(state.config.difficulty, Difficulty::Normal);
+        let mut events = Vec::new();
+        let (mut auto_vents, mut manual_vents) = (0, 0);
+        let budget = 60 * 60 * 5; // 5 minutes of play
+        for _ in 0..budget {
+            if let Some(player) = &mut state.players[0] {
+                player.hp = MAX_HP;
+            }
+            let Some(input) = scripted_input(&state) else {
+                break;
+            };
+            let mut inputs = TickInputs::default();
+            inputs.players[0] = input;
+            let was_venting = state.players[0].is_some_and(|p| p.gun.venting());
+            events.extend(step(&mut state, &inputs).events);
+            if !was_venting && state.players[0].is_some_and(|p| p.gun.venting()) {
+                if input.buttons.contains(Buttons::VENT) {
+                    manual_vents += 1;
+                } else {
+                    auto_vents += 1;
+                }
             }
         }
+        let cleared: Vec<RoomId> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::RoomCleared { room } => Some(*room),
+                _ => None,
+            })
+            .collect();
+        let kills = events
+            .iter()
+            .filter(|e| matches!(e, Event::EnemyKilled { .. }))
+            .count();
+        let hits = events
+            .iter()
+            .filter(|e| matches!(e, Event::PlayerHit { .. }))
+            .count();
+        let falls = events
+            .iter()
+            .filter(|e| matches!(e, Event::PlayerFell { .. }))
+            .count();
+        println!(
+            "seed {seed}: won after {} ticks: cleared {cleared:?}, {kills} kills, took {hits} \
+         hits, {falls} falls, {auto_vents} auto vents, {manual_vents} manual vents",
+            state.tick
+        );
+        // It paths around pits (as enemies do), so the HP top-up never hides a fall.
+        assert_eq!(falls, 0);
+        assert!(
+            auto_vents >= 5 && manual_vents >= 1,
+            "{auto_vents} {manual_vents}"
+        );
+        assert_eq!(state.run, Run::Won, "{cleared:?}");
+        let ship = &state.ship;
+        let fights: Vec<RoomId> = (0..)
+            .map(RoomId)
+            .zip(ship.rooms())
+            .filter_map(|(id, r)| r.room.has_enemies().then_some(id))
+            .collect();
+        let mut sorted = cleared.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, fights, "every fight, once");
+        assert_eq!(cleared.last(), Some(&exit_room(ship)), "the bridge last");
+        let placed: usize = ship
+            .rooms()
+            .iter()
+            .map(|r| r.room)
+            .flat_map(|r| {
+                std::iter::once(r.base).chain(r.reinforcements.iter().map(|l| l.placements))
+            })
+            .map(<[_]>::len)
+            .sum();
+        // Every room and corridor was revealed on the way.
+        assert!((0..ship.rooms().len()).all(|i| state.visited(RoomId(u16::try_from(i).unwrap()))));
+        assert_eq!(kills, placed, "every placed enemy died");
+        assert_eq!(events.last(), Some(&Event::Won));
     }
-    let cleared: Vec<RoomId> = events
-        .iter()
-        .filter_map(|e| match e {
-            Event::RoomCleared { room } => Some(*room),
-            _ => None,
-        })
-        .collect();
-    let kills = events
-        .iter()
-        .filter(|e| matches!(e, Event::EnemyKilled { .. }))
-        .count();
-    let hits = events
-        .iter()
-        .filter(|e| matches!(e, Event::PlayerHit { .. }))
-        .count();
-    let falls = events
-        .iter()
-        .filter(|e| matches!(e, Event::PlayerFell { .. }))
-        .count();
-    println!(
-        "won after {} ticks: cleared {cleared:?}, {kills} kills, took {hits} hits, \
-         {falls} falls, {auto_vents} auto vents, {manual_vents} manual vents",
-        state.tick
-    );
-    // It paths around pits (as enemies do), so the HP top-up never hides a fall.
-    assert_eq!(falls, 0);
-    assert!(
-        auto_vents >= 5 && manual_vents >= 1,
-        "{auto_vents} {manual_vents}"
-    );
-    assert_eq!(state.run, Run::Won, "{cleared:?}");
-    assert_eq!(cleared, [RoomId(1), RoomId(2), RoomId(3), RoomId(4)]);
-    let placed: usize = DERELICT
-        .rooms
-        .iter()
-        .map(|r| r.room)
-        .flat_map(|r| std::iter::once(r.base).chain(r.reinforcements.iter().map(|l| l.placements)))
-        .map(<[_]>::len)
-        .sum();
-    // Every room was revealed on the way.
-    assert!((0..DERELICT.rooms.len()).all(|i| state.visited(RoomId(u16::try_from(i).unwrap()))));
-    assert_eq!(kills, placed, "every placed enemy died");
-    assert_eq!(events.last(), Some(&Event::Won));
 }

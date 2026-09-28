@@ -1,17 +1,22 @@
 //! The floor as the sim plays it (issue #26): one grid of cells, each in a room or a
 //! hatch.
 //!
-//! A [`Ship`] is built once from a [`Derelict`], then shared read-only behind an `Arc`
-//! and checksummed once: [`SimState`](crate::SimState) holds the pointer, and snapshots
-//! copy only the live hatch states beside it.
+//! A [`Ship`] is generated once per run, from a hull template and the run seed (see
+//! [`Ship::generate`]), then shared read-only behind an `Arc` and checksummed once:
+//! [`SimState`](crate::SimState) holds the pointer, and snapshots copy only the live
+//! hatch states beside it. Tests also hand-place ships from a [`Derelict`].
 //!
 //! Hatches are hard boundaries. Only players cross them, and bullets and sight only
 //! through an open one; enemies never leave their room (see [`Tiles`]).
 
 use crate::checksum;
-use crate::derelict::DERELICT;
-use crate::room::{Cell, Derelict, Exit, Placed, cell_center, cell_of, cell_start};
-use crate::{Fx, FxVec2, RoomId};
+use crate::hull::{AROUND, CORVETTE, Slot, Template, toward};
+use crate::pool::POOL;
+use crate::room::{
+    Category, Cell, Derelict, Dir, Exit, Placed, PrototypeRoom, Theme, cell_center, cell_of,
+    cell_start,
+};
+use crate::{Fx, FxVec2, Rng, RoomId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::hash::{Hash, Hasher};
 
@@ -58,15 +63,111 @@ pub struct Ship {
     height: usize,
     /// Row-major.
     spots: Vec<Spot>,
-    /// By [`RoomId`].
+    /// By [`RoomId`]: the template's filled slots in legend order, then its corridors.
     rooms: Vec<Placed>,
     /// By [`HatchId`].
     hatches: Vec<Hatch>,
     start: (RoomId, FxVec2),
+    /// The run seed the ship was generated from (0 when hand-placed); serde rebuilds it
+    /// from this.
+    seed: u64,
     checksum: u64,
 }
 
+/// A corridor's region. Its cells are the template's, so they live only in the ship's
+/// grid: this room has none, nor anything else.
+const CORRIDOR: PrototypeRoom = PrototypeRoom {
+    name: "corridor",
+    category: Category::Connector,
+    theme: Theme::Corridor,
+    cells: &[],
+    exits: &[],
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+    extraction: None,
+};
+
+/// Salts the run seed for the floor's draws, so they aren't the run RNG's own stream.
+const FLOOR_STREAM: u64 = 0x5419_F100_2A3D_0001;
+
 impl Ship {
+    /// Fills `template` from the room pool, drawing only on `seed`, so a peer rebuilds the
+    /// same ship from the same seed (issue #26):
+    ///
+    /// 1. Each slot, in legend order: an optional one is left out on a coin flip. Else it
+    ///    takes a random pool room that fits it, preferring rooms not yet placed, stamped
+    ///    at the slot with its unused hatch points walled.
+    /// 2. Each stretch of corridor becomes a region, walled by the hull and by any outside
+    ///    cell touching it (a left-out slot, a room's void).
+    /// 3. A hatch joins each slot's open hatch points to the corridor outside.
+    ///
+    /// It can't fail: templates are validated against the pool when the crate builds, and
+    /// a seed sweep in the tests checks every ship joins up.
+    #[must_use]
+    pub fn generate(template: &Template, seed: u64) -> Self {
+        let (width, height) = template.size();
+        let mut spots = vec![Spot::Void; width.saturating_mul(height)];
+        let filled = fill(template, seed);
+        for (id, &(slot, placed)) in (0..).map(RoomId).zip(&filled) {
+            stamp(&mut spots, width, id, &placed);
+            for dir in DIRS.into_iter().filter(|dir| !slot.hatches.contains(dir)) {
+                let gap = slot.size.hatch(dir).shifted(placed.at);
+                for i in 0..gap.width {
+                    let wall = Spot::Room {
+                        room: id,
+                        cell: Cell::Wall,
+                    };
+                    set(&mut spots, width, gap.cell(i), wall);
+                }
+            }
+        }
+        let mut rooms: Vec<Placed> = filled.iter().map(|&(_, placed)| placed).collect();
+        add_corridors(template, &mut spots, &mut rooms);
+
+        let mut hatches = Vec::new();
+        for (id, &(slot, placed)) in (0..).map(RoomId).zip(&filled) {
+            for &dir in slot.hatches {
+                let gap = slot.size.hatch(dir).shifted(placed.at);
+                let outside = toward(gap.cell(0), dir).map(|at| get(&spots, width, at));
+                let Some(Spot::Room { room: corridor, .. }) = outside else {
+                    continue;
+                };
+                let hatch = HatchId(u16::try_from(hatches.len()).unwrap_or(u16::MAX));
+                for i in 0..gap.width {
+                    set(&mut spots, width, gap.cell(i), Spot::Hatch(hatch));
+                }
+                hatches.push(Hatch {
+                    rooms: [id, corridor],
+                    gap,
+                });
+            }
+        }
+
+        // The start slot is never left out. The party starts at its room's center, where
+        // the room's hatch points line up.
+        let start = (0..)
+            .map(RoomId)
+            .zip(&filled)
+            .find(|(_, (slot, _))| slot.letter == template.start)
+            .map(|(id, &(slot, placed))| {
+                let (w, h) = slot.size.dims();
+                let mid = |at: usize, side: usize| {
+                    cell_start(i32::try_from(at.saturating_add(side / 2)).unwrap_or(0))
+                };
+                let (x, y) = placed.at;
+                (
+                    id,
+                    FxVec2 {
+                        x: mid(x, w),
+                        y: mid(y, h),
+                    },
+                )
+            })
+            .unwrap_or_default();
+        Self::from_parts(width, height, spots, rooms, hatches, start, seed)
+    }
+
     /// Stamps every placed room into one grid and a hatch over each connection. The
     /// derelict is const-validated, so rooms only share wall and linked exits.
     #[must_use]
@@ -76,21 +177,7 @@ impl Ship {
         let height = size(|p| p.at.1.saturating_add(p.room.height()));
         let mut spots = vec![Spot::Void; width.saturating_mul(height)];
         for (room, placed) in (0..).map(RoomId).zip(derelict.rooms) {
-            for (y, row) in placed.room.cells.iter().enumerate() {
-                for x in 0..row.len() {
-                    let (Ok(lx), Ok(ly)) = (i32::try_from(x), i32::try_from(y)) else {
-                        continue;
-                    };
-                    let cell = placed.room.cell(lx, ly);
-                    let at = (x.saturating_add(placed.at.0), y.saturating_add(placed.at.1));
-                    if let Some(spot) = index(width, at).and_then(|i| spots.get_mut(i))
-                        && *spot == Spot::Void
-                        && cell != Cell::Void
-                    {
-                        *spot = Spot::Room { room, cell };
-                    }
-                }
-            }
+            stamp(&mut spots, width, room, placed);
         }
         let mut hatches = Vec::new();
         for (id, link) in (0..).map(HatchId).zip(derelict.connections) {
@@ -98,9 +185,7 @@ impl Ship {
                 continue;
             };
             for i in 0..gap.width {
-                if let Some(spot) = index(width, gap.cell(i)).and_then(|i| spots.get_mut(i)) {
-                    *spot = Spot::Hatch(id);
-                }
+                set(&mut spots, width, gap.cell(i), Spot::Hatch(id));
             }
             let room = |r: usize| RoomId(u16::try_from(r).unwrap_or(u16::MAX));
             hatches.push(Hatch {
@@ -119,6 +204,19 @@ impl Ship {
             cell_center(x.saturating_add(at.0), y.saturating_add(at.1)),
         );
         let rooms = derelict.rooms.to_vec();
+        Self::from_parts(width, height, spots, rooms, hatches, start, 0)
+    }
+
+    /// The ship, checksummed.
+    fn from_parts(
+        width: usize,
+        height: usize,
+        spots: Vec<Spot>,
+        rooms: Vec<Placed>,
+        hatches: Vec<Hatch>,
+        start: (RoomId, FxVec2),
+        seed: u64,
+    ) -> Self {
         let checksum = checksum::of(&(width, height, &spots, &rooms, &hatches, start));
         Self {
             width,
@@ -127,6 +225,7 @@ impl Ship {
             rooms,
             hatches,
             start,
+            seed,
             checksum,
         }
     }
@@ -250,18 +349,19 @@ impl PartialEq for Ship {
 
 impl Eq for Ship {}
 
-/// Serialized as its checksum: a peer rebuilds the ship and verifies it.
+/// Serialized as its seed and checksum: a peer regenerates the ship and verifies it.
 impl Serialize for Ship {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.checksum.serialize(serializer)
+        (self.seed, self.checksum).serialize(serializer)
     }
 }
 
-/// Rebuilds the only ship there is so far, [`DERELICT`], and checks it is the one sent.
+/// Regenerates the only ship class there is so far, [`CORVETTE`], from the seed sent,
+/// and checks it is the ship sent. Hand-placed ships (tests) don't round-trip.
 impl<'de> Deserialize<'de> for Ship {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let checksum = u64::deserialize(deserializer)?;
-        let ship = Self::new(&DERELICT);
+        let (seed, checksum) = <(u64, u64)>::deserialize(deserializer)?;
+        let ship = Self::generate(&CORVETTE, seed);
         if ship.checksum == checksum {
             Ok(ship)
         } else {
@@ -273,6 +373,121 @@ impl<'de> Deserialize<'de> for Ship {
 /// Row-major index of on-grid cell (`x`, `y`) in a `width`-wide grid.
 fn index(width: usize, (x, y): (usize, usize)) -> Option<usize> {
     (x < width).then(|| y.checked_mul(width)?.checked_add(x))?
+}
+
+/// What fills cell `at` of a `width`-wide grid; off the grid is void.
+fn get(spots: &[Spot], width: usize, at: (usize, usize)) -> Spot {
+    index(width, at)
+        .and_then(|i| spots.get(i).copied())
+        .unwrap_or(Spot::Void)
+}
+
+/// Fills cell `at` of a `width`-wide grid, if it's on it.
+fn set(spots: &mut [Spot], width: usize, at: (usize, usize), spot: Spot) {
+    if let Some(cell) = index(width, at).and_then(|i| spots.get_mut(i)) {
+        *cell = spot;
+    }
+}
+
+/// The four sides, in hatch-point order.
+const DIRS: [Dir; 4] = [Dir::North, Dir::East, Dir::South, Dir::West];
+
+/// Step 1 of [`Ship::generate`]: each filled slot and its room, placed at the slot.
+fn fill(template: &Template, seed: u64) -> Vec<(Slot, Placed)> {
+    let mut rng = Rng::from_seed(seed ^ FLOOR_STREAM);
+    let mut used = vec![false; POOL.len()];
+    let mut filled = Vec::new();
+    for &slot in template.slots {
+        if slot.optional && rng.below(2) == 0 {
+            continue;
+        }
+        let fits: Vec<usize> = (0..POOL.len())
+            .filter(|&i| POOL.get(i).is_some_and(|room| slot.fits(room)))
+            .collect();
+        let fresh: Vec<usize> = fits
+            .iter()
+            .copied()
+            .filter(|&i| used.get(i) == Some(&false))
+            .collect();
+        let choices = if fresh.is_empty() { fits } else { fresh };
+        let pick = rng.below(u32::try_from(choices.len()).unwrap_or(u32::MAX));
+        let Some(pick) = usize::try_from(pick)
+            .ok()
+            .and_then(|i| choices.get(i).copied())
+        else {
+            continue;
+        };
+        let at = template.origin(slot.letter);
+        if let (Some(&room), Some(at), Some(taken)) = (POOL.get(pick), at, used.get_mut(pick)) {
+            *taken = true;
+            filled.push((slot, Placed { room, at }));
+        }
+    }
+    filled
+}
+
+/// Step 2 of [`Ship::generate`]: each 4-connected stretch of the template's corridor
+/// becomes a region of floor, then every outside cell touching one (diagonals count)
+/// becomes its wall: the hull, a left-out slot, a room's void.
+fn add_corridors(template: &Template, spots: &mut [Spot], rooms: &mut Vec<Placed>) {
+    let (width, _) = template.size();
+    let corridor = |(x, y): (usize, usize)| template.at(x, y) == b'=';
+    let floor: Vec<(usize, usize)> = (template.rows.iter().enumerate())
+        .flat_map(|(y, row)| row.bytes().enumerate().map(move |(x, c)| (x, y, c)))
+        .filter_map(|(x, y, c)| (c == b'=').then_some((x, y)))
+        .collect();
+    for &at in &floor {
+        if get(spots, width, at) != Spot::Void {
+            continue;
+        }
+        let id = RoomId(u16::try_from(rooms.len()).unwrap_or(u16::MAX));
+        rooms.push(Placed { room: CORRIDOR, at });
+        let mut stack = vec![at];
+        while let Some(at) = stack.pop() {
+            if corridor(at) && get(spots, width, at) == Spot::Void {
+                let floor = Spot::Room {
+                    room: id,
+                    cell: Cell::Floor,
+                };
+                set(spots, width, at, floor);
+                stack.extend(DIRS.into_iter().filter_map(|dir| toward(at, dir)));
+            }
+        }
+    }
+    for &(x, y) in &floor {
+        let Spot::Room { room, .. } = get(spots, width, (x, y)) else {
+            continue;
+        };
+        for &(dx, dy) in &AROUND {
+            let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy)) else {
+                continue;
+            };
+            if get(spots, width, (nx, ny)) == Spot::Void {
+                let wall = Spot::Room {
+                    room,
+                    cell: Cell::Wall,
+                };
+                set(spots, width, (nx, ny), wall);
+            }
+        }
+    }
+}
+
+/// Stamps `placed`'s non-void cells into `spots` as `room`'s, except cells another room
+/// already has: wall two rooms share belongs to the first placed.
+fn stamp(spots: &mut [Spot], width: usize, room: RoomId, placed: &Placed) {
+    for (y, row) in placed.room.cells.iter().enumerate() {
+        for x in 0..row.len() {
+            let (Ok(lx), Ok(ly)) = (i32::try_from(x), i32::try_from(y)) else {
+                continue;
+            };
+            let cell = placed.room.cell(lx, ly);
+            let at = (x.saturating_add(placed.at.0), y.saturating_add(placed.at.1));
+            if get(spots, width, at) == Spot::Void && cell != Cell::Void {
+                set(spots, width, at, Spot::Room { room, cell });
+            }
+        }
+    }
 }
 
 /// The cells a box of half-size `half` at `p` overlaps.

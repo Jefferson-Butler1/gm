@@ -1,7 +1,7 @@
 //! Enemy pathfinding: the flow field gets rushers out of pockets that local steering
 //! can't.
 
-use sim::room::{Category, Derelict, Placed, PrototypeRoom, cell_center};
+use sim::room::{Category, Derelict, Placed, PrototypeRoom, Theme, cell_center};
 use sim::ship::Tiles;
 use sim::{ENEMY_RADIUS, FlowField, PLAYER_RADIUS, Ship, Tuning, chase, per_tick};
 
@@ -9,6 +9,7 @@ use sim::{ENEMY_RADIUS, FlowField, PLAYER_RADIUS, Ship, Tuning, chase, per_tick}
 const POCKET: PrototypeRoom = PrototypeRoom {
     name: "pocket",
     category: Category::Normal,
+    theme: Theme::Cargo,
     cells: &[
         "############",
         "#..........#",

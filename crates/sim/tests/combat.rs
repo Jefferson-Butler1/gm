@@ -1,13 +1,14 @@
 //! Combat rules through the public `step`: gun vs rusher and shooter, contact damage,
 //! enemy bullets, i-frames, steering, and death -> restart.
 
-use sim::room::{cell_center, cell_of};
+use sim::room::{Category, Derelict, Placed, PrototypeRoom, Theme, cell_center, cell_of};
 use sim::ship::{Body, Tiles};
 use sim::{
     Awareness, Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy, Event, Fx,
     FxVec2, MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig,
-    SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, Tuning, step, trig,
+    SPAWN_TELEGRAPH_TICKS, Ship, SimState, TickInputs, Tuning, step, trig,
 };
+use std::sync::Arc;
 
 const SEED: u64 = 7;
 
@@ -16,13 +17,61 @@ const LEFT: u16 = 32768;
 /// The shot telegraph.
 const AIM_TICKS: u16 = Tuning::NORMAL.shooter_telegraph;
 
-/// A fresh run: the party alone in the empty start room, the airlock.
+/// The fight tests' arena, fixed whatever ships generate: the slice's old airlock, 14 x 10
+/// cells walled all round, with a pit at its cells (3..=4, 3).
+const ARENA: PrototypeRoom = PrototypeRoom {
+    name: "arena",
+    category: Category::Entrance,
+    theme: Theme::Airlock,
+    cells: &[
+        "##############",
+        "#............#",
+        "#............#",
+        "#..oo........#",
+        "#............#",
+        "#............#",
+        "#............#",
+        "#............#",
+        "#............#",
+        "##############",
+    ],
+    exits: &[],
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+    extraction: None,
+}
+.valid();
+
+/// A fresh run, but the party alone in the [`ARENA`] at floor cell (8, 0), standing at
+/// its cell (5, 6).
 fn empty_arena() -> SimState {
-    SimState::new(SEED, RunConfig::default())
+    arena(RunConfig::default())
 }
 
-/// The floor cell at (`x`, `y`) of the airlock, whose cell (0, 0) is floor cell (8, 0).
-fn airlock(x: usize, y: usize) -> FxVec2 {
+/// [`empty_arena`] under `config`.
+fn arena(config: RunConfig) -> SimState {
+    let mut state = SimState::new(SEED, config);
+    let ship = Ship::new(&Derelict {
+        rooms: &[Placed {
+            room: ARENA,
+            at: (8, 0),
+        }],
+        connections: &[],
+        start_room: 0,
+        start_cell: (5, 6),
+    });
+    let start = ship.start().1;
+    state.ship = Arc::new(ship);
+    state.hatches.clear();
+    if let Some(player) = &mut state.players[0] {
+        (player.pos, player.solid) = (start, start);
+    }
+    state
+}
+
+/// The floor cell at (`x`, `y`) of the arena, whose cell (0, 0) is floor cell (8, 0).
+fn arena_cell(x: usize, y: usize) -> FxVec2 {
     cell_center(x.saturating_add(8), y)
 }
 
@@ -167,7 +216,7 @@ fn restart_abandons_a_live_run_at_once() {
 #[test]
 fn each_restart_resets_the_rooms_and_derives_the_next_run_seed() {
     let mut state = SimState::new(SEED, RunConfig::default());
-    // As if the party had cleared the airlock and died in the cargo hold.
+    // As if the party had cleared the airlock and died in the next room.
     state.cleared = 0b1;
     state.visited = 0b11;
     state.hatches[0] = sim::HatchState::Sealed;
@@ -272,7 +321,7 @@ fn two_stacked_rushers_part_and_never_overlap() {
 fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
     let touching = ENEMY_RADIUS.saturating_mul_int(2);
     let min = touching.saturating_sub(Fx::from_num(OVERLAP_TOLERANCE));
-    // A column of 8, 30 pt apart, 200 pt right of the player and spanning the airlock's
+    // A column of 8, 30 pt apart, 200 pt right of the player and spanning the arena's
     // height (the player starts in its lower half).
     let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
     let mut state = rushers_at(column);
@@ -307,9 +356,9 @@ fn in_blocking_tiles(tiles: Tiles<'_>, pos: FxVec2) -> bool {
 fn separation_never_pushes_a_rusher_into_walls_or_pits() {
     let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
     let mut state = rushers_at(column);
-    // The player stands just below the airlock's pit, near its west wall, so the ring the
+    // The player stands just below the arena's pit, near its west wall, so the ring the
     // crowd forms around it overlaps both.
-    state.players[0].as_mut().unwrap().pos = airlock(3, 4);
+    state.players[0].as_mut().unwrap().pos = arena_cell(3, 4);
     for tick in 0..300 {
         step(&mut state, &TickInputs::default());
         let tiles = state.tiles();
@@ -327,6 +376,11 @@ fn separation_never_pushes_a_rusher_into_walls_or_pits() {
 /// An empty arena plus one active, hunting shooter at `at`, `ticks` from starting to aim.
 fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
     let mut state = empty_arena();
+    add_shooter(&mut state, at, ticks);
+    state
+}
+
+fn add_shooter(state: &mut SimState, at: FxVec2, ticks: u16) {
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
         awareness: hunting(),
@@ -337,7 +391,6 @@ fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
         },
         ..Enemy::shooter(at, Pattern::Aimed, &RunConfig::default(), 0)
     });
-    state
 }
 
 fn first_enemy(state: &SimState) -> Option<Enemy> {
@@ -425,24 +478,27 @@ fn dodge_iframes_let_enemy_bullets_pass_through() {
 
 #[test]
 fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
-    // The cargo hold's pillar covers floor cells (10..=11, 12..=13), x 320..384; the
-    // player hides west of it at its height. The hold counts as cleared, so no fight
-    // starts.
+    // In the Corvette's bridge (room 3, from floor cell (60, 13)), its southwest pillar
+    // covers floor cells (66..=67, 21..=22), x 2112..2176; the player hides west of it at
+    // its height. The bridge counts as cleared, so no fight starts.
     let row = |x: i32| FxVec2 {
         x: Fx::from_num(x),
-        y: Fx::from_num(416),
+        y: Fx::from_num(704),
     };
-    let mut state = empty_arena();
-    state.cleared = 1 << 1;
-    state.players[0].as_mut().unwrap().pos = row(240);
-    bullet_flying_left(&mut state, row(460));
+    let behind_the_pillar = || {
+        let mut state = SimState::new(SEED, RunConfig::default());
+        state.cleared = 1 << 3;
+        state.players[0].as_mut().unwrap().pos = row(2032);
+        state
+    };
+    let mut state = behind_the_pillar();
+    bullet_flying_left(&mut state, row(2252));
     let events = run(&mut state, 60, &TickInputs::default());
     assert!(events.is_empty(), "{events:?}");
     assert!(state.enemy_bullets.is_empty(), "the pillar ate it");
 
-    let mut state = arena_with_shooter(row(420), 1);
-    state.cleared = 1 << 1;
-    state.players[0].as_mut().unwrap().pos = row(240);
+    let mut state = behind_the_pillar();
+    add_shooter(&mut state, row(2212), 1);
     run(&mut state, 1, &TickInputs::default());
     assert_eq!(
         first_enemy(&state).unwrap().aiming(AIM_TICKS),
@@ -453,7 +509,7 @@ fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
 
 #[test]
 fn a_rusher_steers_around_a_pit_between_it_and_the_player() {
-    // The airlock's pit covers floor cells (11..=12, 3): x 352..416, y 96..128. The
+    // The arena's pit covers floor cells (11..=12, 3): x 352..416, y 96..128. The
     // player stands right above its middle and the rusher right below, so the way is
     // blocked head-on.
     let mut state = rushers_at([FxVec2 {
@@ -484,8 +540,8 @@ fn falling_into_a_pit_on_the_last_hit_point_is_a_death() {
     let mut state = empty_arena();
     let player = state.players[0].as_mut().unwrap();
     player.hp = 1;
-    // Right of the airlock's pit (its cells 3..=4, 3), walking into it.
-    player.pos = airlock(6, 3);
+    // Right of the arena's pit (its cells 3..=4, 3), walking into it.
+    player.pos = arena_cell(6, 3);
     let mut walk_left = TickInputs::default();
     walk_left.players[0] = PlayerInput {
         move_dir: 16,
@@ -503,10 +559,10 @@ fn falling_into_a_pit_on_the_last_hit_point_is_a_death() {
 #[test]
 fn enemies_ignore_a_falling_player_and_its_respawn_pushes_them_back() {
     let mut state = empty_arena();
-    // Mid-fall into the airlock's pit (its cells 3..=4, 3), respawning at its cell (8, 6).
-    let respawn = airlock(8, 6);
+    // Mid-fall into the arena's pit (its cells 3..=4, 3), respawning at its cell (8, 6).
+    let respawn = arena_cell(8, 6);
     let player = state.players[0].as_mut().unwrap();
-    player.pos = airlock(3, 3);
+    player.pos = arena_cell(3, 3);
     player.fall_ticks = 20;
     player.solid = respawn;
     // A rusher 20 pt from the respawn spot, and a shooter.
@@ -520,7 +576,7 @@ fn enemies_ignore_a_falling_player_and_its_respawn_pushes_them_back() {
     });
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
-        ..Enemy::shooter(airlock(10, 2), Pattern::Aimed, &RunConfig::default(), 0)
+        ..Enemy::shooter(arena_cell(10, 2), Pattern::Aimed, &RunConfig::default(), 0)
     });
     let enemies_at = |s: &SimState| s.enemies.iter().map(|(_, e)| e.pos).collect::<Vec<_>>();
     let before = enemies_at(&state);
@@ -564,7 +620,7 @@ fn spread_shooter_fans_slow_pellets_at_the_target() {
             difficulty,
             tuning: Tuning::NORMAL,
         };
-        let mut state = SimState::new(SEED, config);
+        let mut state = arena(config);
         state.enemies.insert(Enemy {
             spawn_ticks: 0,
             behavior: Behavior::Shooter {
@@ -611,13 +667,14 @@ fn spread_placements_follow_the_experiment_toggle() {
         let mut config = RunConfig::default();
         config.tuning.spread_shooter = on;
         let mut state = SimState::new(SEED, config);
-        // The bridge (from floor cell (28, 25)) with its base wave dead: the next tick
-        // spawns its second wave, two shooters of which one is a spread placement.
+        // The bridge (the Corvette's fore slot, from floor cell (60, 13)) with its base
+        // wave dead: the next tick spawns its second wave, two shooters of which one is a
+        // spread placement.
         state.run = Run::Encounter {
             room: RoomId(3),
             wave: 0,
         };
-        state.players[0].as_mut().unwrap().pos = cell_center(28 + 7, 25 + 6);
+        state.players[0].as_mut().unwrap().pos = cell_center(60 + 7, 13 + 6);
         step(&mut state, &TickInputs::default());
         let patterns: Vec<Pattern> = state
             .enemies
