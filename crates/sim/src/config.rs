@@ -104,11 +104,24 @@ pub struct Tuning {
     pub spread_shooter: bool,
     /// A player's shot alerts every enemy this close, pt, walls or not.
     pub hearing_radius: u16,
+    /// A hatch banging open or sealed sets unaware enemies this close to it, pt, in the
+    /// rooms either side investigating; 0 = they ignore hatches.
+    pub hatch_hearing_radius: u16,
     /// An enemy hunting a player alerts unaware allies this close, pt, that it can see.
     pub alert_radius: u16,
     /// An enemy that reaches where it last saw a player and finds nobody gives up after
     /// this many ticks.
     pub forget_ticks: u16,
+    /// Half the width of an enemy's sight cone: degrees either side of its facing it can
+    /// see, 180 = all around. Only sight is coned: hearing a shot, a hit and an ally's
+    /// alert reach it from any side.
+    pub sight_half_angle: u16,
+    /// How fast an enemy turns to face where it's headed, degrees per second. A player
+    /// circling it faster than this slips out of its cone.
+    pub turn_rate: u16,
+    /// How fast an unaware enemy ambles about its room on patrol, pt/s; 0 = it stands
+    /// still.
+    pub patrol_speed: u16,
 }
 
 impl Tuning {
@@ -140,12 +153,39 @@ impl Tuning {
         hearing_radius: 160,
         alert_radius: 128,
         forget_ticks: 180,
+        // 10 cells: a slammed hatch carries further than a shot, and draws the nearer
+        // half or so of a room's base layer (shots' 5 cells reach almost none of it).
+        hatch_hearing_radius: 320,
+        // A 120° cone. At 150°/s a walking player (230 pt/s) out-circles an enemy within
+        // ~88 pt (2.75 cells): about where a rusher is closing in.
+        sight_half_angle: 60,
+        turn_rate: 150,
+        // A slow amble, 1.25 cells/s: under a third of a shooter's 120, so a moving enemy
+        // reads as idle, not hunting, and a 3-cell leg takes about 2.4 s.
+        patrol_speed: 40,
     };
 }
 
 impl Default for Tuning {
     fn default() -> Self {
         Self::NORMAL
+    }
+}
+
+impl Tuning {
+    /// [`Self::sight_half_angle`] in `u16` turns (see [`crate::trig`]): 180° is a half
+    /// turn, which every direction is within.
+    #[must_use]
+    pub fn sight_half_turns(&self) -> u16 {
+        let turns = u32::from(self.sight_half_angle).saturating_mul(1 << 16) / 360;
+        u16::try_from(turns).unwrap_or(u16::MAX)
+    }
+
+    /// [`Self::turn_rate`] as `u16` turns per tick.
+    #[must_use]
+    pub fn turn_per_tick(&self) -> u16 {
+        let turns = u32::from(self.turn_rate).saturating_mul(1 << 16) / (360 * TICK_HZ);
+        u16::try_from(turns).unwrap_or(u16::MAX)
     }
 }
 
@@ -186,8 +226,14 @@ impl RunConfig {
                 regen_charge_ticks: t.regen_charge_ticks.clamp(1, 600),
                 spread_shooter: t.spread_shooter,
                 hearing_radius: t.hearing_radius.min(2048),
+                hatch_hearing_radius: t.hatch_hearing_radius.min(2048),
                 alert_radius: t.alert_radius.min(2048),
                 forget_ticks: t.forget_ticks.clamp(1, 3600),
+                sight_half_angle: t.sight_half_angle.clamp(1, 180),
+                // Up to 4 turns a second: a tick's turn stays well under a half turn.
+                turn_rate: t.turn_rate.clamp(1, 1440),
+                // 4 pt a tick at most: well under a cell.
+                patrol_speed: t.patrol_speed.min(240),
             },
         };
         let interval = sane.shooter_interval();
