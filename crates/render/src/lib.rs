@@ -8,7 +8,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use sim::room::{Cell, PrototypeRoom};
-use sim::{Behavior, Enemy, EnemyId, Event, Fx, FxVec2, Player, SimState};
+use sim::{Behavior, Enemy, EnemyId, Event, Fx, FxVec2, Pattern, Player, SimState};
 use std::f32::consts::TAU;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -34,9 +34,10 @@ const ROLLING_SCALE: f32 = 0.6;
 const DEAD_COLOR: [f32; 4] = [0.35, 0.35, 0.4, 1.0];
 const HURT_COLOR: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
 /// Post-hit invulnerability blinks the player: half alpha every other `BLINK_TICKS`.
-const BLINK_TICKS: u8 = 4;
+const BLINK_TICKS: u16 = 4;
 const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
 const SHOOTER_COLOR: [f32; 4] = [0.7, 0.4, 1.0, 1.0];
+const SPREAD_SHOOTER_COLOR: [f32; 4] = [1.0, 0.35, 0.75, 1.0];
 /// A shooter's aim telegraph: a white core swelling to this fraction of its body.
 const AIM_CORE: f32 = 0.7;
 const ENEMY_BULLET_COLOR: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
@@ -55,8 +56,9 @@ const NUB_HALF: f32 = 4.0;
 const NUB_OFFSET: f32 = 22.0;
 const STICK_KNOB_R: f32 = 22.0;
 const DODGE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
-const DODGE_READY_ALPHA: f32 = 0.35;
-const DODGE_COOLDOWN_ALPHA: f32 = 0.1;
+const VENT_COLOR: [f32; 3] = [1.0, 0.75, 0.25];
+const BUTTON_READY_ALPHA: f32 = 0.35;
+const BUTTON_UNREADY_ALPHA: f32 = 0.1;
 
 const SQUARE: f32 = 0.0;
 const CIRCLE: f32 = 1.0;
@@ -112,7 +114,8 @@ struct Quad {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Overlay {
     pub sticks: [Option<StickView>; 2],
-    pub dodge: Option<DodgeView>,
+    pub dodge: Option<ButtonView>,
+    pub vent: Option<ButtonView>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,10 +129,11 @@ pub struct StickView {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct DodgeView {
+pub struct ButtonView {
     pub center: [f32; 2],
     pub radius: f32,
-    /// Dimmed while the roll is on cooldown.
+    /// Dimmed while pressing it would do nothing (dodge: mid-roll; vent: full or
+    /// already venting).
     pub ready: bool,
 }
 
@@ -278,7 +282,7 @@ impl Renderer {
         for event in events {
             let flash = match *event {
                 Event::EnemyHit { enemy } => Flash::Enemy(enemy),
-                Event::PlayerHit { slot } => Flash::Player(slot),
+                Event::PlayerHit { slot } | Event::PlayerFell { slot } => Flash::Player(slot),
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
                 Event::PlayerDied { .. }
@@ -396,8 +400,15 @@ impl Renderer {
             .iter()
             .zip(&current.players)
             .map(|(a, b)| {
-                a.zip(*b)
-                    .map(|(a, b)| (lerp(lerp_from(a.pos, b.pos), b.pos, alpha), b))
+                a.zip(*b).map(|(a, b)| {
+                    // A pit respawn is a jump, not a slide.
+                    let from = if a.falling() && !b.falling() {
+                        b.pos
+                    } else {
+                        lerp_from(a.pos, b.pos)
+                    };
+                    (lerp(from, b.pos, alpha), b)
+                })
             })
             .collect();
         if let Some(room) = sim::DERELICT.room(current.run.room()) {
@@ -407,6 +418,7 @@ impl Renderer {
             self.push_room(room, current.run.doors_locked(), pad_live);
         }
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
+        let telegraph = current.config.tuning.shooter_telegraph;
         for (id, e) in current.enemies.iter() {
             if !e.active() {
                 self.push_telegraph(e, radius, alpha);
@@ -420,18 +432,23 @@ impl Renderer {
                 enemy_color(e)
             };
             self.push_world(pos, [radius, radius], color, CIRCLE);
-            if let Some(left) = e.aiming() {
+            if let Some(left) = e.aiming(telegraph) {
                 // 0 -> 1 over the telegraph, interpolated like `push_telegraph`.
-                let aimed = (1.0 - (f32::from(left) - alpha) / f32::from(sim::SHOOTER_AIM_TICKS))
-                    .clamp(0.0, 1.0);
+                let aimed =
+                    (1.0 - (f32::from(left) - alpha) / f32::from(telegraph)).clamp(0.0, 1.0);
                 let core = radius * AIM_CORE * aimed;
                 self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
             }
         }
+        let fall_ticks = f32::from(current.config.tuning.fall_ticks.max(1));
         for (slot, player) in players.iter().enumerate() {
             if let Some((pos, p)) = player {
                 let hurt = self.flashing(Flash::Player(slot));
-                self.push_player(*pos, p, hurt);
+                // Fall left, 1 -> 0, interpolated like positions (`fall_ticks` drops 1/tick).
+                let fall = p
+                    .falling()
+                    .then(|| ((f32::from(p.fall_ticks) - alpha) / fall_ticks).clamp(0.0, 1.0));
+                self.push_player(*pos, p, hurt, fall);
             }
         }
         let bullet = sim::BULLET_RADIUS.to_num::<f32>();
@@ -506,11 +523,17 @@ impl Renderer {
         self.push_world(pos, [radius, radius], [r, g, b, 0.3 * (1.0 - left)], CIRCLE);
     }
 
-    fn push_player(&mut self, [x, y]: [f32; 2], p: &Player, hurt: bool) {
+    /// `fall` is how much of a fall into a pit is left (1 -> 0): the player shrinks and
+    /// fades into it. A fatal fall freezes the run, so a dead faller isn't drawn at all.
+    fn push_player(&mut self, [x, y]: [f32; 2], p: &Player, hurt: bool, fall: Option<f32>) {
+        if fall.is_some() && !p.alive() {
+            return;
+        }
         let radius = sim::PLAYER_RADIUS.to_num::<f32>();
         let (radius, mut color) = if !p.alive() {
             (radius, DEAD_COLOR)
-        } else if p.rolling() {
+        } else if p.roll_iframes > 0 {
+            // Only the roll's i-frames look like a roll: the landing is vulnerable.
             (radius * ROLLING_SCALE, ROLLING_COLOR)
         } else if hurt {
             (radius, HURT_COLOR)
@@ -520,10 +543,14 @@ impl Renderer {
         if p.alive() && (p.hurt_ticks / BLINK_TICKS) % 2 == 1 {
             color[3] *= 0.4;
         }
+        let shrink = fall.unwrap_or(1.0);
+        color[3] *= shrink;
+        let radius = radius * shrink;
         self.push_world([x, y], [radius, radius], color, CIRCLE);
         let (sin, cos) = (f32::from(p.facing) / 65536.0 * TAU).sin_cos();
-        let nub = [cos.mul_add(NUB_OFFSET, x), sin.mul_add(NUB_OFFSET, y)];
-        self.push_world(nub, [NUB_HALF, NUB_HALF], color, SQUARE);
+        let (offset, half) = (NUB_OFFSET * shrink, NUB_HALF * shrink);
+        let nub = [cos.mul_add(offset, x), sin.mul_add(offset, y)];
+        self.push_world(nub, [half, half], color, SQUARE);
     }
 
     fn push_overlay(&mut self, overlay: &Overlay) {
@@ -532,12 +559,15 @@ impl Renderer {
             self.push_screen(s.base, s.radius, [1.0, 1.0, 1.0, 0.25 * a], RING);
             self.push_screen(s.knob, STICK_KNOB_R, [1.0, 1.0, 1.0, 0.35 * a], CIRCLE);
         }
-        if let Some(d) = overlay.dodge {
-            let [r, g, b] = DODGE_COLOR;
+        let buttons = [(overlay.dodge, DODGE_COLOR), (overlay.vent, VENT_COLOR)];
+        for (button, [r, g, b]) in buttons {
+            let Some(d) = button else {
+                continue;
+            };
             let a = if d.ready {
-                DODGE_READY_ALPHA
+                BUTTON_READY_ALPHA
             } else {
-                DODGE_COOLDOWN_ALPHA
+                BUTTON_UNREADY_ALPHA
             };
             self.push_screen(d.center, d.radius, [r, g, b, a], CIRCLE);
         }
@@ -601,6 +631,15 @@ impl Renderer {
         }
     }
 
+    /// A room-space point in view points (origin top-left), through the camera of the
+    /// last drawn frame.
+    #[must_use]
+    pub fn view_point(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        let [w, h] = self.size_pt;
+        let [cx, cy] = self.camera;
+        [x - cx + w / 2.0, y - cy + h / 2.0]
+    }
+
     /// Room space (points, +y down) through the camera: one world unit is one view point.
     fn push_world(&mut self, [x, y]: [f32; 2], [hx, hy]: [f32; 2], color: [f32; 4], shape: f32) {
         let [w, h] = self.size_pt;
@@ -629,7 +668,14 @@ impl Renderer {
 const fn enemy_color(e: &Enemy) -> [f32; 4] {
     match e.behavior {
         Behavior::Rusher { .. } => RUSHER_COLOR,
-        Behavior::Shooter { .. } => SHOOTER_COLOR,
+        Behavior::Shooter {
+            pattern: Pattern::Aimed,
+            ..
+        } => SHOOTER_COLOR,
+        Behavior::Shooter {
+            pattern: Pattern::Spread,
+            ..
+        } => SPREAD_SHOOTER_COLOR,
     }
 }
 

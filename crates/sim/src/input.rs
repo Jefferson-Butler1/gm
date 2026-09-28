@@ -12,7 +12,8 @@ pub struct PlayerInput {
     pub move_dir: u8,
     /// Stick deflection: 0 = none, 255 = full.
     pub move_mag: u8,
-    /// Aim angle from +x toward +y; one full turn = 65536. Ignored under `AUTO_AIM`.
+    /// Aim angle from +x toward +y; one full turn = 65536. Read under `FIRE` (unless
+    /// `AUTO_AIM`) or `AIM`.
     pub aim: u16,
     /// Aim-assist strength: 0 = raw aim, 255 = snap to the target in the assist cone.
     pub assist: u8,
@@ -30,6 +31,11 @@ impl Buttons {
     pub const RESTART: Self = Self(1 << 3);
     /// With `FIRE`: aim at the nearest target instead of along `aim`.
     pub const AUTO_AIM: Self = Self(1 << 4);
+    /// Vent the phase pistol now, refilling every charge (see `PhasePistol`).
+    pub const VENT: Self = Self(1 << 5);
+    /// The aim stick is held but not firing (tap and release fire modes): face `aim`
+    /// as is, without assist or a shot. `FIRE` takes precedence.
+    pub const AIM: Self = Self(1 << 6);
 
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {

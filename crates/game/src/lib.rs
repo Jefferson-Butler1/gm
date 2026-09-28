@@ -5,10 +5,12 @@
 //! time, renders `prev` -> `current` interpolated, and returns [`HudData`] for `SwiftUI`.
 
 mod controls;
+mod settings;
 mod stats;
 
-use controls::{Controls, Scheme, Viewport};
+use controls::{Controls, FireMode, Scheme, Viewport};
 use render::Renderer;
+use settings::RunSettings;
 use sim::{Run, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
@@ -51,6 +53,13 @@ pub struct HudData {
     /// on; `waves` is 0 in a room without enemies.
     pub wave: u8,
     pub waves: u8,
+    /// Slot 0's phase pistol: charges left of `max_charges` (for pips).
+    pub charges: u8,
+    pub max_charges: u8,
+    /// Venting: can't fire until every charge is back. `vent_progress` runs 0 -> 1 over
+    /// the vent (0 when not venting).
+    pub venting: bool,
+    pub vent_progress: f32,
 }
 
 /// The run as the HUD needs it.
@@ -125,12 +134,17 @@ impl Game {
 impl Game {
     /// `layer_ptr` is a `CAMetalLayer*` that Swift keeps alive for the Game's lifetime.
     /// `seed` seeds the session's first run (Swift picks it at random); restarts derive
-    /// the next run's seed inside the sim.
+    /// the next run's seed inside the sim. `settings` configure the first run.
     ///
     /// # Errors
     /// If the pointer is null or wgpu cannot set up rendering on the layer.
     #[uniffi::constructor]
-    pub fn new(layer_ptr: u64, viewport: Viewport, seed: u64) -> Result<Arc<Self>, GameError> {
+    pub fn new(
+        layer_ptr: u64,
+        viewport: Viewport,
+        seed: u64,
+        settings: RunSettings,
+    ) -> Result<Arc<Self>, GameError> {
         let addr = usize::try_from(layer_ptr).map_err(|_| GameError::NullLayer)?;
         let layer = NonNull::new(std::ptr::with_exposed_provenance_mut::<c_void>(addr))
             .ok_or(GameError::NullLayer)?;
@@ -147,7 +161,7 @@ impl Game {
         }
         .map_err(GameError::Render)?;
         eprintln!("[gm] Game::new {viewport:?} seed={seed:#018x}");
-        let state = SimState::new(seed);
+        let state = SimState::new(seed, settings.run_config());
         Ok(Arc::new(Self {
             inner: Mutex::new(Inner {
                 renderer,
@@ -179,6 +193,11 @@ impl Game {
         g.viewport = viewport;
     }
 
+    pub fn set_fire_mode(&self, mode: FireMode) {
+        eprintln!("[gm] fire_mode={mode:?}");
+        self.lock().controls.set_fire_mode(mode);
+    }
+
     pub fn set_scheme(&self, scheme: Scheme) {
         eprintln!("[gm] scheme={scheme:?}");
         self.lock().controls.set_scheme(scheme);
@@ -188,6 +207,13 @@ impl Game {
     pub fn set_assist_strength(&self, strength: f32) {
         eprintln!("[gm] assist={strength}");
         self.lock().controls.set_assist(strength);
+    }
+
+    /// Settings for the next run: difficulty and tunables apply when the run restarts
+    /// (death, win, or the Restart button), never mid-run.
+    pub fn set_run_settings(&self, settings: RunSettings) {
+        eprintln!("[gm] next run: {settings:?}");
+        self.lock().current.next_config = Some(settings.run_config());
     }
 
     /// Restart: sends RESTART on the next tick. A live run restarts at once; after a
@@ -254,12 +280,19 @@ impl Game {
             let alpha = ((target_timestamp - clock) / dt).clamp(0.0, 1.0) as f32;
             alpha
         };
-        let roll_ready = g.current.players[0].is_none_or(|p| p.can_roll());
-        let overlay = g.controls.overlay(roll_ready);
+        let player = g.current.players[0];
+        let roll_ready = player.is_none_or(|p| p.can_roll());
+        let max_charges = g.current.config.tuning.charges;
+        let vent_ready = player.is_some_and(|p| !p.gun.venting() && p.gun.charges < max_charges);
+        let overlay = g.controls.overlay(roll_ready, vent_ready);
         let presented = g
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)
             .is_some();
+        // Tap-to-fire aims from where the player was just drawn.
+        let player_view =
+            player.map(|p| g.renderer.view_point([p.pos.x.to_num(), p.pos.y.to_num()]));
+        g.controls.set_player_view(player_view);
         g.stats.set_status(&g.current);
         g.stats.record(
             timestamp,

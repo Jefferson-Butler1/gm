@@ -2,7 +2,7 @@
 //! Also carries the HUD's game status, since this owns the published [`HudData`].
 
 use crate::{HudData, RunState};
-use sim::{DERELICT, MAX_HP, Run, SimState};
+use sim::{DERELICT, MAX_HP, PhasePistol, Run, SimState};
 
 /// How often the HUD and log refresh, in seconds.
 const WINDOW_SECS: f64 = 0.5;
@@ -25,8 +25,8 @@ impl Stats {
         self.hud.clone()
     }
 
-    /// Reads slot 0's HP, the run state, and the room and wave from `state`. Publishes
-    /// immediately (bumps `seq`) when anything changed.
+    /// Reads slot 0's HP and gun, the run state, and the room and wave from `state`.
+    /// Publishes immediately (bumps `seq`) when anything changed.
     pub fn set_status(&mut self, state: &SimState) {
         let room = DERELICT.room(state.run.room());
         let hp = state.players[0].map_or(0, |p| p.hp);
@@ -43,11 +43,23 @@ impl Stats {
         } else {
             0
         };
+        let gun = state.players[0].map(|p| p.gun);
+        let charges = gun.map_or(0, |g| g.charges);
+        let max_charges = state.config.tuning.charges;
+        let venting = gun.is_some_and(|g| g.venting());
+        let vent_progress = gun.filter(PhasePistol::venting).map_or(0.0, |g| {
+            1.0 - f32::from(g.vent_ticks) / f32::from(g.vent_length.max(1))
+        });
         let h = &mut self.hud;
+        let gun_changed = (h.charges, h.max_charges, h.venting) != (charges, max_charges, venting)
+            || h.vent_progress.to_bits() != vent_progress.to_bits();
         if (h.hp, h.max_hp, h.run, h.wave, h.waves) != (hp, MAX_HP, run, wave, waves)
             || h.room != name
+            || gun_changed
         {
             (h.hp, h.max_hp, h.run, h.wave, h.waves) = (hp, MAX_HP, run, wave, waves);
+            (h.charges, h.max_charges, h.venting, h.vent_progress) =
+                (charges, max_charges, venting, vent_progress);
             name.clone_into(&mut h.room);
             h.seq = h.seq.wrapping_add(1);
         }

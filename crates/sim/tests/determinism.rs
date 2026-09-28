@@ -1,33 +1,41 @@
 //! Determinism checks (issue #5): replay, rollback-every-tick, and a committed golden
 //! checksum that CI verifies on both `x86_64` and `aarch64`.
 
-use sim::{Buttons, Event, PlayerInput, Rng, RoomId, Run, SimState, TickEvents, TickInputs, step};
+use sim::{
+    Buttons, Event, PlayerInput, Rng, RoomId, Run, RunConfig, SimState, TickEvents, TickInputs,
+    Tuning, step,
+};
 use std::ops::Range;
 
 const SEED: u64 = 0x5EED;
-const TICKS: u64 = 1500;
+const TICKS: u64 = 2700;
 /// Ticks when the party holds only RESTART (the scripted start, then after the death).
 /// RESTART also abandons a live run, so each window presses it on its last tick only:
 /// once the death pause is over, not every tick after the run has restarted.
-const RESTARTS: [Range<u64>; 2] = [0..40, 900..950];
+const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
 /// Ticks when the party walks from the start cell out of the airlock's east exit and into
 /// the cargo hold's encounter: [`WALK_NORTH`] ticks up, then east.
-const WALK_IN: [Range<u64>; 2] = [40..100, 950..1010];
-const WALK_NORTH: u64 = 8;
+const WALK_IN: [Range<u64>; 2] = [40..125, 1250..1335];
+const WALK_NORTH: u64 = 13;
 /// Both players stand idle from just after entering the cargo hold, so its shooter lives
-/// long enough to fire and the rushers kill them.
-const STAND_STILL: Range<u64> = 110..900;
+/// long enough to fire and the rushers kill them; they only roll east every
+/// [`STAND_STILL_ROLL`] ticks, so some hits land on a roll's vulnerable landing and a roll
+/// lands in the hold's pit strip.
+const STAND_STILL: Range<u64> = 130..1200;
+const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
-const AUTO_FIGHT: Range<u64> = 1010..TICKS;
+const AUTO_FIGHT: Range<u64> = 1335..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x80e5_3197_ee84_df4c;
+const GOLDEN_TRACE: u64 = 0xcfa2_2a23_fbbc_8fbc;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
-/// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is pressed on ~1 tick in 8 so rolls, cooldown drops and
-/// walking all show up; FIRE is held about half the time.
+/// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is
+/// pressed on ~1 tick in 32 so rolls, dropped dodges and walking all show up; FIRE is held
+/// about half the time, so the pistol empties and auto-vents; VENT is pressed on ~1 tick
+/// in 256 for manual vents.
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
     (0..TICKS)
@@ -41,15 +49,29 @@ fn script() -> Vec<TickInputs> {
                     aim: u16::from_le_bytes([bits[2], bits[3]]),
                     assist: bits[5],
                     buttons: Buttons(bits[4] & !Buttons::DODGE.0 & !Buttons::RESTART.0 & 0b1_1111)
-                        | if bits[6] < 32 {
+                        | if bits[6] < 8 {
                             Buttons::DODGE
+                        } else {
+                            Buttons::default()
+                        }
+                        | if bits[7] == 0 {
+                            Buttons::VENT
                         } else {
                             Buttons::default()
                         },
                 };
             }
             let scripted = if STAND_STILL.contains(&tick) {
-                Some(PlayerInput::default())
+                Some(if tick % STAND_STILL_ROLL == 0 {
+                    // Bucket 0 = straight right; only the roll moves.
+                    PlayerInput {
+                        move_mag: u8::MAX,
+                        buttons: Buttons::DODGE,
+                        ..PlayerInput::default()
+                    }
+                } else {
+                    PlayerInput::default()
+                })
             } else if let Some(window) = RESTARTS.iter().find(|r| r.contains(&tick)) {
                 Some(PlayerInput {
                     buttons: if tick == window.end.saturating_sub(1) {
@@ -89,7 +111,7 @@ fn script() -> Vec<TickInputs> {
 
 /// Two players, starting dead so the script exercises the restart transition.
 fn start() -> SimState {
-    let mut state = SimState::new(SEED);
+    let mut state = SimState::new(SEED, RunConfig::default());
     state.players[1] = state.players[0];
     state.run = Run::Dead {
         room: RoomId(0),
@@ -145,22 +167,51 @@ fn golden_trace_matches_committed_value() {
     assert_eq!(trace, GOLDEN_TRACE, "got {trace:#018x}");
 }
 
-/// Guards the script's purpose: the golden trace must cover walking, rolling, shooting,
+/// Guards the script's purpose: the golden trace must cover walking, rolling (dropped
+/// mid-roll dodges, a hit on a vulnerable landing), falling into a pit, shooting, venting (auto and manual,
+/// and the refills),
 /// kills, a room transition into a sealed encounter with a second wave, shooters firing,
 /// player deaths and restarts.
 #[test]
 fn script_exercises_movement_dodge_combat_and_rooms() {
     let mut state = start();
-    let start_pos = SimState::new(SEED).players[0].unwrap().pos;
+    let start_pos = SimState::new(SEED, RunConfig::default()).players[0]
+        .unwrap()
+        .pos;
     let (mut rolls, mut moved, mut sealed) = (0, false, false);
+    let (mut dropped_dodges, mut landing_hits) = (0, 0);
+    let (mut auto_vents, mut manual_vents, mut refills) = (0, 0, 0);
     let (mut enemy_shots, mut enemy_bullets) = (0, 0);
     let mut events = Vec::new();
     for i in script() {
-        events.extend(step(&mut state, &i).events);
+        let was_rolling = state.players[0].is_some_and(|p| p.rolling());
+        let was_venting = state.players[0].is_some_and(|p| p.gun.venting());
+        let stepped = step(&mut state, &i).events;
         if let Some(p) = state.players[0] {
-            rolls += usize::from(p.roll_ticks == sim::ROLL_TICKS);
-            moved |= p.pos != start_pos;
+            let started = !was_venting && p.gun.venting();
+            if started && stepped.contains(&Event::ShotFired { slot: 0 }) {
+                auto_vents += 1;
+            } else if started {
+                manual_vents += 1;
+            }
+            refills += usize::from(was_venting && !p.gun.venting());
         }
+        if let Some(p) = state.players[0] {
+            rolls += usize::from(p.roll_ticks == Tuning::NORMAL.roll_ticks);
+            moved |= p.pos != start_pos;
+            // ETG roll: dodges mid-roll are dropped, and the landing can be hit.
+            dropped_dodges += usize::from(
+                was_rolling && p.rolling() && i.players[0].buttons.contains(Buttons::DODGE),
+            );
+        }
+        landing_hits += stepped
+            .iter()
+            .filter(|e| match e {
+                Event::PlayerHit { slot } => state.players[*slot].is_some_and(|p| p.rolling()),
+                _ => false,
+            })
+            .count();
+        events.extend(stepped);
         sealed |= state.run.doors_locked();
         enemy_shots += usize::from(state.enemy_bullets.len() > enemy_bullets);
         enemy_bullets = state.enemy_bullets.len();
@@ -169,16 +220,27 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     let shots = count(|e| matches!(e, Event::ShotFired { .. }));
     let kills = count(|e| matches!(e, Event::EnemyKilled { .. }));
     let deaths = count(|e| matches!(e, Event::PlayerDied { .. }));
+    let falls = count(|e| matches!(e, Event::PlayerFell { .. }));
     let restarts = count(|e| matches!(e, Event::Restarted));
     let entries = count(|e| matches!(e, Event::RoomEntered { .. }));
     let waves = count(|e| matches!(e, Event::WaveStarted { .. }));
     let cleared = count(|e| matches!(e, Event::RoomCleared { .. }));
     println!(
-        "rolls={rolls} shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
+        "rolls={rolls} dropped_dodges={dropped_dodges} landing_hits={landing_hits} \
+         shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
          entries={entries} waves={waves} cleared={cleared} sealed={sealed} \
-         enemy_shots={enemy_shots}"
+         enemy_shots={enemy_shots} falls={falls}"
     );
-    assert!(moved && rolls >= 10, "moved={moved} rolls={rolls}");
+    println!("auto_vents={auto_vents} manual_vents={manual_vents} refills={refills}");
+    assert!(
+        auto_vents >= 3 && manual_vents >= 1 && refills >= 5,
+        "auto_vents={auto_vents} manual_vents={manual_vents} refills={refills}"
+    );
+    assert!(
+        moved && rolls >= 10 && dropped_dodges >= 5 && landing_hits >= 1,
+        "moved={moved} rolls={rolls} dropped_dodges={dropped_dodges} \
+         landing_hits={landing_hits}"
+    );
     // Restarts: the scripted start plus at least one after a full-party death.
     assert!(
         shots >= 50 && kills >= 5 && deaths >= 2 && restarts >= 2,
@@ -190,4 +252,6 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     );
     // The cargo hold's second wave brings a shooter.
     assert!(enemy_shots >= 2, "enemy_shots={enemy_shots}");
+    // Rolls landing in the cargo hold's pit: falls, respawns, and a fatal fall.
+    assert!(falls >= 2, "falls={falls}");
 }

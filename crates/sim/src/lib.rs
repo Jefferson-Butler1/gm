@@ -15,8 +15,10 @@
 mod arena;
 mod checksum;
 mod combat;
+mod config;
 mod derelict;
 mod encounter;
+mod gun;
 mod input;
 mod player;
 mod rng;
@@ -26,14 +28,13 @@ pub mod trig;
 pub use arena::{Arena, Id};
 pub use combat::{
     BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS, Enemy,
-    EnemyId, RUSHER_HP, SHOOTER_AIM_TICKS, SHOOTER_HP, SHOOTER_RELOAD, SPAWN_TELEGRAPH_TICKS,
+    EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS, SPREAD_SHOOTER_HP,
 };
+pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use derelict::DERELICT;
+pub use gun::PhasePistol;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
-pub use player::{
-    ASSIST_CONE, FIRE_INTERVAL, HURT_TICKS, MAX_HP, PLAYER_RADIUS, Player, ROLL_COOLDOWN_TICKS,
-    ROLL_TICKS,
-};
+pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
 pub use rng::Rng;
 
 use serde::{Deserialize, Serialize};
@@ -124,33 +125,44 @@ pub struct SimState {
     pub enemy_bullets: Arena<Bullet>,
     /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
     pub cleared: u64,
+    /// Difficulty and tunables, fixed for the run.
+    pub config: RunConfig,
+    /// The config the next restart uses; `None` keeps [`Self::config`]. The host sets it
+    /// (settings changed mid-run); it takes effect only when a new run starts.
+    pub next_config: Option<RunConfig>,
 }
 
 impl SimState {
-    /// A fresh single-player run, standing in the derelict's start room.
+    /// A fresh single-player run, standing in the derelict's start room. `config` is
+    /// clamped to what the sim handles (see [`RunConfig::sanitized`]).
     #[must_use]
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, config: RunConfig) -> Self {
+        let config = config.sanitized();
         let (room, at) = DERELICT.start();
         let mut state = Self {
             tick: 0,
             seed,
             rng: Rng::from_seed(seed),
             run: Run::Boarding { room },
-            players: [Some(Player::default()), None, None, None],
+            players: [Some(Player::new(&config.tuning)), None, None, None],
             enemies: Arena::default(),
             bullets: Arena::default(),
             enemy_bullets: Arena::default(),
             cleared: 0,
+            config,
+            next_config: None,
         };
         encounter::enter(&mut state, room, at, &mut TickEvents::default());
         state
     }
 
-    /// A fresh run from the next run seed, with the same occupied slots. The tick keeps
+    /// A fresh run from the next run seed, with the same occupied slots, under
+    /// [`Self::next_config`] if one was supplied, else the same config. The tick keeps
     /// counting: it is session time, and presentation keys effects by it.
     #[must_use]
     pub fn restarted(&self) -> Self {
-        let mut fresh = Self::new(Rng::next_seed(self.seed));
+        let config = self.next_config.unwrap_or(self.config);
+        let mut fresh = Self::new(Rng::next_seed(self.seed), config);
         fresh.tick = self.tick;
         let start = fresh.players[0];
         for (slot, old) in fresh.players.iter_mut().zip(&self.players) {
@@ -205,7 +217,12 @@ pub enum Event {
     PlayerHit {
         slot: usize,
     },
-    /// Also preceded by the killing `PlayerHit`.
+    /// A player walked (or rolled) into a pit, losing a hit point; respawns after the
+    /// run's `fall_ticks`.
+    PlayerFell {
+        slot: usize,
+    },
+    /// Also preceded by the killing `PlayerHit` or `PlayerFell`.
     PlayerDied {
         slot: usize,
     },

@@ -3,18 +3,21 @@
 
 use sim::room::{Body, Tiles, cell_center, cell_of};
 use sim::{
-    Behavior, Bullet, Buttons, DEATH_TICKS, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, MAX_HP,
-    PlayerInput, RUSHER_HP, Rng, RoomId, Run, SHOOTER_AIM_TICKS, SPAWN_TELEGRAPH_TICKS, SimState,
-    TickInputs, step,
+    Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2,
+    MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig, SPAWN_TELEGRAPH_TICKS,
+    SimState, TickInputs, Tuning, step, trig,
 };
 
 const SEED: u64 = 7;
 
 const DOWN: u16 = 16384;
+const LEFT: u16 = 32768;
+/// The shot telegraph.
+const AIM_TICKS: u16 = Tuning::NORMAL.shooter_telegraph;
 
 /// A fresh run: the party alone in the empty start room.
 fn empty_arena() -> SimState {
-    SimState::new(SEED)
+    SimState::new(SEED, RunConfig::default())
 }
 
 /// A point (`x`, `y`) from where the player starts.
@@ -62,7 +65,7 @@ fn held_fire_kills_a_rusher() {
     let events = run(&mut state, 40, &press(Buttons::FIRE)); // aim 0 = straight right
     let hits = count(&events, |e| matches!(e, Event::EnemyHit { .. }));
     let kills = count(&events, |e| matches!(e, Event::EnemyKilled { .. }));
-    assert_eq!((hits, kills), (usize::from(RUSHER_HP), 1), "{events:?}");
+    assert_eq!((hits, kills), (2, 1), "rushers die in 2 hits: {events:?}");
     assert!(state.enemies.is_empty());
     assert_eq!(
         state.players[0].unwrap().hp,
@@ -83,16 +86,19 @@ fn rusher_contact_hurts_then_post_hit_invulnerability_protects() {
 }
 
 #[test]
-fn dodge_iframes_block_contact_damage() {
+fn roll_iframes_block_contact_damage_but_the_landing_is_vulnerable() {
     let mut state = arena_with_rusher(30); // in the roll's path (facing right)
     let mut events = run(&mut state, 1, &press(Buttons::DODGE));
-    events.extend(run(
-        &mut state,
-        usize::from(sim::ROLL_TICKS) - 1,
-        &TickInputs::default(),
-    ));
+    // The i-frames: 55% of the 36-tick roll, rounded = 20 ticks.
+    events.extend(run(&mut state, 19, &TickInputs::default()));
     assert!(events.is_empty(), "{events:?}");
-    assert_eq!(state.players[0].unwrap().hp, MAX_HP);
+    // The rusher turns and catches the slowing landing.
+    let events = run(&mut state, 16, &TickInputs::default());
+    assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
+    assert!(
+        state.players[0].unwrap().rolling(),
+        "hit before the roll ended"
+    );
 }
 
 #[test]
@@ -118,7 +124,7 @@ fn death_goes_to_dead_and_restart_starts_a_fresh_run() {
     assert!(events.is_empty(), "{events:?}");
 
     assert_eq!(run(&mut state, 1, &restart), [Event::Restarted]);
-    let mut fresh = SimState::new(Rng::next_seed(SEED));
+    let mut fresh = SimState::new(Rng::next_seed(SEED), RunConfig::default());
     fresh.tick = state.tick;
     assert_eq!(state, fresh);
 }
@@ -135,15 +141,18 @@ fn restart_now(state: &mut SimState) {
 fn restart_abandons_a_live_run_at_once() {
     let mut state = arena_with_rusher(40);
     state.cleared = 0b1;
-    assert_eq!(run(&mut state, 1, &press(Buttons::RESTART)), [Event::Restarted]);
-    let mut fresh = SimState::new(Rng::next_seed(SEED));
+    assert_eq!(
+        run(&mut state, 1, &press(Buttons::RESTART)),
+        [Event::Restarted]
+    );
+    let mut fresh = SimState::new(Rng::next_seed(SEED), RunConfig::default());
     fresh.tick = state.tick;
     assert_eq!(state, fresh);
 }
 
 #[test]
 fn each_restart_resets_the_rooms_and_derives_the_next_run_seed() {
-    let mut state = SimState::new(SEED);
+    let mut state = SimState::new(SEED, RunConfig::default());
     // As if the party had cleared the airlock and died in the cargo hold.
     state.cleared = 0b1;
     state.run = Run::Dead {
@@ -153,7 +162,7 @@ fn each_restart_resets_the_rooms_and_derives_the_next_run_seed() {
     restart_now(&mut state);
     let second_seed = state.seed;
     assert_eq!(second_seed, Rng::next_seed(SEED));
-    let mut fresh = SimState::new(second_seed);
+    let mut fresh = SimState::new(second_seed, RunConfig::default());
     fresh.tick = state.tick;
     assert_eq!(state, fresh, "back in the start room, nothing cleared");
     restart_now(&mut state);
@@ -253,16 +262,17 @@ fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
     let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
     let mut state = rushers_at(column);
     let mut last: Vec<FxVec2> = Vec::new();
-    for tick in 0..300 {
+    for tick in 0..360 {
         step(&mut state, &TickInputs::default());
         let closest = closest_pair(&state);
         assert!(closest >= min, "tick {tick}: {closest}");
         let now: Vec<FxVec2> = state.enemies.iter().map(|(_, e)| e.pos).collect();
-        // Settled by 240: nobody moves 1/32 pt a tick (sub-pixel; no visible jitter).
-        if tick >= 240 {
+        // Settled by 300: nobody moves 1/16 pt a tick (sub-pixel; no visible jitter). At
+        // the 150 pt/s rusher speed the ring creeps ~0.04 pt a tick instead of freezing.
+        if tick >= 300 {
             for (a, b) in now.iter().zip(&last) {
                 let moved = a.x.abs_diff(b.x).saturating_add(a.y.abs_diff(b.y));
-                assert!(moved < Fx::from_bits(1 << 27), "tick {tick}: moved {moved}");
+                assert!(moved < Fx::from_bits(1 << 28), "tick {tick}: moved {moved}");
             }
         }
         last = now;
@@ -300,15 +310,16 @@ fn separation_never_pushes_a_rusher_into_walls_or_pits() {
 // --- shooter, enemy bullets, steering -------------------------------------------------
 
 /// An empty arena plus one active shooter at `at`, `ticks` from starting to aim.
-fn arena_with_shooter(at: FxVec2, ticks: u8) -> SimState {
+fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
     let mut state = empty_arena();
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
         behavior: Behavior::Shooter {
-            shot_timer: SHOOTER_AIM_TICKS.saturating_add(ticks),
+            pattern: Pattern::Aimed,
+            shot_timer: AIM_TICKS.saturating_add(ticks),
             strafe: 1,
         },
-        ..Enemy::shooter(at, 0)
+        ..Enemy::shooter(at, Pattern::Aimed, &RunConfig::default(), 0)
     });
     state
 }
@@ -324,11 +335,11 @@ fn shooter_telegraphs_stands_still_then_fires_a_bullet_that_hurts() {
     run(&mut state, 1, &TickInputs::default());
     let aiming_at = first_enemy(&state).unwrap().pos;
     assert_eq!(
-        first_enemy(&state).unwrap().aiming(),
-        Some(SHOOTER_AIM_TICKS)
+        first_enemy(&state).unwrap().aiming(AIM_TICKS),
+        Some(AIM_TICKS)
     );
 
-    let aim_rest = usize::from(SHOOTER_AIM_TICKS) - 1;
+    let aim_rest = usize::from(AIM_TICKS) - 1;
     let events = run(&mut state, aim_rest, &TickInputs::default());
     assert!(events.is_empty(), "{events:?}");
     assert!(state.enemy_bullets.is_empty(), "not yet");
@@ -340,7 +351,11 @@ fn shooter_telegraphs_stands_still_then_fires_a_bullet_that_hurts() {
 
     run(&mut state, 1, &TickInputs::default());
     assert_eq!(state.enemy_bullets.len(), 1, "fired");
-    assert_eq!(first_enemy(&state).unwrap().aiming(), None, "reloading");
+    assert_eq!(
+        first_enemy(&state).unwrap().aiming(AIM_TICKS),
+        None,
+        "reloading"
+    );
 
     let events = run(&mut state, 40, &TickInputs::default());
     assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
@@ -413,7 +428,7 @@ fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
     state.players[0].as_mut().unwrap().pos = row(80);
     run(&mut state, 1, &TickInputs::default());
     assert_eq!(
-        first_enemy(&state).unwrap().aiming(),
+        first_enemy(&state).unwrap().aiming(AIM_TICKS),
         None,
         "no line of fire"
     );
@@ -431,6 +446,172 @@ fn a_rusher_steers_around_a_pit_between_it_and_the_player() {
         x: Fx::from_num(128),
         y: Fx::from_num(48),
     };
-    let events = run(&mut state, 150, &TickInputs::default());
+    let mut events = Vec::new();
+    for tick in 0..150 {
+        events.extend(step(&mut state, &TickInputs::default()).events);
+        // Players may walk onto pits now; enemies still can't.
+        let tiles = state.tiles().unwrap();
+        for (_, enemy) in state.enemies.iter() {
+            assert!(
+                !in_blocking_tiles(tiles, enemy.pos),
+                "tick {tick}: {enemy:?}"
+            );
+        }
+    }
     assert!(events.contains(&Event::PlayerHit { slot: 0 }), "{events:?}");
+}
+
+#[test]
+fn falling_into_a_pit_on_the_last_hit_point_is_a_death() {
+    let mut state = empty_arena();
+    let player = state.players[0].as_mut().unwrap();
+    player.hp = 1;
+    // Right of the airlock's pit (cells 3..=4, 3), walking into it.
+    player.pos = cell_center(6, 3);
+    let mut walk_left = TickInputs::default();
+    walk_left.players[0] = PlayerInput {
+        move_dir: 16,
+        move_mag: u8::MAX,
+        ..PlayerInput::default()
+    };
+    let events = run(&mut state, 30, &walk_left);
+    assert_eq!(
+        events,
+        [Event::PlayerFell { slot: 0 }, Event::PlayerDied { slot: 0 }]
+    );
+    assert!(matches!(state.run, Run::Dead { .. }), "{:?}", state.run);
+}
+
+#[test]
+fn enemies_ignore_a_falling_player_and_its_respawn_pushes_them_back() {
+    let mut state = empty_arena();
+    // Mid-fall into the airlock's pit (cells 3..=4, 3), respawning at cell (8, 6).
+    let respawn = cell_center(8, 6);
+    let player = state.players[0].as_mut().unwrap();
+    player.pos = cell_center(3, 3);
+    player.fall_ticks = 20;
+    player.solid = respawn;
+    // A rusher 20 pt from the respawn spot, and a shooter.
+    let near = FxVec2 {
+        x: respawn.x.saturating_add(Fx::from_num(20)),
+        ..respawn
+    };
+    let rusher = state.enemies.insert(Enemy {
+        spawn_ticks: 0,
+        ..Enemy::rusher(near)
+    });
+    state.enemies.insert(Enemy {
+        spawn_ticks: 0,
+        ..Enemy::shooter(cell_center(10, 2), Pattern::Aimed, &RunConfig::default(), 0)
+    });
+    let enemies_at = |s: &SimState| s.enemies.iter().map(|(_, e)| e.pos).collect::<Vec<_>>();
+    let before = enemies_at(&state);
+    run(&mut state, 19, &TickInputs::default());
+    assert!(state.players[0].unwrap().falling());
+    assert_eq!(
+        enemies_at(&state),
+        before,
+        "nobody chases or crowds the pit"
+    );
+    assert!(state.enemy_bullets.is_empty(), "nobody fires at it");
+
+    step(&mut state, &TickInputs::default());
+    let player = state.players[0].unwrap();
+    assert!(!player.falling() && player.pos == respawn);
+    let gap = state
+        .enemies
+        .get(rusher)
+        .map(|e| sub_len(e.pos, respawn))
+        .unwrap();
+    // Pushed to two cells (64 pt), then it took its first 2.5 pt step back in.
+    assert!(gap >= Fx::from_num(61), "rusher {gap} pt from the respawn");
+}
+
+const fn sub_len(a: FxVec2, b: FxVec2) -> Fx {
+    let (dx, dy) = (a.x.saturating_sub(b.x), a.y.saturating_sub(b.y));
+    dx.saturating_mul(dx)
+        .saturating_add(dy.saturating_mul(dy))
+        .sqrt()
+}
+
+// --- spread shooter (the pattern experiment) ------------------------------------------
+
+#[test]
+fn spread_shooter_fans_slow_pellets_at_the_target() {
+    for (difficulty, pellets, speed, interval) in [
+        (Difficulty::Normal, 5, 162, 210),
+        (Difficulty::Hard, 7, 200, 157),
+    ] {
+        let config = RunConfig {
+            difficulty,
+            tuning: Tuning::NORMAL,
+        };
+        let mut state = SimState::new(SEED, config);
+        state.enemies.insert(Enemy {
+            spawn_ticks: 0,
+            behavior: Behavior::Shooter {
+                pattern: Pattern::Spread,
+                shot_timer: 1,
+                strafe: 1,
+            },
+            ..Enemy::shooter(point(160, 0), Pattern::Spread, &config, 0)
+        });
+        run(&mut state, 1, &TickInputs::default());
+        let vels: Vec<FxVec2> = state.enemy_bullets.iter().map(|(_, b)| b.vel).collect();
+        assert_eq!(vels.len(), pellets, "{difficulty:?}");
+        for vel in &vels {
+            let per_tick = vel
+                .x
+                .saturating_mul(vel.x)
+                .saturating_add(vel.y.saturating_mul(vel.y))
+                .sqrt();
+            let per_second: i64 = per_tick.saturating_mul_int(60).round().to_num();
+            assert_eq!(per_second, speed, "5/8 of the aimed speed ({difficulty:?})");
+        }
+        // Fanned 12 degrees (~2184 units) apart, centered on the target (straight left).
+        let offsets: Vec<i16> = vels
+            .iter()
+            .map(|&v| trig::angle_diff(LEFT, trig::angle_of(v).unwrap()))
+            .collect();
+        let half = i16::try_from(pellets / 2).unwrap();
+        for (i, offset) in (-half..=half).zip(&offsets) {
+            assert!(
+                (offset - i * 2184).abs() <= 8,
+                "{difficulty:?}: {offsets:?}"
+            );
+        }
+        let Behavior::Shooter { shot_timer, .. } = first_enemy(&state).unwrap().behavior else {
+            panic!("not a shooter");
+        };
+        assert_eq!(shot_timer, interval, "next volley ({difficulty:?})");
+    }
+}
+
+#[test]
+fn spread_placements_follow_the_experiment_toggle() {
+    for (on, spread) in [(true, 1), (false, 0)] {
+        let mut config = RunConfig::default();
+        config.tuning.spread_shooter = on;
+        let mut state = SimState::new(SEED, config);
+        // The bridge with its base wave dead: the next tick spawns its second wave, two
+        // shooters of which one is a spread placement.
+        state.run = Run::Encounter {
+            room: RoomId(3),
+            wave: 0,
+            doors_locked: true,
+        };
+        state.players[0].as_mut().unwrap().pos = cell_center(7, 6);
+        step(&mut state, &TickInputs::default());
+        let patterns: Vec<Pattern> = state
+            .enemies
+            .iter()
+            .filter_map(|(_, e)| match e.behavior {
+                Behavior::Shooter { pattern, .. } => Some(pattern),
+                Behavior::Rusher { .. } => None,
+            })
+            .collect();
+        assert_eq!(patterns.len(), 2);
+        let spreads = patterns.iter().filter(|&&p| p == Pattern::Spread).count();
+        assert_eq!(spreads, spread, "spread_shooter = {on}");
+    }
 }
