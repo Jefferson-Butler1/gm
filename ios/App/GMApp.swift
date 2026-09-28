@@ -16,8 +16,8 @@ final class GameModel {
     /// The Controls options: each a touch scheme with the fire mode it plays best with,
     /// with a stable key for persistence. The first is the default.
     static let controls: [(key: String, label: String, scheme: Scheme, fireMode: FireMode)] = [
+        ("brawlStars", "Brawl Stars / ETG mobile · tap for a quick auto shot, drag to aim, release to fire", .fireButton, .release),
         ("soulKnight", "Soul Knight · fire button: hold to auto-aim, drag to aim", .fireButton, .hold),
-        ("brawlStars", "Brawl Stars · tap for a quick auto shot, drag to aim, release to fire", .fireButton, .release),
         ("twinStick", "Twin-stick (ETG, Nuclear Throne) · aiming fires", .fixedSticks, .hold),
         ("tapToFire", "Tap to fire · auto-aim", .fixedAutoAim, .tap),
         ("claw", "Claw (PUBG, CoD Mobile) · thumbs move and aim, index fingers fire and dodge", .claw, .hold),

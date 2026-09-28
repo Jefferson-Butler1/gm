@@ -31,7 +31,8 @@ pub struct CameraSettings {
     /// How far the view shifts down so the player sits above center, pt: the thumbs on
     /// the bottom-corner controls hide less of what's below. Added to any look.
     pub thumb_clearance: f32,
-    /// Tilt peek: tipping the phone leans the view that way, pt per g of tilt; 0 is off.
+    /// Tilt peek: tipping the phone leans the view, pt per g of tilt; 0 is off. Raise an
+    /// edge to look toward it.
     /// Only quick tilts count: the rest pose re-centers over [`TILT_REST_SECS`], so a
     /// grip that settles doesn't hold the view off. Added to any look.
     pub tilt_peek: f32,
@@ -141,9 +142,10 @@ impl CameraLook {
             return [0.0, 0.0];
         };
         let rest = self.rest.get_or_insert(tilt);
+        // Raising an edge (gravity swinging away from it) looks toward it.
         let peek = [
-            (tilt[0] - rest[0]) * self.settings.tilt_peek,
-            (tilt[1] - rest[1]) * self.settings.tilt_peek,
+            (rest[0] - tilt[0]) * self.settings.tilt_peek,
+            (rest[1] - tilt[1]) * self.settings.tilt_peek,
         ];
         let k = 1.0 - (-dt / TILT_REST_SECS).exp();
         for (r, t) in rest.iter_mut().zip(tilt) {
@@ -170,7 +172,7 @@ mod tests {
         camera.set_tilt(Some([0.0, 0.5]));
         let [x, y] = camera.update(0.0, None, 0.0, None);
         assert!(x.abs() < 0.01 && y.abs() < 0.01, "the rest pose");
-        camera.set_tilt(Some([0.1, 0.5])); // right side dips
+        camera.set_tilt(Some([-0.1, 0.5])); // right edge raised
         let [x, _] = camera.update(0.01, None, 0.0, None);
         assert!((x - 40.0).abs() < 1.0, "{x}");
         // Held for 10 s of 60 Hz frames.
