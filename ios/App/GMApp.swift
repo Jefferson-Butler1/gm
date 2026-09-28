@@ -66,6 +66,7 @@ final class GameModel {
                 "look": Self.looks.first { $0.look == camera.look }?.key ?? "aim",
                 "lead": Double(camera.lead),
                 "smoothingSecs": Double(camera.smoothingSecs),
+                "thumbClearance": Double(camera.thumbClearance),
             ], forKey: Self.cameraKey)
             game?.setCamera(settings: camera)
         }
@@ -131,6 +132,7 @@ final class GameModel {
         }
         if let value = saved["lead"] as? Double { camera.lead = Float(value) }
         if let value = saved["smoothingSecs"] as? Double { camera.smoothingSecs = Float(value) }
+        if let value = saved["thumbClearance"] as? Double { camera.thumbClearance = Float(value) }
         return camera
     }
 }
@@ -276,6 +278,9 @@ struct ControlsSettings: View {
                         SliderRow(label: "Smoothing", value: $model.camera.smoothingSecs, range: 0...1, step: 0.05) {
                             String(format: "%.2f s", $0)
                         }
+                    }
+                    SliderRow(label: "Thumb clearance", value: $model.camera.thumbClearance, range: 0...120, step: 5) {
+                        "\(Int($0)) pt"
                     }
                 }
                 RunSettingsSections(model: model)

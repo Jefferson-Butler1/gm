@@ -28,6 +28,9 @@ pub struct CameraSettings {
     pub lead: f32,
     /// Time constant easing the lean toward its target, s; 0 snaps.
     pub smoothing_secs: f32,
+    /// How far the view shifts down so the player sits above center, pt: the thumbs on
+    /// the bottom-corner controls hide less of what's below. Added to any look.
+    pub thumb_clearance: f32,
 }
 
 #[uniffi::export]
@@ -37,6 +40,7 @@ pub const fn default_camera_settings() -> CameraSettings {
         look: LookMode::Aim,
         lead: 80.0,
         smoothing_secs: 0.2,
+        thumb_clearance: 40.0,
     }
 }
 
@@ -78,7 +82,7 @@ impl CameraLook {
                 [cos * lead * weight, sin * lead * weight]
             })
         };
-        let target = match self.settings.look {
+        let toward = match self.settings.look {
             LookMode::Centered => [0.0, 0.0],
             LookMode::Aim => along(aim),
             LookMode::Facing => along(1.0),
@@ -87,6 +91,7 @@ impl CameraLook {
                 [x * k, y * k]
             }),
         };
+        let target = [toward[0], toward[1] + self.settings.thumb_clearance];
         // No From<f64> for f32; a frame's duration fits.
         #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
         let dt = self
