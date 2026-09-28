@@ -85,7 +85,6 @@ const PUFF_GROWTH: f32 = 1.5;
 /// Facing nub: half-size and distance ahead of the player's center, in world units.
 const NUB_HALF: f32 = 4.0;
 const NUB_OFFSET: f32 = 22.0;
-const STICK_KNOB_R: f32 = 22.0;
 const DODGE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
 const VENT_COLOR: [f32; 3] = [1.0, 0.75, 0.25];
 const FIRE_COLOR: [f32; 3] = [1.0, 0.35, 0.3];
@@ -196,6 +195,7 @@ pub struct StickView {
     pub radius: f32,
     /// Knob center, already clamped to the stick's travel.
     pub knob: [f32; 2],
+    pub knob_radius: f32,
     /// Idle fixed sticks draw fainter.
     pub active: bool,
 }
@@ -734,7 +734,7 @@ impl Renderer {
         for s in overlay.sticks.iter().flatten() {
             let a = if s.active { 1.0 } else { 0.6 };
             self.push_screen(s.base, s.radius, [1.0, 1.0, 1.0, 0.25 * a], RING);
-            self.push_screen(s.knob, STICK_KNOB_R, [1.0, 1.0, 1.0, 0.35 * a], CIRCLE);
+            self.push_screen(s.knob, s.knob_radius, [1.0, 1.0, 1.0, 0.35 * a], CIRCLE);
         }
         let buttons = [
             (overlay.dodge, DODGE_COLOR),

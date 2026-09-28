@@ -62,6 +62,7 @@ final class GameUIView: UIView {
             safeTop: Float(inset.top), safeLeft: Float(inset.left),
             safeBottom: Float(inset.bottom), safeRight: Float(inset.right))
         guard viewport.pixelWidth > 0, viewport.pixelHeight > 0 else { return }
+        if model.viewport != viewport { model.viewport = viewport }
         if let game {
             game.resize(viewport: viewport)
             return
