@@ -1,7 +1,8 @@
 //! Enemy awareness: room enemies stand unaware until they see (in plain view, at any
 //! range), hear or are hit by a player, then hunt it, and give up where they lost it.
-//! All in the cargo hold, 32 x 16 cells: an L (void top-right) with a pillar at cells
-//! (5..=6, 3..=4) and a pit strip at (10..=13, 10..=11). Cells here are the hold's own.
+//! All in the cargo hold (the Corvette's midship room at `SEED`), 24 x 14 cells: an L
+//! (void top-right) with a pillar at cells (5..=6, 3..=4) and a pit strip at
+//! (10..=13, 9..=10). Cells here are the hold's own.
 
 use sim::room::cell_center;
 use sim::{
@@ -10,17 +11,19 @@ use sim::{
 };
 
 const SEED: u64 = 5;
-const CARGO_HOLD: RoomId = RoomId(1);
+const CARGO_HOLD: RoomId = RoomId(2);
 
-/// The center of the hold's cell (`x`, `y`): its cell (0, 0) is floor cell (5, 9).
+/// The center of the hold's cell (`x`, `y`): its cell (0, 0) is floor cell (32, 13).
 fn at((x, y): (usize, usize)) -> FxVec2 {
-    cell_center(x.saturating_add(5), y.saturating_add(9))
+    cell_center(x.saturating_add(32), y.saturating_add(13))
 }
 
 /// The party (slot 0) standing in the cargo hold at cell `at`, no enemies. The hold
 /// counts as cleared, so no fight starts.
 fn hold(at: (usize, usize)) -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
+    let hold = state.ship.room(CARGO_HOLD).map(|r| r.room.name);
+    assert_eq!(hold, Some("cargo hold"), "SEED's midship room");
     state.cleared = 1 << CARGO_HOLD.0;
     move_player(&mut state, at);
     state
@@ -79,10 +82,10 @@ fn an_unaware_enemy_behind_a_wall_ignores_an_idle_player() {
 
 #[test]
 fn an_enemy_notices_a_player_in_plain_view_at_any_range_across_a_pit() {
-    // 29 cells apart along row 11, past the far side of any phone screen, the pit strip
-    // in between: pits don't block sight.
-    let mut state = hold((1, 11));
-    let id = rusher(&mut state, (30, 11));
+    // 21 cells apart along row 10, far out of earshot, the pit strip in between: pits
+    // don't block sight.
+    let mut state = hold((1, 10));
+    let id = rusher(&mut state, (22, 10));
     let events = idle(&mut state, 1);
     assert_eq!(events, [Event::EnemyAlerted { enemy: id }]);
     assert_eq!(
@@ -119,12 +122,12 @@ fn a_shot_alerts_an_enemy_in_earshot_behind_a_wall() {
 fn a_hunter_that_loses_the_player_searches_where_it_last_saw_it_then_gives_up() {
     let forget = Tuning::NORMAL.forget_ticks;
     // 6 cells west of the rusher, in plain view along the bottom strip.
-    let mut state = hold((22, 12));
-    let id = rusher(&mut state, (28, 12));
+    let mut state = hold((16, 12));
+    let id = rusher(&mut state, (22, 12));
     idle(&mut state, 1);
     let last_seen = player_pos(&state);
     // Then out of sight: round the corner of the L, behind the void.
-    move_player(&mut state, (18, 1));
+    move_player(&mut state, (14, 1));
 
     let mut arrived = None;
     let mut gave_up = None;
