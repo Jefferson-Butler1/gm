@@ -216,6 +216,10 @@ pub enum Event {
     EnemyAlerted {
         enemy: EnemyId,
     },
+    /// An unaware enemy heard a hatch and went to look (see [`Awareness`]).
+    EnemyInvestigating {
+        enemy: EnemyId,
+    },
     /// Also preceded by the killing `EnemyHit`. `pos` is where it died; the ID is stale.
     EnemyKilled {
         enemy: EnemyId,

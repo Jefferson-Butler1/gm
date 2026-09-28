@@ -174,8 +174,15 @@ pub enum Awareness {
     /// Patrols (see [`Patrol`]), or stands still facing one way when the run's
     /// `patrol_speed` is 0; never fires. Notices a player in plain view inside its sight
     /// cone (at any range), that shoots within `hearing_radius`, or that hits it, and an
-    /// ally that is hunting within `alert_radius` in plain view.
+    /// ally that is hunting within `alert_radius` in plain view. A hatch banging open or
+    /// shut within `hatch_hearing_radius` in its room sets it investigating.
     Unaware,
+    /// Heard a hatch at `spot` but doesn't know anyone is there: turns toward it and walks
+    /// there at twice the run's `patrol_speed` (looks from where it stands at 0), then
+    /// sweeps its gaze there, counting `looking` ticks; at the run's `forget_ticks` it
+    /// goes back to its patrol. Notices players as when unaware, which alerts it; never
+    /// fires nor alerts allies.
+    Investigating { spot: FxVec2, looking: u16 },
     /// Hunting. With a player in sight (in its cone) it fights as usual, turning to keep
     /// it in view (and tracks it at any range); otherwise it heads for `last_seen`,
     /// facing it. `searching` counts ticks spent there without finding anyone, turning in
@@ -274,15 +281,34 @@ impl Enemy {
     }
 
     /// Starts (or refreshes) a hunt for a player at `at`. Reports `EnemyAlerted` when it
-    /// was unaware.
+    /// wasn't hunting.
     fn alert(&mut self, id: EnemyId, at: FxVec2, events: &mut TickEvents) {
-        if self.awareness == Awareness::Unaware {
+        if !self.hunting() {
             events.events.push(Event::EnemyAlerted { enemy: id });
         }
         self.awareness = Awareness::Alert {
             last_seen: at,
             searching: 0,
         };
+    }
+
+    /// Sends an unaware enemy to investigate a noise at `spot`. Reports
+    /// `EnemyInvestigating` once it is active: a telegraphing spawn reports it as its
+    /// telegraph ends.
+    pub(crate) fn investigate(&mut self, id: EnemyId, spot: FxVec2, events: &mut TickEvents) {
+        if self.awareness != Awareness::Unaware {
+            return;
+        }
+        self.awareness = Awareness::Investigating { spot, looking: 0 };
+        if self.active() {
+            events.events.push(Event::EnemyInvestigating { enemy: id });
+        }
+    }
+
+    /// On the hunt (see [`Awareness::Alert`]).
+    #[must_use]
+    pub const fn hunting(&self) -> bool {
+        matches!(self.awareness, Awareness::Alert { .. })
     }
 
     /// Shot telegraph left, `telegraph..=1` (it fires at 0); `None` when not aiming.
@@ -314,7 +340,7 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
                 last_seen,
                 searching: 0,
             } => Some((e.pos, last_seen)),
-            Awareness::Alert { .. } | Awareness::Unaware => None,
+            Awareness::Alert { .. } | Awareness::Unaware | Awareness::Investigating { .. } => None,
         })
         .collect();
     let shots = players(state, inputs, tiles, events);
@@ -504,7 +530,7 @@ fn notice(
     let pos = enemy.pos;
     let within = |p: FxVec2, radius: u16| overlaps(p, pos, Fx::from_num(radius));
     let nearest = |p: &FxVec2| dist_sq(*p, pos);
-    let hunting = enemy.awareness != Awareness::Unaware;
+    let hunting = enemy.hunting();
     let (facing, half) = (enemy.facing, tuning.sight_half_turns());
     let in_cone = |p: FxVec2| {
         // Standing on the enemy has no direction: that counts as seen.
@@ -546,7 +572,7 @@ fn notice(
 
 /// Where `enemy` heads this tick: the player it sees, else the spot it last saw one,
 /// where it searches for `forget_ticks` before giving up, unaware, to patrol from where
-/// it stands. `None` = unaware: it patrols.
+/// it stands. `None` = not hunting: it patrols or investigates.
 fn hunt(enemy: &mut Enemy, seen: Option<FxVec2>, forget_ticks: u16) -> Option<FxVec2> {
     let Awareness::Alert {
         last_seen,
@@ -600,7 +626,7 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
         }
         let seen = notice(enemy, id, senses, events);
         let Some(target) = hunt(enemy, seen, config.tuning.forget_ticks) else {
-            patrol(enemy, senses, &mut fields, &mut state.rng);
+            off_hunt(enemy, senses, &mut fields, &mut state.rng);
             continue;
         };
         turn(enemy, target, turn_rate);
@@ -668,10 +694,14 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
     separate(state, senses.tiles);
 
     let reach = PLAYER_RADIUS.saturating_add(ENEMY_RADIUS);
-    for (_, enemy) in state.enemies.iter_mut() {
+    for (id, enemy) in state.enemies.iter_mut() {
         if !enemy.active() {
             // Counted down last, so a telegraph of N ticks is inert for exactly N.
             enemy.spawn_ticks = enemy.spawn_ticks.saturating_sub(1);
+            // A noise heard while telegraphing shows once it can act on it.
+            if enemy.active() && matches!(enemy.awareness, Awareness::Investigating { .. }) {
+                events.events.push(Event::EnemyInvestigating { enemy: id });
+            }
             continue;
         }
         let Behavior::Rusher { contact_cooldown } = &mut enemy.behavior else {
@@ -696,6 +726,21 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
     }
 }
 
+/// One tick of an `enemy` not hunting: investigating a noise, else on patrol.
+fn off_hunt<'a>(
+    enemy: &mut Enemy,
+    senses: &Senses<'a>,
+    fields: &mut FlowFields<'a>,
+    rng: &mut Rng,
+) {
+    match enemy.awareness {
+        Awareness::Investigating { spot, looking } => {
+            investigate(enemy, spot, looking, senses, fields);
+        }
+        Awareness::Unaware | Awareness::Alert { .. } => patrol(enemy, senses, fields, rng),
+    }
+}
+
 /// One tick of an unaware `enemy`'s [`Patrol`] at the run's `patrol_speed` (none at 0).
 /// Walking, it turns (at the run's `turn_rate`) to face its heading first, stepping only
 /// once that is within an eighth turn.
@@ -711,14 +756,7 @@ fn patrol<'a>(enemy: &mut Enemy, senses: &Senses<'a>, fields: &mut FlowFields<'a
     let mut p = enemy.patrol;
     p.ticks = p.ticks.saturating_sub(1);
     match p.goal {
-        None if p.ticks > 0 => {
-            let look = rate / 2;
-            enemy.facing = if (p.ticks / PATROL_LOOK_TICKS).is_multiple_of(2) {
-                enemy.facing.wrapping_add(look)
-            } else {
-                enemy.facing.wrapping_sub(look)
-            };
-        }
+        None if p.ticks > 0 => look_around(enemy, p.ticks, rate),
         None => {
             p.goal = pick_goal(enemy.pos, p.home, tiles, fields, rng);
             p.ticks = match p.goal {
@@ -730,20 +768,71 @@ fn patrol<'a>(enemy: &mut Enemy, senses: &Senses<'a>, fields: &mut FlowFields<'a
             p.goal = None;
             p.ticks = stand_ticks(rng);
         }
-        Some(goal) => {
-            let field = fields.toward(tiles, goal);
-            let to = chase(tiles, field, enemy.pos, goal, speed, &mut enemy.steer);
-            turn(enemy, to, rate);
-            let facing = enemy.facing;
-            let ahead = trig::angle_of(sub(to, enemy.pos)).is_some_and(|heading| {
-                trig::angle_diff(facing, heading).unsigned_abs() <= EIGHTH_TURN.unsigned_abs()
-            });
-            if ahead {
-                enemy.pos = to;
-            }
-        }
+        Some(goal) => stroll(enemy, goal, speed, tiles, fields, rate),
     }
     enemy.patrol = p;
+}
+
+/// One tick of an [`Awareness::Investigating`] `enemy`: walk to `spot`, then look around
+/// there until the run's `forget_ticks`, then back to its patrol (from its stand, so it
+/// picks a walk near its home next).
+fn investigate<'a>(
+    enemy: &mut Enemy,
+    spot: FxVec2,
+    looking: u16,
+    senses: &Senses<'a>,
+    fields: &mut FlowFields<'a>,
+) {
+    let tuning = &senses.tuning;
+    let (tiles, rate) = (senses.tiles.walker_at(enemy.pos), tuning.turn_per_tick());
+    let speed = per_tick(tuning.patrol_speed.saturating_mul(2));
+    if looking == 0 && speed > Fx::ZERO && !overlaps(enemy.pos, spot, ARRIVED) {
+        stroll(enemy, spot, speed, tiles, fields, rate);
+        return;
+    }
+    let looking = looking.saturating_add(1);
+    if looking >= tuning.forget_ticks {
+        enemy.awareness = Awareness::Unaware;
+        enemy.patrol.goal = None;
+        enemy.patrol.ticks = 0;
+        return;
+    }
+    enemy.awareness = Awareness::Investigating { spot, looking };
+    look_around(enemy, looking, rate);
+}
+
+/// Standing, sweeps `enemy`'s gaze one way then the other, [`PATROL_LOOK_TICKS`] each
+/// way by `ticks` (a counter), at half its turn rate `rate`.
+const fn look_around(enemy: &mut Enemy, ticks: u16, rate: u16) {
+    let look = rate / 2;
+    enemy.facing = if (ticks / PATROL_LOOK_TICKS).is_multiple_of(2) {
+        enemy.facing.wrapping_add(look)
+    } else {
+        enemy.facing.wrapping_sub(look)
+    };
+}
+
+/// One unhurried step of `enemy` toward `goal` at `speed` through `tiles` (its room):
+/// it turns (at `rate`) to face its heading first, stepping only once that is within an
+/// eighth turn.
+fn stroll<'a>(
+    enemy: &mut Enemy,
+    goal: FxVec2,
+    speed: Fx,
+    tiles: Tiles<'a>,
+    fields: &mut FlowFields<'a>,
+    rate: u16,
+) {
+    let field = fields.toward(tiles, goal);
+    let to = chase(tiles, field, enemy.pos, goal, speed, &mut enemy.steer);
+    turn(enemy, to, rate);
+    let facing = enemy.facing;
+    let ahead = trig::angle_of(sub(to, enemy.pos)).is_some_and(|heading| {
+        trig::angle_diff(facing, heading).unsigned_abs() <= EIGHTH_TURN.unsigned_abs()
+    });
+    if ahead {
+        enemy.pos = to;
+    }
 }
 
 /// A random open floor cell's center within [`PATROL_RANGE`] of `home`'s cell that a

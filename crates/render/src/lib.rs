@@ -13,8 +13,8 @@ use bytemuck::{Pod, Zeroable};
 use sim::room::{Cell, Placed};
 use sim::ship::Spot;
 use sim::{
-    Awareness, Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, RoomId,
-    Ship, SimState,
+    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, RoomId, Ship,
+    SimState,
 };
 use std::f32::consts::TAU;
 use std::ffi::c_void;
@@ -62,6 +62,15 @@ const ALERT_HALF_WIDTH: f32 = 2.5;
 const ALERT_BAR_HALF_HEIGHT: f32 = 6.0;
 const ALERT_DOT_RISE: f32 = 5.0;
 const ALERT_BAR_RISE: f32 = 16.0;
+/// The "?" over an enemy that heard a noise: dot, stem, the hook's right side and its
+/// cap, each (x offset, rise above the body, half width, half height).
+const QUERY_COLOR: [f32; 4] = [0.7, 0.85, 1.0, 1.0];
+const QUERY_PARTS: [[f32; 4]; 4] = [
+    [0.0, 5.0, 2.5, 2.5],
+    [0.0, 13.0, 2.5, 2.5],
+    [3.5, 19.0, 2.5, 4.0],
+    [1.0, 23.5, 5.0, 2.5],
+];
 const ENEMY_BULLET_COLOR: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
 /// The spawn telegraph's ring starts this many radii beyond the body.
 const TELEGRAPH_RING_GROWTH: f32 = 1.5;
@@ -241,6 +250,8 @@ enum Flash {
     Enemy(EnemyId),
     /// An enemy noticed the party: a "!" over it.
     Alert(EnemyId),
+    /// An enemy heard a noise and went to look: a "?" over it.
+    Query(EnemyId),
     /// A player took a hit.
     Player(usize),
     /// A player's gun fired.
@@ -254,7 +265,7 @@ impl Flash {
     const fn ticks(self) -> u16 {
         match self {
             Self::Enemy(_) | Self::Player(_) => 6,
-            Self::Alert(_) => 40,
+            Self::Alert(_) | Self::Query(_) => 40,
             Self::Muzzle(_) => 3,
             Self::Puff(_) => 15,
         }
@@ -349,6 +360,7 @@ impl Renderer {
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
                 Event::EnemyAlerted { enemy } => Flash::Alert(enemy),
+                Event::EnemyInvestigating { enemy } => Flash::Query(enemy),
                 Event::PlayerDied { .. }
                 | Event::Restarted
                 | Event::HatchOpened { .. }
@@ -498,14 +510,7 @@ impl Renderer {
                 enemy_color(e)
             };
             self.push_world(pos, [radius, radius], color, CIRCLE);
-            if self.flashing(Flash::Alert(id)) {
-                let [x, top] = [pos[0], pos[1] - radius];
-                let dot = [x, top - ALERT_DOT_RISE];
-                let bar = [x, top - ALERT_BAR_RISE];
-                let half = ALERT_HALF_WIDTH;
-                self.push_world(dot, [half, half], ALERT_COLOR, SQUARE);
-                self.push_world(bar, [half, ALERT_BAR_HALF_HEIGHT], ALERT_COLOR, SQUARE);
-            }
+            self.push_mark(id, [pos[0], pos[1] - radius]);
             if let Some(left) = e.aiming(telegraph) {
                 // 0 -> 1 over the telegraph, interpolated like `push_telegraph`.
                 let aimed =
@@ -626,10 +631,26 @@ impl Renderer {
                     let core = rusher * left;
                     self.push_world(at, [core, core], [1.0, 1.0, 1.0, 0.6 * left], CIRCLE);
                 }
-                Flash::Enemy(_) | Flash::Player(_) | Flash::Alert(_) => {}
+                Flash::Enemy(_) | Flash::Player(_) | Flash::Alert(_) | Flash::Query(_) => {}
             }
         }
         self.flashes = effects;
+    }
+
+    /// Enemy `id`'s "!" (just noticed the party) or "?" (just heard a noise), if either is
+    /// showing, over `[x, top]`, the top of its body.
+    fn push_mark(&mut self, id: EnemyId, [x, top]: [f32; 2]) {
+        if self.flashing(Flash::Alert(id)) {
+            let dot = [x, top - ALERT_DOT_RISE];
+            let bar = [x, top - ALERT_BAR_RISE];
+            let half = ALERT_HALF_WIDTH;
+            self.push_world(dot, [half, half], ALERT_COLOR, SQUARE);
+            self.push_world(bar, [half, ALERT_BAR_HALF_HEIGHT], ALERT_COLOR, SQUARE);
+        } else if self.flashing(Flash::Query(id)) {
+            for [dx, rise, hw, hh] in QUERY_PARTS {
+                self.push_world([x + dx, top - rise], [hw, hh], QUERY_COLOR, SQUARE);
+            }
+        }
     }
 
     /// Spawn warning: a ring closing in on the spot while the body fades in.
@@ -651,10 +672,11 @@ impl Renderer {
         let turn = f32::from(sim::trig::angle_diff(prev_facing, e.facing));
         let turns = turn.mul_add(alpha, f32::from(prev_facing)) / 65536.0;
         let (sin, cos) = (turns * TAU).sin_cos();
-        let color = if e.awareness == Awareness::Unaware {
-            CONE_UNAWARE_COLOR
-        } else {
+        // Investigating isn't hunting: its cone stays the unaware color.
+        let color = if e.hunting() {
             CONE_ALERT_COLOR
+        } else {
+            CONE_UNAWARE_COLOR
         };
         self.push_world(pos, [CONE_RADIUS, CONE_RADIUS], color, SECTOR);
         if let Some(cone) = self.quads.last_mut() {

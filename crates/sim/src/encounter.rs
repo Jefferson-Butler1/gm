@@ -1,14 +1,15 @@
 //! Rooms in play (ETG's lifecycle): players open hatches by stepping into them, a room's
 //! enemies spawn the first time a player is wholly inside it, room events seal and unseal
 //! its hatches, waves come from object layers, and a clear room's extraction pad wins.
-//! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
+//! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`. A hatch banging open or
+//! sealed is a noise that unaware enemies nearby come to investigate.
 
 use crate::combat::{Awareness, Enemy, Pattern, SHOOTER_STAGGER, stand_ticks};
 use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
     EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
 };
-use crate::{Event, FxVec2, HatchId, HatchState, RoomId, Run, SimState, TickEvents, bit, trig};
+use crate::{Event, Fx, FxVec2, HatchId, HatchState, RoomId, Run, SimState, TickEvents, bit, trig};
 
 /// `u16` turns.
 const EIGHTH_TURN: u16 = 8192;
@@ -36,6 +37,7 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
             if state.hatches.get(usize::from(hatch.0)) == Some(&HatchState::Closed) {
                 open(state, hatch);
                 events.events.push(Event::HatchOpened { hatch });
+                bang(state, &[hatch], events);
             }
         }
     }
@@ -51,7 +53,7 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     if let Some((id, room)) = entered {
         spawn(state, &room, room.room.base, false);
         state.run = Run::Encounter { room: id, wave: 0 };
-        react(state, id, &room, RoomTrigger::OnEnterWithEnemies);
+        react(state, id, &room, RoomTrigger::OnEnterWithEnemies, events);
         return;
     }
     let won = (0..).map(RoomId).take(ship.rooms().len()).any(|id| {
@@ -84,26 +86,74 @@ fn next_wave(state: &mut SimState, id: RoomId, wave: u8, events: &mut TickEvents
         }
         return;
     }
-    react(state, id, &room, RoomTrigger::OnEnemiesCleared);
+    react(state, id, &room, RoomTrigger::OnEnemiesCleared, events);
     state.cleared |= bit(id);
     events.events.push(Event::RoomCleared { room: id });
     state.run = Run::Boarding;
 }
 
 /// Applies `room`'s actions for `trigger`, in order, to the hatches in its walls: seal
-/// them all, or open them all (revealing what's behind).
-fn react(state: &mut SimState, id: RoomId, room: &Placed, trigger: RoomTrigger) {
-    let ship = std::sync::Arc::clone(&state.ship);
+/// them all (slamming shut: a [`bang`]), or open them all (revealing what's behind).
+fn react(
+    state: &mut SimState,
+    id: RoomId,
+    room: &Placed,
+    trigger: RoomTrigger,
+    events: &mut TickEvents,
+) {
+    let hatches: Vec<HatchId> = state.ship.hatches_of(id).collect();
     for &(_, action) in room.room.events.iter().filter(|&&(t, _)| t == trigger) {
-        for hatch in ship.hatches_of(id) {
-            match action {
-                RoomAction::Seal => {
+        match action {
+            RoomAction::Seal => {
+                for hatch in &hatches {
                     if let Some(s) = state.hatches.get_mut(usize::from(hatch.0)) {
                         *s = HatchState::Sealed;
                     }
                 }
-                RoomAction::Unseal => unseal(state, hatch),
+                bang(state, &hatches, events);
             }
+            RoomAction::Unseal => {
+                for &hatch in &hatches {
+                    unseal(state, hatch);
+                }
+            }
+        }
+    }
+}
+
+/// `hatches` banged open or shut: each unaware enemy in a room beside one, within the
+/// run's `hatch_hearing_radius` of its middle, investigates the nearest such.
+fn bang(state: &mut SimState, hatches: &[HatchId], events: &mut TickEvents) {
+    let ship = std::sync::Arc::clone(&state.ship);
+    let noises: Vec<(FxVec2, [RoomId; 2])> = hatches
+        .iter()
+        .filter_map(|id| ship.hatches().get(usize::from(id.0)))
+        .map(|h| {
+            let (first, last) = (h.gap.cell(0), h.gap.cell(h.gap.width.saturating_sub(1)));
+            let (a, b) = (cell_center(first.0, first.1), cell_center(last.0, last.1));
+            let mid = |a: Fx, b: Fx| {
+                a.saturating_add(b.saturating_sub(a).checked_div_int(2).unwrap_or_default())
+            };
+            let at = FxVec2 {
+                x: mid(a.x, b.x),
+                y: mid(a.y, b.y),
+            };
+            (at, h.rooms)
+        })
+        .collect();
+    let radius = i128::from(Fx::from_num(state.config.tuning.hatch_hearing_radius).to_bits());
+    let earshot = radius.saturating_mul(radius);
+    for (id, enemy) in state.enemies.iter_mut() {
+        let Some(room) = ship.room_at(enemy.pos) else {
+            continue;
+        };
+        let heard = noises
+            .iter()
+            .filter(|(at, rooms)| rooms.contains(&room) && dist_sq(*at, enemy.pos) < earshot)
+            .map(|&(at, _)| at)
+            .min_by_key(|&at| dist_sq(at, enemy.pos));
+        if let Some(spot) = heard {
+            enemy.investigate(id, spot, events);
         }
     }
 }
