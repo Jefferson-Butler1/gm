@@ -1,7 +1,8 @@
 //! wgpu renderer drawing into a Swift-owned `CAMetalLayer`.
 //!
 //! Reads the previous and current [`SimState`] and interpolates between them; it never
-//! mutates the sim. Hit flashes, muzzle flashes, death puffs and the "!" over an enemy
+//! mutates the sim. The whole floor is drawn, but only the rooms the party has revealed
+//! (ETG fog); the camera follows the player. Hit flashes, muzzle flashes, death puffs and the "!" over an enemy
 //! that notices the party come from sim [`Event`]s. Placeholder art is flat colored
 //! squares, circles, rings and carets, converted to NDC on the CPU so there are no bind
 //! groups.
@@ -9,8 +10,12 @@
 //! to `game`.
 
 use bytemuck::{Pod, Zeroable};
-use sim::room::{Cell, PrototypeRoom};
-use sim::{Behavior, Enemy, EnemyId, Event, Fx, FxVec2, Pattern, Player, SimState};
+use sim::room::{Cell, Placed};
+use sim::ship::Spot;
+use sim::{
+    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, RoomId, Ship,
+    SimState,
+};
 use std::f32::consts::TAU;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -31,8 +36,11 @@ const PIT_LIP_COLOR: [f32; 4] = [0.42, 0.33, 0.27, 1.0];
 const PIT_LIP_DARK_COLOR: [f32; 4] = [0.31, 0.24, 0.2, 1.0];
 /// Each lip course is this fraction of a cell deep, two courses in all.
 const PIT_LIP_COURSE: f32 = 0.125;
-const DOOR_OPEN_COLOR: [f32; 4] = [0.1, 0.3, 0.2, 1.0];
-const DOOR_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
+/// Hatches by state: closed reads as a door in the wall, open as floor with a green
+/// tint, sealed as a warning.
+const HATCH_CLOSED_COLOR: [f32; 4] = [0.35, 0.42, 0.55, 1.0];
+const HATCH_OPEN_COLOR: [f32; 4] = [0.1, 0.3, 0.2, 1.0];
+const HATCH_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
 const PAD_COLOR: [f32; 4] = [0.3, 1.0, 0.6, 1.0];
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
@@ -201,7 +209,7 @@ pub struct Renderer {
     capacity: usize,
     /// Screen size in points, for points -> NDC.
     size_pt: [f32; 2],
-    /// Room-space point at the screen center; set each frame from the room and player.
+    /// Floor-space point at the screen center; set each frame from the floor and player.
     camera: [f32; 2],
     quads: Vec<Quad>,
     /// Active event effects and the tick they started.
@@ -324,7 +332,7 @@ impl Renderer {
                 Event::EnemyAlerted { enemy } => Flash::Alert(enemy),
                 Event::PlayerDied { .. }
                 | Event::Restarted
-                | Event::RoomEntered { .. }
+                | Event::HatchOpened { .. }
                 | Event::WaveStarted { .. }
                 | Event::RoomCleared { .. }
                 | Event::Won => continue,
@@ -421,16 +429,12 @@ impl Renderer {
         Some(acquire)
     }
 
-    /// The world through the camera: room tiles, enemies, players, bullets.
+    /// The world through the camera: the revealed floor, enemies, players, bullets.
     fn push_scene(&mut self, prev: &SimState, current: &SimState, alpha: f32) {
-        // Across a room change (or restart into another room) positions jump; don't
-        // smear them between two rooms' coordinates.
+        // Across a restart (a new run seed) positions jump back to the start; don't smear
+        // them across the floor.
         let lerp_from = |a: FxVec2, b: FxVec2| {
-            if prev.run.room() == current.run.room() {
-                a
-            } else {
-                b
-            }
+            if prev.seed == current.seed { a } else { b }
         };
         let players: Vec<_> = prev
             .players
@@ -448,11 +452,9 @@ impl Renderer {
                 })
             })
             .collect();
-        if let Some(room) = sim::DERELICT.room(current.run.room()) {
-            let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
-            self.camera = self.camera_for(room, focus);
-            self.push_room(room, current.run.doors_locked(), current.extraction_live());
-        }
+        let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
+        self.camera = self.camera_for(&current.ship, focus);
+        self.push_floor(current);
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
         let telegraph = current.config.tuning.shooter_telegraph;
         // Where each enemy is drawn, spawns telegraphing in included.
@@ -528,9 +530,9 @@ impl Renderer {
         }
     }
 
-    /// With enemies in the room but none on screen, a caret on the screen edge points to
-    /// the nearest one: where the line from the player (`focus`) to it leaves the screen,
-    /// inset by [`CARET_MARGIN`]. `enemies` are room-space positions, as drawn.
+    /// With enemies about but none on screen, a caret on the screen edge points to the
+    /// nearest one: where the line from the player (`focus`) to it leaves the screen,
+    /// inset by [`CARET_MARGIN`]. `enemies` are floor-space positions, as drawn.
     fn push_enemy_caret(&mut self, focus: [f32; 2], enemies: &[[f32; 2]]) {
         let [w, h] = self.size_pt;
         let on_screen = |[x, y]: [f32; 2]| (0.0..=w).contains(&x) && (0.0..=h).contains(&y);
@@ -669,44 +671,91 @@ impl Renderer {
         }
     }
 
-    /// Where the screen center sits in room space: on the focus (the player), clamped so
-    /// the view stays inside the room. An axis where the room fits on screen centers it.
-    fn camera_for(&self, room: &PrototypeRoom, focus: [f32; 2]) -> [f32; 2] {
+    /// Where the screen center sits in floor space: on the focus (the player), clamped so
+    /// the view stays over the floor. An axis where the floor fits on screen centers it.
+    fn camera_for(&self, ship: &Ship, focus: [f32; 2]) -> [f32; 2] {
         let cell = sim::room::CELL.to_num::<f32>();
         let extent = |cells: usize| f32::from(u16::try_from(cells).unwrap_or(u16::MAX)) * cell;
-        let axis = |room: f32, screen: f32, focus: f32| {
-            if room <= screen {
-                room / 2.0
+        let axis = |floor: f32, screen: f32, focus: f32| {
+            if floor <= screen {
+                floor / 2.0
             } else {
-                focus.clamp(screen / 2.0, room - screen / 2.0)
+                focus.clamp(screen / 2.0, floor - screen / 2.0)
             }
         };
         let [w, h] = self.size_pt;
+        let (width, height) = ship.size();
         [
-            axis(extent(room.width()), w, focus[0]),
-            axis(extent(room.height()), h, focus[1]),
+            axis(extent(width), w, focus[0]),
+            axis(extent(height), h, focus[1]),
         ]
     }
 
-    /// One quad per non-void cell. Exit gaps draw as doors: open or sealed. The extraction
-    /// pad, if any, is dim until `pad_live`.
-    fn push_room(&mut self, room: &PrototypeRoom, sealed: bool, pad_live: bool) {
+    /// Every revealed room, the hatches in their walls by state, and their extraction pads
+    /// (dim until the room is clear). Unrevealed rooms stay black.
+    fn push_floor(&mut self, state: &SimState) {
+        let ship = &state.ship;
+        let rooms = (0..).map(RoomId).zip(ship.rooms());
+        for (_, placed) in rooms.clone().filter(|&(id, _)| state.visited(id)) {
+            self.push_room(ship, placed);
+        }
+        let half = sim::room::CELL.to_num::<f32>() / 2.0;
+        for (hatch, live) in ship.hatches().iter().zip(&state.hatches) {
+            if !hatch.rooms.iter().any(|&r| state.visited(r)) {
+                continue;
+            }
+            let color = match live {
+                HatchState::Closed => HATCH_CLOSED_COLOR,
+                HatchState::Open => HATCH_OPEN_COLOR,
+                HatchState::Sealed => HATCH_SEALED_COLOR,
+            };
+            for i in 0..hatch.gap.width {
+                let (x, y) = hatch.gap.cell(i);
+                let center = sim::room::cell_center(x, y);
+                let at = [center.x.to_num(), center.y.to_num()];
+                self.push_world(at, [half - 0.5, half - 0.5], color, SQUARE);
+            }
+        }
+        for (id, placed) in rooms.filter(|&(id, _)| state.visited(id)) {
+            let Some((px, py)) = placed.room.extraction else {
+                continue;
+            };
+            // The ring marks the pad's reach: touching the cell with any part of the body.
+            let (ox, oy) = placed.at;
+            let center = sim::room::cell_center(px.saturating_add(ox), py.saturating_add(oy));
+            let at = [center.x.to_num(), center.y.to_num()];
+            let [r, g, b, _] = PAD_COLOR;
+            let alpha = if state.extraction_live(id) { 1.0 } else { 0.3 };
+            self.push_world(at, [half, half], [r, g, b, alpha], SQUARE);
+            let reach = half + sim::PLAYER_RADIUS.to_num::<f32>();
+            self.push_world(at, [reach, reach], [r, g, b, alpha * 0.8], RING);
+        }
+    }
+
+    /// One quad per non-void cell of a placed room, except its hatch cells (drawn by
+    /// state in [`Self::push_floor`]), then its pits' lips.
+    fn push_room(&mut self, ship: &Ship, placed: &Placed) {
+        let (room, (ox, oy)) = (&placed.room, placed.at);
         let half = sim::room::CELL.to_num::<f32>() / 2.0;
         for y in 0..room.height() {
             for x in 0..room.width() {
                 let (Ok(cx), Ok(cy)) = (i32::try_from(x), i32::try_from(y)) else {
                     continue;
                 };
+                let (fx, fy) = (x.saturating_add(ox), y.saturating_add(oy));
+                if let (Ok(sx), Ok(sy)) = (i32::try_from(fx), i32::try_from(fy))
+                    && matches!(ship.spot(sx, sy), Spot::Hatch(_))
+                {
+                    continue;
+                }
                 // Tiles are inset a hair so the grid reads; pits a bit more, as holes.
-                let (color, inset) = match (room.cell(cx, cy), room.exit_at(cx, cy), sealed) {
-                    (_, Some(_), true) => (DOOR_SEALED_COLOR, 0.5),
-                    (_, Some(_), false) => (DOOR_OPEN_COLOR, 0.5),
-                    (Cell::Floor, None, _) => (FLOOR_COLOR, 0.5),
-                    (Cell::Wall, None, _) => (WALL_COLOR, 0.5),
-                    (Cell::Pit, None, _) => (PIT_COLOR, 3.0),
-                    (Cell::Void, None, _) => continue,
+                let (color, inset) = match room.cell(cx, cy) {
+                    Cell::Floor => (FLOOR_COLOR, 0.5),
+                    Cell::Wall => (WALL_COLOR, 0.5),
+                    Cell::Pit => (PIT_COLOR, 3.0),
+                    Cell::Void => continue,
                 };
-                let center = sim::room::cell_center(x, y);
+                let center = sim::room::cell_center(fx, fy);
                 self.push_world(
                     [center.x.to_num(), center.y.to_num()],
                     [half - inset, half - inset],
@@ -715,22 +764,14 @@ impl Renderer {
                 );
             }
         }
-        self.push_pit_lips(room);
-        if let Some((x, y)) = room.extraction {
-            // The ring marks the pad's reach: touching the cell with any part of the body.
-            let center = sim::room::cell_center(x, y);
-            let at = [center.x.to_num(), center.y.to_num()];
-            let [r, g, b, _] = PAD_COLOR;
-            let alpha = if pad_live { 1.0 } else { 0.3 };
-            self.push_world(at, [half, half], [r, g, b, alpha], SQUARE);
-            let reach = half + sim::PLAYER_RADIUS.to_num::<f32>();
-            self.push_world(at, [reach, reach], [r, g, b, alpha * 0.8], RING);
-        }
+        self.push_pit_lips(placed);
     }
 
     /// A brick lip on every floor edge that drops into a pit, so pits read at a glance: two
-    /// staggered courses of half-tile bricks laid along the edge, on the floor side.
-    fn push_pit_lips(&mut self, room: &PrototypeRoom) {
+    /// staggered courses of half-tile bricks laid along the edge, on the floor side. Pits
+    /// are inside rooms, so a room's own cells say where its lips go.
+    fn push_pit_lips(&mut self, placed: &Placed) {
+        let (room, (ox, oy)) = (&placed.room, placed.at);
         let cell = sim::room::CELL.to_num::<f32>();
         let course = cell * PIT_LIP_COURSE;
         for y in 0..room.height() {
@@ -738,10 +779,10 @@ impl Renderer {
                 let (Ok(cx), Ok(cy)) = (i32::try_from(x), i32::try_from(y)) else {
                     continue;
                 };
-                if room.cell(cx, cy) != Cell::Floor || room.exit_at(cx, cy).is_some() {
+                if room.cell(cx, cy) != Cell::Floor {
                     continue;
                 }
-                let center = sim::room::cell_center(x, y);
+                let center = sim::room::cell_center(x.saturating_add(ox), y.saturating_add(oy));
                 let [mx, my] = [center.x.to_num::<f32>(), center.y.to_num::<f32>()];
                 // (dx, dy): the unit step toward the pit neighbor.
                 for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
@@ -809,7 +850,7 @@ impl Renderer {
         }
     }
 
-    /// A room-space point in view points (origin top-left), through the camera of the
+    /// A floor-space point in view points (origin top-left), through the camera of the
     /// last drawn frame.
     #[must_use]
     pub fn view_point(&self, [x, y]: [f32; 2]) -> [f32; 2] {
@@ -818,7 +859,7 @@ impl Renderer {
         [x - cx + w / 2.0, y - cy + h / 2.0]
     }
 
-    /// Room space (points, +y down) through the camera: one world unit is one view point.
+    /// Floor space (points, +y down) through the camera: one world unit is one view point.
     fn push_world(&mut self, [x, y]: [f32; 2], [hx, hy]: [f32; 2], color: [f32; 4], shape: f32) {
         let [w, h] = self.size_pt;
         let [cx, cy] = self.camera;
