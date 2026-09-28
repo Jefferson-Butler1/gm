@@ -1,21 +1,35 @@
 //! Enemy awareness: room enemies stand unaware until they see (in plain view inside their
 //! sight cone, at any range), hear or are hit by a player, then hunt it, turning at a
 //! finite rate, and give up where they lost it. Unaware, they patrol near where they
-//! spawned.
+//! spawned, and go to look when a hatch bangs open or shut nearby.
 //! All in the cargo hold, 32 x 16 cells: an L (void top-right) with a pillar at cells
 //! (5..=6, 3..=4) and a pit strip at (10..=13, 10..=11). Cells here are the hold's own.
 
 use sim::room::cell_center;
 use sim::{
-    Awareness, Buttons, ENEMY_RADIUS, Enemy, EnemyId, Event, Fx, FxVec2, PlayerInput, RoomId,
-    RunConfig, SimState, TickInputs, Tuning, step,
+    Awareness, Behavior, Buttons, ENEMY_RADIUS, Enemy, EnemyId, Event, Fx, FxVec2, HatchId,
+    PlayerInput, RoomId, Run, RunConfig, SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, Tuning, step,
 };
 
 const SEED: u64 = 5;
 const CARGO_HOLD: RoomId = RoomId(1);
 /// Facings, `u16` turns.
 const RIGHT: u16 = 0;
+const DOWN: u16 = 16384;
 const LEFT: u16 = 32768;
+/// The hatch down from the airlock into the hold, in the middle of its 2-cell gap (the
+/// hold's cells (9..=10, 0)).
+const INTO_HOLD: HatchId = HatchId(0);
+const HATCH: FxVec2 = FxVec2 {
+    x: Fx::from_bits(480 << 32),
+    y: Fx::from_bits(304 << 32),
+};
+/// The airlock's bottom-left floor cell: out of sight of the hold even through the open
+/// hatch.
+const AIRLOCK_CORNER: FxVec2 = FxVec2 {
+    x: Fx::from_bits(304 << 32),
+    y: Fx::from_bits(272 << 32),
+};
 
 /// The center of the hold's cell (`x`, `y`): its cell (0, 0) is floor cell (5, 9).
 fn at((x, y): (usize, usize)) -> FxVec2 {
@@ -32,9 +46,13 @@ fn hold(at: (usize, usize)) -> SimState {
 }
 
 fn move_player(state: &mut SimState, cell: (usize, usize)) {
+    put_player(state, at(cell));
+}
+
+const fn put_player(state: &mut SimState, pos: FxVec2) {
     if let Some(player) = &mut state.players[0] {
-        player.pos = at(cell);
-        player.solid = player.pos;
+        player.pos = pos;
+        player.solid = pos;
     }
 }
 
@@ -255,6 +273,7 @@ fn a_hunter_that_loses_the_player_searches_where_it_last_saw_it_then_gives_up() 
                 gave_up = Some(tick);
                 break;
             }
+            Awareness::Investigating { .. } => panic!("no hatch banged"),
         }
     }
     let (arrived, gave_up) = (arrived.unwrap(), gave_up.unwrap());
@@ -313,5 +332,170 @@ fn a_patrol_speed_of_zero_keeps_an_unaware_enemy_still() {
         ticks
             .iter()
             .all(|e| e.pos == at((7, 13)) && e.facing == RIGHT)
+    );
+}
+
+/// The party steps into the closed hatch from the airlock for a tick, banging it open,
+/// then slips back into the airlock's corner, out of sight. The hold counts as cleared,
+/// so no fight starts. Returns that tick's events.
+fn bang_the_hatch_open(state: &mut SimState) -> Vec<Event> {
+    state.cleared = 1 << CARGO_HOLD.0;
+    put_player(state, HATCH);
+    let events = idle(state, 1);
+    put_player(state, AIRLOCK_CORNER);
+    events
+}
+
+#[test]
+fn a_hatch_banging_open_draws_an_unaware_enemy_in_earshot_to_look_without_alerting_it() {
+    let mut state = SimState::new(SEED, RunConfig::default());
+    // 9 cells below the hatch, looking away from it.
+    let id = rusher(&mut state, (9, 9), DOWN);
+    let events = bang_the_hatch_open(&mut state);
+    assert_eq!(
+        events,
+        [
+            Event::HatchOpened { hatch: INTO_HOLD },
+            Event::EnemyInvestigating { enemy: id }
+        ]
+    );
+    // Walking there, till it starts looking around.
+    for _ in 0..600 {
+        let events = idle(&mut state, 1);
+        assert!(events.is_empty(), "never alerted: {events:?}");
+        let e = enemy(&state, id).unwrap();
+        match e.awareness {
+            Awareness::Investigating { spot, looking } => {
+                assert_eq!(spot, HATCH);
+                if looking > 0 {
+                    assert!(cells_apart(e.pos, HATCH) < 2, "went to the hatch");
+                    return;
+                }
+            }
+            Awareness::Unaware | Awareness::Alert { .. } => panic!("{:?}", e.awareness),
+        }
+    }
+    panic!("never got there");
+}
+
+#[test]
+fn an_investigator_that_finds_nobody_goes_back_to_its_patrol() {
+    let forget = Tuning::NORMAL.forget_ticks;
+    let mut state = SimState::new(SEED, RunConfig::default());
+    let home = at((9, 9));
+    let id = rusher(&mut state, (9, 9), DOWN);
+    bang_the_hatch_open(&mut state);
+    let mut arrived = None;
+    let mut gave_up = None;
+    for tick in 1..1200 {
+        idle(&mut state, 1);
+        match enemy(&state, id).unwrap().awareness {
+            Awareness::Investigating { looking: 1, .. } => arrived = Some(tick),
+            Awareness::Investigating { .. } => {}
+            Awareness::Unaware => {
+                gave_up = Some(tick);
+                break;
+            }
+            Awareness::Alert { .. } => panic!("nobody to see"),
+        }
+    }
+    let (arrived, gave_up) = (arrived.unwrap(), gave_up.unwrap());
+    // Looking from the arrival tick through the one it gives up on.
+    assert_eq!(gave_up - arrived + 1, usize::from(forget));
+    // Back on patrol: it wanders back to around where it started.
+    let events = idle(&mut state, 1200);
+    assert!(events.is_empty(), "{events:?}");
+    let e = enemy(&state, id).unwrap();
+    assert_eq!(e.awareness, Awareness::Unaware);
+    assert!(cells_apart(e.pos, home) < 5, "patrols near home");
+}
+
+#[test]
+fn an_investigator_that_spots_the_player_hunts_it() {
+    let mut state = SimState::new(SEED, RunConfig::default());
+    let id = rusher(&mut state, (9, 9), DOWN);
+    bang_the_hatch_open(&mut state);
+    // The player drops into the hold just inside the hatch: behind the rusher as it
+    // stands, but where it is headed.
+    move_player(&mut state, (10, 2));
+    let events = idle(&mut state, 120);
+    assert_eq!(events, [Event::EnemyAlerted { enemy: id }]);
+    assert_eq!(
+        enemy(&state, id).unwrap().awareness,
+        Awareness::Alert {
+            last_seen: player_pos(&state),
+            searching: 0
+        }
+    );
+}
+
+#[test]
+fn an_enemy_out_of_earshot_of_a_hatch_ignores_it_and_an_investigating_ally() {
+    let mut state = SimState::new(SEED, RunConfig::default());
+    state.config.tuning.patrol_speed = 0;
+    let near = rusher(&mut state, (9, 9), DOWN);
+    // 12 cells from the hatch, and 3 from its ally in plain view: close enough to be
+    // alerted by a hunter, but an investigator isn't one.
+    let far = rusher(&mut state, (9, 12), DOWN);
+    let events = bang_the_hatch_open(&mut state);
+    assert!(!events.contains(&Event::EnemyInvestigating { enemy: far }));
+    // Under the time it spends looking (it looks from where it stands at patrol speed 0).
+    let events = idle(&mut state, 120);
+    assert!(events.is_empty(), "{events:?}");
+    assert!(matches!(
+        enemy(&state, near).unwrap().awareness,
+        Awareness::Investigating { .. }
+    ));
+    assert_eq!(enemy(&state, far).unwrap().awareness, Awareness::Unaware);
+}
+
+#[test]
+fn entering_a_room_seals_it_with_a_bang_that_draws_spawns_near_the_hatch() {
+    // Two cells above the hatch in the airlock, walking down into the hold's fight.
+    let mut state = SimState::new(SEED, RunConfig::default());
+    put_player(
+        &mut state,
+        FxVec2 {
+            y: cell_center(0, 7).y,
+            ..HATCH
+        },
+    );
+    let mut south = TickInputs::default();
+    south.players[0] = PlayerInput {
+        move_dir: 8,
+        move_mag: u8::MAX,
+        ..PlayerInput::default()
+    };
+    for _ in 0..120 {
+        if state.run != Run::Boarding {
+            break;
+        }
+        step(&mut state, &south);
+    }
+    assert!(matches!(state.run, Run::Encounter { .. }));
+    // The shooter spawns 7 cells from the hatch in; the rushers, across the hold, are
+    // out of earshot of both hatches.
+    let (shooter, _) = state
+        .enemies
+        .iter()
+        .find(|(_, e)| matches!(e.behavior, Behavior::Shooter { .. }))
+        .unwrap();
+    for (id, e) in state.enemies.iter() {
+        let expected = if id == shooter {
+            Awareness::Investigating {
+                spot: HATCH,
+                looking: 0,
+            }
+        } else {
+            Awareness::Unaware
+        };
+        assert_eq!(e.awareness, expected);
+    }
+    // Its "?" shows once its spawn telegraph is over.
+    let telegraph = usize::from(SPAWN_TELEGRAPH_TICKS);
+    assert_eq!(idle(&mut state, telegraph - 1), []);
+    assert_eq!(
+        idle(&mut state, 1),
+        [Event::EnemyInvestigating { enemy: shooter }]
     );
 }

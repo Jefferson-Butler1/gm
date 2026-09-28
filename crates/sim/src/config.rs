@@ -104,6 +104,9 @@ pub struct Tuning {
     pub spread_shooter: bool,
     /// A player's shot alerts every enemy this close, pt, walls or not.
     pub hearing_radius: u16,
+    /// A hatch banging open or sealed sets unaware enemies this close to it, pt, in the
+    /// rooms either side investigating; 0 = they ignore hatches.
+    pub hatch_hearing_radius: u16,
     /// An enemy hunting a player alerts unaware allies this close, pt, that it can see.
     pub alert_radius: u16,
     /// An enemy that reaches where it last saw a player and finds nobody gives up after
@@ -150,6 +153,9 @@ impl Tuning {
         hearing_radius: 160,
         alert_radius: 128,
         forget_ticks: 180,
+        // 10 cells: a slammed hatch carries further than a shot, and draws the nearer
+        // half or so of a room's base layer (shots' 5 cells reach almost none of it).
+        hatch_hearing_radius: 320,
         // A 120° cone. At 150°/s a walking player (230 pt/s) out-circles an enemy within
         // ~88 pt (2.75 cells): about where a rusher is closing in.
         sight_half_angle: 60,
@@ -220,6 +226,7 @@ impl RunConfig {
                 regen_charge_ticks: t.regen_charge_ticks.clamp(1, 600),
                 spread_shooter: t.spread_shooter,
                 hearing_radius: t.hearing_radius.min(2048),
+                hatch_hearing_radius: t.hatch_hearing_radius.min(2048),
                 alert_radius: t.alert_radius.min(2048),
                 forget_ticks: t.forget_ticks.clamp(1, 3600),
                 sight_half_angle: t.sight_half_angle.clamp(1, 180),
