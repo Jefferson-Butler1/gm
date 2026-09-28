@@ -109,6 +109,13 @@ pub struct Tuning {
     /// An enemy that reaches where it last saw a player and finds nobody gives up after
     /// this many ticks.
     pub forget_ticks: u16,
+    /// Half the width of an enemy's sight cone: degrees either side of its facing it can
+    /// see, 180 = all around. Only sight is coned: hearing a shot, a hit and an ally's
+    /// alert reach it from any side.
+    pub sight_half_angle: u16,
+    /// How fast an enemy turns to face where it's headed, degrees per second. A player
+    /// circling it faster than this slips out of its cone.
+    pub turn_rate: u16,
 }
 
 impl Tuning {
@@ -140,12 +147,33 @@ impl Tuning {
         hearing_radius: 160,
         alert_radius: 128,
         forget_ticks: 180,
+        // A 120° cone. At 150°/s a walking player (230 pt/s) out-circles an enemy within
+        // ~88 pt (2.75 cells): about where a rusher is closing in.
+        sight_half_angle: 60,
+        turn_rate: 150,
     };
 }
 
 impl Default for Tuning {
     fn default() -> Self {
         Self::NORMAL
+    }
+}
+
+impl Tuning {
+    /// [`Self::sight_half_angle`] in `u16` turns (see [`crate::trig`]): 180° is a half
+    /// turn, which every direction is within.
+    #[must_use]
+    pub fn sight_half_turns(&self) -> u16 {
+        let turns = u32::from(self.sight_half_angle).saturating_mul(1 << 16) / 360;
+        u16::try_from(turns).unwrap_or(u16::MAX)
+    }
+
+    /// [`Self::turn_rate`] as `u16` turns per tick.
+    #[must_use]
+    pub fn turn_per_tick(&self) -> u16 {
+        let turns = u32::from(self.turn_rate).saturating_mul(1 << 16) / (360 * TICK_HZ);
+        u16::try_from(turns).unwrap_or(u16::MAX)
     }
 }
 
@@ -188,6 +216,9 @@ impl RunConfig {
                 hearing_radius: t.hearing_radius.min(2048),
                 alert_radius: t.alert_radius.min(2048),
                 forget_ticks: t.forget_ticks.clamp(1, 3600),
+                sight_half_angle: t.sight_half_angle.clamp(1, 180),
+                // Up to 4 turns a second: a tick's turn stays well under a half turn.
+                turn_rate: t.turn_rate.clamp(1, 1440),
             },
         };
         let interval = sane.shooter_interval();

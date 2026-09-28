@@ -105,6 +105,10 @@ pub struct Enemy {
     /// Which way it is detouring around something in its path: +1 turns clockwise
     /// (toward +y from +x), -1 counter-clockwise, 0 = heading straight.
     pub steer: i8,
+    /// Where it looks, `u16` turns (as [`crate::trig`]): the middle of its sight cone
+    /// (the run's `sight_half_angle` either side). Hunting, it turns toward its target
+    /// at the run's `turn_rate`.
+    pub facing: u16,
     pub awareness: Awareness,
     pub behavior: Behavior,
 }
@@ -113,13 +117,16 @@ pub struct Enemy {
 /// has to go find them; reinforcements arrive already hunting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Awareness {
-    /// Stands where it is: never moves or fires. Notices a player in plain view (at any
-    /// range), that shoots within `hearing_radius`, or that hits it, and an ally that is
-    /// hunting within `alert_radius` in plain view.
+    /// Stands where it is, facing one way: never moves or fires. Notices a player in
+    /// plain view inside its sight cone (at any range), that shoots within
+    /// `hearing_radius`, or that hits it, and an ally that is hunting within
+    /// `alert_radius` in plain view.
     Unaware,
-    /// Hunting. With a player in sight it fights as usual (and tracks it at any range);
-    /// otherwise it heads for `last_seen`. `searching` counts ticks spent there without
-    /// finding anyone; at the run's `forget_ticks` it gives up, unaware where it stands.
+    /// Hunting. With a player in sight (in its cone) it fights as usual, turning to keep
+    /// it in view (and tracks it at any range); otherwise it heads for `last_seen`,
+    /// facing it. `searching` counts ticks spent there without finding anyone, turning in
+    /// place to look around; at the run's `forget_ticks` it gives up, unaware where it
+    /// stands.
     /// Only an enemy still on the hunt (`searching == 0`) alerts its allies, so a group
     /// that has lost the player can calm down instead of re-alerting each other forever.
     Alert { last_seen: FxVec2, searching: u16 },
@@ -173,6 +180,7 @@ impl Enemy {
             hp: RUSHER_HP,
             spawn_ticks: SPAWN_TELEGRAPH_TICKS,
             steer: 0,
+            facing: 0,
             awareness: Awareness::Unaware,
             behavior: Behavior::Rusher {
                 contact_cooldown: 0,
@@ -193,6 +201,7 @@ impl Enemy {
             },
             spawn_ticks: SPAWN_TELEGRAPH_TICKS,
             steer: 0,
+            facing: 0,
             awareness: Awareness::Unaware,
             behavior: Behavior::Shooter {
                 pattern,
@@ -426,7 +435,7 @@ fn targetable(state: &SimState) -> Vec<FxVec2> {
 }
 
 /// Updates `enemy`'s awareness from what it perceives, and returns the player it sees:
-/// the nearest in plain view, at any range.
+/// the nearest in plain view inside its sight cone, at any range.
 /// Failing that, a shot it hears (fired in its own room: hatches stop sound) or an ally
 /// hunting in plain view alerts it.
 fn notice(
@@ -440,11 +449,17 @@ fn notice(
     let within = |p: FxVec2, radius: u16| overlaps(p, pos, Fx::from_num(radius));
     let nearest = |p: &FxVec2| dist_sq(*p, pos);
     let hunting = enemy.awareness != Awareness::Unaware;
+    let (facing, half) = (enemy.facing, tuning.sight_half_turns());
+    let in_cone = |p: FxVec2| {
+        // Standing on the enemy has no direction: that counts as seen.
+        trig::angle_of(sub(p, pos))
+            .is_none_or(|to| trig::angle_diff(facing, to).unsigned_abs() <= half)
+    };
     let seen = senses
         .players
         .iter()
         .copied()
-        .filter(|&p| line_of_fire(senses.tiles, pos, p))
+        .filter(|&p| in_cone(p) && line_of_fire(senses.tiles, pos, p))
         .min_by_key(nearest);
     let ship = senses.tiles.ship;
     let heard = || {
@@ -497,10 +512,28 @@ fn hunt(enemy: &mut Enemy, seen: Option<FxVec2>, forget_ticks: u16) -> Option<Fx
     Some(*last_seen)
 }
 
+/// Turns a hunting `enemy` up to `rate` (`u16` turns): toward `target`, or, while
+/// searching where it lost the player, steadily around to look for it.
+fn turn(enemy: &mut Enemy, target: FxVec2, rate: u16) {
+    if let Awareness::Alert { searching, .. } = enemy.awareness
+        && searching > 0
+    {
+        enemy.facing = enemy.facing.wrapping_add(rate);
+        return;
+    }
+    let Some(to) = trig::angle_of(sub(target, enemy.pos)) else {
+        return;
+    };
+    let rate = i16::try_from(rate).unwrap_or(i16::MAX);
+    let step = trig::angle_diff(enemy.facing, to).clamp(rate.saturating_neg(), rate);
+    enemy.facing = enemy.facing.wrapping_add_signed(step);
+}
+
 fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
     let config = state.config;
     let telegraph = config.tuning.shooter_telegraph;
     let rusher_speed = per_tick(config.tuning.rusher_speed);
+    let turn_rate = config.tuning.turn_per_tick();
     let mut fields = FlowFields::new();
     for (id, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
         // With no targetable player (all falling or dead), enemies hold still, timers
@@ -512,6 +545,7 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
         let Some(target) = hunt(enemy, seen, config.tuning.forget_ticks) else {
             continue;
         };
+        turn(enemy, target, turn_rate);
         // No direction when exactly on the target: stay put (contact still applies).
         let Some(angle) = trig::angle_of(sub(target, enemy.pos)) else {
             continue;

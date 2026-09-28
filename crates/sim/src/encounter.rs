@@ -8,7 +8,10 @@ use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
     EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
 };
-use crate::{Event, HatchId, HatchState, RoomId, Run, SimState, TickEvents, bit};
+use crate::{Event, FxVec2, HatchId, HatchState, RoomId, Run, SimState, TickEvents, bit, trig};
+
+/// `u16` turns.
+const EIGHTH_TURN: u16 = 8192;
 
 /// After combat: advance the fight's waves, open the closed hatches living players step
 /// into, then (no fight on) start the first uncleared room with enemies a living player
@@ -132,7 +135,8 @@ fn unseal(state: &mut SimState, hatch: HatchId) {
 }
 
 /// Spawns `placements` (cells of `room`), unaware unless `hunting`: then each already
-/// knows where the nearest living player is (reinforcements join a fight in progress).
+/// knows where the nearest living player is (reinforcements join a fight in progress) and
+/// faces it. Unaware ones face one of 8 directions at random.
 fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting: bool) {
     for placement in placements {
         let pos = cell_center(
@@ -146,12 +150,21 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting:
             .filter(|p| p.alive())
             .map(|p| p.pos)
             .min_by_key(|&p| dist_sq(p, pos));
-        let awareness = match nearest {
-            Some(last_seen) if hunting => Awareness::Alert {
-                last_seen,
-                searching: 0,
-            },
-            Some(_) | None => Awareness::Unaware,
+        let idle = u16::try_from(state.rng.below(8)).unwrap_or(0);
+        let idle = idle.saturating_mul(EIGHTH_TURN);
+        let (awareness, facing) = match nearest {
+            Some(last_seen) if hunting => (
+                Awareness::Alert {
+                    last_seen,
+                    searching: 0,
+                },
+                trig::angle_of(FxVec2 {
+                    x: last_seen.x.saturating_sub(pos.x),
+                    y: last_seen.y.saturating_sub(pos.y),
+                })
+                .unwrap_or(idle),
+            ),
+            Some(_) | None => (Awareness::Unaware, idle),
         };
         let enemy = match placement.kind {
             EnemyKind::Rusher => Enemy::rusher(pos),
@@ -169,6 +182,10 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting:
                 Enemy::shooter(pos, pattern, &state.config, delay)
             }
         };
-        state.enemies.insert(Enemy { awareness, ..enemy });
+        state.enemies.insert(Enemy {
+            facing,
+            awareness,
+            ..enemy
+        });
     }
 }
