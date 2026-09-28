@@ -4,9 +4,9 @@
 use sim::room::{Category, Derelict, Placed, PrototypeRoom, Theme, cell_center, cell_of};
 use sim::ship::{Body, Tiles};
 use sim::{
-    Awareness, Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy, Event, Fx,
-    FxVec2, MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig,
-    SPAWN_TELEGRAPH_TICKS, Ship, SimState, TickInputs, Tuning, step, trig,
+    Arrival, Awareness, Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy,
+    Event, Fx, FxVec2, MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig, Ship,
+    SimState, TickInputs, Tuning, step, trig,
 };
 use std::sync::Arc;
 
@@ -242,7 +242,11 @@ fn spawn_telegraph_is_inert_then_the_rusher_engages() {
     let far = state.enemies.insert(Enemy::rusher(point(60, 0)));
     let auto_fire = press(Buttons::FIRE | Buttons::AUTO_AIM);
 
-    let events = run(&mut state, usize::from(SPAWN_TELEGRAPH_TICKS), &auto_fire);
+    let events = run(
+        &mut state,
+        usize::from(Arrival::Reinforcement.telegraph_ticks()),
+        &auto_fire,
+    );
     assert!(
         events.iter().all(|e| matches!(e, Event::ShotFired { .. })),
         "no hits either way while telegraphing: {events:?}"

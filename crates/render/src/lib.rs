@@ -211,6 +211,8 @@ pub struct Renderer {
     size_pt: [f32; 2],
     /// Floor-space point at the screen center; set each frame from the floor and player.
     camera: [f32; 2],
+    /// Where the camera leans off the player, in points (the host's aim look).
+    look: [f32; 2],
     quads: Vec<Quad>,
     /// Active event effects and the tick they started.
     flashes: Vec<(Flash, u64)>,
@@ -315,6 +317,7 @@ impl Renderer {
             capacity,
             size_pt,
             camera: [0.0, 0.0],
+            look: [0.0, 0.0],
             quads: Vec::new(),
             flashes: Vec::new(),
         })
@@ -358,6 +361,11 @@ impl Renderer {
             self.config.height = height_px;
             self.surface.configure(&self.device, &self.config);
         }
+    }
+
+    /// Leans the camera `offset` points off the player (still clamped to the floor).
+    pub const fn set_look(&mut self, offset: [f32; 2]) {
+        self.look = offset;
     }
 
     /// Draws `prev` -> `current` interpolated by `alpha` in `0..=1`. Returns seconds spent
@@ -453,7 +461,9 @@ impl Renderer {
                 })
             })
             .collect();
-        let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
+        let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| {
+            [p.0[0] + self.look[0], p.0[1] + self.look[1]]
+        });
         self.camera = self.camera_for(&current.ship, focus);
         self.push_floor(current);
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
@@ -613,7 +623,7 @@ impl Renderer {
     fn push_telegraph(&mut self, e: &Enemy, radius: f32, alpha: f32) {
         // Telegraph left, 1 -> 0, interpolated like positions (`spawn_ticks` drops 1/tick).
         let left = ((f32::from(e.spawn_ticks) + 1.0 - alpha)
-            / f32::from(sim::SPAWN_TELEGRAPH_TICKS))
+            / f32::from(e.arrival.telegraph_ticks().max(1)))
         .clamp(0.0, 1.0);
         let pos = [e.pos.x.to_num(), e.pos.y.to_num()];
         let ring = radius * left.mul_add(TELEGRAPH_RING_GROWTH, 1.0);
@@ -672,7 +682,7 @@ impl Renderer {
         }
     }
 
-    /// Where the screen center sits in floor space: on the focus (the player), clamped so
+    /// Where the screen center sits in floor space: on the focus (the player plus the look), clamped so
     /// the view stays over the floor. An axis where the floor fits on screen centers it.
     fn camera_for(&self, ship: &Ship, focus: [f32; 2]) -> [f32; 2] {
         let cell = sim::room::CELL.to_num::<f32>();

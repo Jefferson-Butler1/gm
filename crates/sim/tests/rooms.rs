@@ -459,8 +459,8 @@ fn a_combat_room_seals_once_a_player_is_wholly_inside_and_spawns_its_base_wave()
     }
     assert_eq!(state.enemies.len(), 3, "base layer");
     assert!(
-        state.enemies.iter().all(|(_, e)| !e.active()),
-        "telegraphing"
+        state.enemies.iter().all(|(_, e)| e.active()),
+        "prespawns skip the telegraph"
     );
 }
 
