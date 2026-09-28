@@ -66,6 +66,7 @@ final class GameModel {
                 "lead": Double(camera.lead),
                 "smoothingSecs": Double(camera.smoothingSecs),
                 "thumbClearance": Double(camera.thumbClearance),
+                "tiltPeek": Double(camera.tiltPeek),
             ], forKey: Self.cameraKey)
             game?.setCamera(settings: camera)
         }
@@ -156,6 +157,7 @@ final class GameModel {
         if let value = saved["lead"] as? Double { camera.lead = Float(value) }
         if let value = saved["smoothingSecs"] as? Double { camera.smoothingSecs = Float(value) }
         if let value = saved["thumbClearance"] as? Double { camera.thumbClearance = Float(value) }
+        if let value = saved["tiltPeek"] as? Double { camera.tiltPeek = Float(value) }
         return camera
     }
 
@@ -316,6 +318,9 @@ struct ControlsSettings: View {
                     }
                     SliderRow(label: "Thumb clearance", value: $model.camera.thumbClearance, range: 0...120, step: 5) {
                         "\(Int($0)) pt"
+                    }
+                    SliderRow(label: "Tilt peek (gyro)", value: $model.camera.tiltPeek, range: 0...800, step: 50) {
+                        $0 == 0 ? "off" : "\(Int($0)) pt/g"
                     }
                 }
                 Section("Sound") {

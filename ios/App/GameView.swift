@@ -90,7 +90,11 @@ final class GameUIView: UIView {
     @objc private func step(_ link: CADisplayLink) {
         guard let game else { return }
         game.setGamepad(pad: gamepad.poll())
-        game.setGyroRate(radiansPerSec: gyro.poll(enabled: model.gyroAim))
+        let peek = model.camera.tiltPeek > 0
+        gyro.run(model.gyroAim || peek)
+        game.setGyroRate(radiansPerSec: model.gyroAim ? gyro.rate() : 0)
+        let orientation = window?.windowScene?.interfaceOrientation ?? .landscapeRight
+        game.setTilt(gravity: peek ? gyro.gravity(orientation) : nil)
         let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         // Sounds and mood are per frame, not gated on `seq`.
         model.audio.frame(sounds: hud.sounds, mood: hud.mood)

@@ -1,4 +1,5 @@
 import CoreMotion
+import UIKit
 
 /// Gyro aim (prototype): the phone's turn rate about the vertical, polled once per frame.
 /// Projecting the rotation rate onto gravity makes it the same "turn left/right" whether the
@@ -6,17 +7,32 @@ import CoreMotion
 final class GyroInput {
     private let motion = CMMotionManager()
 
-    /// Radians per second, clockwise on screen (the aim angle's direction); 0 while `enabled`
-    /// is off, which also stops the sensors.
-    func poll(enabled: Bool) -> Float {
-        guard enabled, motion.isDeviceMotionAvailable else {
-            if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
-            return 0
-        }
-        if !motion.isDeviceMotionActive {
+    /// Runs the sensors only while gyro aim or tilt peek needs them.
+    func run(_ active: Bool) {
+        if active, motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive {
             motion.deviceMotionUpdateInterval = 1.0 / 120
             motion.startDeviceMotionUpdates()
+        } else if !active, motion.isDeviceMotionActive {
+            motion.stopDeviceMotionUpdates()
         }
+    }
+
+    /// Tilt peek: gravity in screen axes (+x right, +y down), in g, for the interface
+    /// orientation; `nil` with no motion data.
+    func gravity(_ orientation: UIInterfaceOrientation) -> [Float]? {
+        guard let g = motion.deviceMotion?.gravity else { return nil }
+        // Device axes: +x right, +y up in portrait.
+        switch orientation {
+        case .landscapeRight: return [Float(-g.y), Float(-g.x)]
+        case .landscapeLeft: return [Float(g.y), Float(g.x)]
+        case .portraitUpsideDown: return [Float(-g.x), Float(g.y)]
+        default: return [Float(g.x), Float(-g.y)]
+        }
+    }
+
+    /// Radians per second, clockwise on screen (the aim angle's direction); 0 with no motion
+    /// data.
+    func rate() -> Float {
         guard let data = motion.deviceMotion else { return 0 }
         let (r, g) = (data.rotationRate, data.gravity)
         let length = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
