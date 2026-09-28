@@ -20,6 +20,7 @@ mod derelict;
 mod encounter;
 mod gun;
 mod input;
+mod path;
 mod player;
 mod rng;
 pub mod room;
@@ -28,12 +29,13 @@ pub mod trig;
 pub use arena::{Arena, Id};
 pub use combat::{
     BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS, Enemy,
-    EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS, SPREAD_SHOOTER_HP,
+    EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS, SPREAD_SHOOTER_HP, chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use derelict::DERELICT;
 pub use gun::PhasePistol;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
+pub use path::FlowField;
 pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
 pub use rng::Rng;
 
