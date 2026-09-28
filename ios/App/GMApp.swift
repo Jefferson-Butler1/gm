@@ -16,7 +16,7 @@ final class GameModel {
     /// The Controls options: each a touch scheme with the fire mode it plays best with,
     /// with a stable key for persistence. The first is the default.
     static let controls: [(key: String, label: String, scheme: Scheme, fireMode: FireMode)] = [
-        ("F-hold", "Fire button · hold to auto-aim, drag to aim", .fireButton, .hold),
+        ("F-hold", "Fire button · hold to auto-fire, drag to aim, push out to fire", .fireButton, .hold),
         ("E-tap", "Auto-aim · tap to fire", .fixedAutoAim, .tap),
         ("E-hold", "Auto-aim · hold to fire, flick to dodge", .fixedAutoAim, .hold),
         ("C-hold", "Auto-aim, floating stick · hold to fire, flick to dodge", .autoAim, .hold),
@@ -24,7 +24,6 @@ final class GameModel {
         ("B-release", "Fixed twin sticks · drag to aim, lift to fire", .fixedSticks, .release),
         ("A-hold", "Floating twin sticks · aim fires", .floatingSticks, .hold),
         ("D-hold", "Twin sticks + aim assist · aim fires", .aimAssist, .hold),
-        ("B-volume", "Twin sticks + volume buttons · volume-up fires, down dodges", .fixedSticks, .trigger),
     ]
     /// Camera look options, with stable keys for persistence.
     static let looks: [(look: LookMode, key: String, label: String)] = [
@@ -44,7 +43,6 @@ final class GameModel {
             UserDefaults.standard.set(controlsKey, forKey: Self.controlsKey)
             game?.setScheme(scheme: scheme)
             game?.setFireMode(mode: fireMode)
-            syncVolumeButtons()
         }
     }
     var scheme: Scheme { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).scheme }
@@ -79,7 +77,6 @@ final class GameModel {
     var settingsOpen = false { didSet { syncPause() } }
     var appActive = true { didSet { syncPause() } }
     @ObservationIgnored private var game: Game?
-    @ObservationIgnored private let volumeButtons = VolumeButtons()
     @ObservationIgnored private var paused = false
 
     /// Pushes the persisted settings into a freshly created game.
@@ -89,21 +86,7 @@ final class GameModel {
         game.setFireMode(mode: fireMode)
         game.setAssistStrength(strength: assist)
         game.setCamera(settings: camera)
-        volumeButtons.onShot = { [weak game] in game?.pullTrigger() }
-        volumeButtons.onDodge = { [weak game] in game?.pressDodge() }
-        syncVolumeButtons()
         if paused { game.pause() }
-    }
-
-    /// The volume buttons are game buttons only in the Volume fire mode.
-    private func syncVolumeButtons() {
-        let window = UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
-        if fireMode == .trigger, game != nil, let window {
-            volumeButtons.start(in: window)
-        } else {
-            volumeButtons.stop()
-        }
     }
 
     /// Only acts on transitions: `resume` resyncs the sim clock.
