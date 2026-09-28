@@ -79,10 +79,10 @@ const LINE_STEP: Fx = Fx::from_bits(4 << 32);
 /// is within 2 cells of the spot; then it starts to give up (see [`Awareness::Alert`]).
 const ARRIVED: Fx = Fx::from_bits(64 << 32);
 
-/// Spawn telegraph: a new enemy spends 30 ticks = 0.5 s as a warning marker. Meanwhile
+/// Spawn telegraph: a new enemy spends 90 ticks = 1.5 s as a warning marker. Meanwhile
 /// it is inert: it doesn't move, hurt, push or get pushed, and it can't be targeted or
 /// hit (bullets pass through).
-pub const SPAWN_TELEGRAPH_TICKS: u8 = 30;
+pub const SPAWN_TELEGRAPH_TICKS: u8 = 90;
 
 /// Ticks from all players dying until restart is accepted: 0.75 s, so a panicked tap
 /// doesn't skip the death.
