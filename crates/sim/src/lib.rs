@@ -17,12 +17,13 @@ mod arena;
 mod checksum;
 mod combat;
 mod config;
-mod derelict;
 mod encounter;
 mod gun;
+pub mod hull;
 mod input;
 mod path;
 mod player;
+mod pool;
 mod rng;
 pub mod room;
 pub mod ship;
@@ -34,11 +35,12 @@ pub use combat::{
     ENEMY_RADIUS, Enemy, EnemyId, Patrol, Pattern, RUSHER_HP, SHOOTER_HP, SPREAD_SHOOTER_HP, chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
-pub use derelict::DERELICT;
 pub use gun::PhasePistol;
+pub use hull::CORVETTE;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use path::FlowField;
 pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
+pub use pool::POOL;
 pub use rng::Rng;
 pub use ship::{HatchId, HatchState, Ship};
 
@@ -118,12 +120,12 @@ pub struct SimState {
 }
 
 impl SimState {
-    /// A fresh single-player run, standing in the derelict's start room with every hatch
-    /// closed. `config` is clamped to what the sim handles (see [`RunConfig::sanitized`]).
+    /// A fresh single-player run: a Corvette generated from `seed`, the party standing in
+    /// its start room with every hatch closed. `config` is clamped to what the sim handles (see [`RunConfig::sanitized`]).
     #[must_use]
     pub fn new(seed: u64, config: RunConfig) -> Self {
         let config = config.sanitized();
-        let ship = Ship::new(&DERELICT);
+        let ship = Ship::generate(&CORVETTE, seed);
         let (room, at) = ship.start();
         let player = Player {
             pos: at,

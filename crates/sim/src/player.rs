@@ -298,7 +298,9 @@ pub const fn scale(v: FxVec2, k: Fx) -> FxVec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::room::{CELL, Category, Derelict, Placed, PrototypeRoom, cell_center, cell_of};
+    use crate::room::{
+        CELL, Category, Derelict, Placed, PrototypeRoom, Theme, cell_center, cell_of,
+    };
     use crate::ship::Ship;
     use std::sync::LazyLock;
 
@@ -341,6 +343,7 @@ mod tests {
     const HALL: PrototypeRoom = PrototypeRoom {
         name: "test hall",
         category: Category::Normal,
+        theme: Theme::Cargo,
         cells: &[
             "##############################",
             "#............................#",
