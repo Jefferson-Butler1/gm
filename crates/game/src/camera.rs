@@ -16,6 +16,9 @@ pub enum LookMode {
     /// Along the player's facing at all times: ahead of the walk, or along the aim while
     /// shooting. Stays leaning when standing still.
     Facing,
+    /// ETG mouse-style, for auto-aim: halfway toward the nearest enemy in the player's
+    /// room (what auto-aim shoots at), capped at the lead; centered once the room is clear.
+    Enemy,
 }
 
 #[derive(uniffi::Record, Clone, Copy, Debug, PartialEq)]
@@ -59,18 +62,31 @@ impl CameraLook {
     }
 
     /// Eases the lean toward this frame's target and returns it. `facing` is the player's
-    /// (one turn = 65536), `aim` how far the aim is pushed, `0..=1`.
-    pub fn update(&mut self, now: f64, facing: Option<u16>, aim: f32) -> [f32; 2] {
-        let weight = match self.settings.look {
-            LookMode::Centered => 0.0,
-            LookMode::Aim => aim,
-            LookMode::Facing => 1.0,
+    /// (one turn = 65536), `aim` how far the aim is pushed, `0..=1`, and `enemy` the
+    /// offset from the player to the nearest enemy in its room.
+    pub fn update(
+        &mut self,
+        now: f64,
+        facing: Option<u16>,
+        aim: f32,
+        enemy: Option<[f32; 2]>,
+    ) -> [f32; 2] {
+        let lead = self.settings.lead;
+        let along = |weight: f32| {
+            facing.map_or([0.0, 0.0], |f| {
+                let (sin, cos) = (f32::from(f) / 65536.0 * TAU).sin_cos();
+                [cos * lead * weight, sin * lead * weight]
+            })
         };
-        let target = facing.map_or([0.0, 0.0], |f| {
-            let (sin, cos) = (f32::from(f) / 65536.0 * TAU).sin_cos();
-            let reach = self.settings.lead * weight;
-            [cos * reach, sin * reach]
-        });
+        let target = match self.settings.look {
+            LookMode::Centered => [0.0, 0.0],
+            LookMode::Aim => along(aim),
+            LookMode::Facing => along(1.0),
+            LookMode::Enemy => enemy.map_or([0.0, 0.0], |[x, y]| {
+                let k = (lead / x.hypot(y).max(f32::EPSILON)).min(0.5);
+                [x * k, y * k]
+            }),
+        };
         // No From<f64> for f32; a frame's duration fits.
         #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
         let dt = self

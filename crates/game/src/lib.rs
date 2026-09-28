@@ -294,10 +294,26 @@ impl Game {
         let max_charges = g.current.config.tuning.charges;
         let vent_ready = player.is_some_and(|p| !p.gun.venting() && p.gun.charges < max_charges);
         let overlay = g.controls.overlay(roll_ready, vent_ready);
+        // The nearest enemy in slot 0's room, as an offset from it: what auto-aim shoots.
+        let enemy = player.and_then(|p| {
+            let ship = &g.current.ship;
+            let room = ship.room_at(p.pos)?;
+            g.current
+                .enemies
+                .iter()
+                .map(|(_, e)| e)
+                .filter(|e| e.active() && ship.room_at(e.pos) == Some(room))
+                .map(|e| {
+                    let (ex, ey) = (e.pos.x.to_num::<f32>(), e.pos.y.to_num::<f32>());
+                    [ex - p.pos.x.to_num::<f32>(), ey - p.pos.y.to_num::<f32>()]
+                })
+                .min_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
+        });
         let look = g.look.update(
             target_timestamp,
             player.map(|p| p.facing),
             g.controls.aim_push(),
+            enemy,
         );
         g.renderer.set_look(look);
         let presented = g

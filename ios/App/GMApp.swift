@@ -26,6 +26,7 @@ final class GameModel {
         (.centered, "centered", "Centered"),
         (.aim, "aim", "Aim look · leads the aim while aiming (ETG)"),
         (.facing, "facing", "Facing look · always leads where you face"),
+        (.enemy, "enemy", "Enemy look · leans toward the nearest enemy (auto-aim)"),
     ]
     /// Fire mode options, with stable keys for persistence.
     static let fireModes: [(mode: FireMode, key: String, label: String)] = [
