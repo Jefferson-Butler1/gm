@@ -49,6 +49,8 @@ pub struct RunSettings {
     /// Enemy awareness, pt: how far an unaware enemy hears a shot, and how far a hunting
     /// one alerts its allies. (Sight is line of sight inside its cone, at any range.)
     pub hearing_radius: f32,
+    /// How far, pt, an unaware enemy hears a hatch bang open or shut and comes to look.
+    pub hatch_hearing_radius: f32,
     pub alert_radius: f32,
     /// How long a hunter searches where it lost the player before giving up.
     pub forget_secs: f32,
@@ -89,6 +91,7 @@ pub fn default_run_settings() -> RunSettings {
         spread_shooter: t.spread_shooter,
         fall_secs: secs(t.fall_ticks),
         hearing_radius: f32::from(t.hearing_radius),
+        hatch_hearing_radius: f32::from(t.hatch_hearing_radius),
         alert_radius: f32::from(t.alert_radius),
         forget_secs: secs(t.forget_ticks),
         sight_half_angle: f32::from(t.sight_half_angle),
@@ -134,6 +137,7 @@ impl RunSettings {
                 spread_shooter: self.spread_shooter,
                 fall_ticks: ticks(self.fall_secs),
                 hearing_radius: whole(self.hearing_radius),
+                hatch_hearing_radius: whole(self.hatch_hearing_radius),
                 alert_radius: whole(self.alert_radius),
                 forget_ticks: ticks(self.forget_secs),
                 sight_half_angle: whole(self.sight_half_angle),

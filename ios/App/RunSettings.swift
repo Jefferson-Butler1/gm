@@ -21,6 +21,7 @@ enum RunSettingsStore {
         ("regenChargeSecs", \.regenChargeSecs),
         ("fallSecs", \.fallSecs),
         ("hearingRadius", \.hearingRadius),
+        ("hatchHearingRadius", \.hatchHearingRadius),
         ("alertRadius", \.alertRadius),
         ("forgetSecs", \.forgetSecs),
         ("sightHalfAngle", \.sightHalfAngle),
@@ -128,6 +129,9 @@ struct RunSettingsSections: View {
                 String(format: "%.2f s", $0)
             }
             SliderRow(label: "Enemy hearing", value: $model.runSettings.hearingRadius, range: 0...480, step: 16) {
+                cells($0)
+            }
+            SliderRow(label: "Enemy hatch hearing", value: $model.runSettings.hatchHearingRadius, range: 0...960, step: 32) {
                 cells($0)
             }
             SliderRow(label: "Enemy alert range", value: $model.runSettings.alertRadius, range: 0...480, step: 16) {
