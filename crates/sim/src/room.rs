@@ -1,14 +1,14 @@
 //! Room format (issue #10), mirroring Enter the Gungeon's `PrototypeDungeonRoom`.
 //!
 //! Rooms are plain typed `'static` values. The cell grid is a text block (one string per
-//! row, row-major); everything else is typed fields. Validation is a `const fn`: room and
-//! derelict constants are wrapped in `.valid()`, so a malformed room fails the build and
-//! the sim only ever sees validated data.
+//! row, row-major); everything else is typed fields. Validation is a `const fn`: room,
+//! derelict and template constants are wrapped in `.valid()`, so a malformed room fails
+//! the build and the sim only ever sees validated data.
 //!
 //! Coordinates are integer cells in the data, room-local: (0, 0) is the room's top-left
-//! cell. A [`Derelict`] places each room in one floor-wide grid (see [`crate::ship`]); in
-//! the sim, world space is floor points: the origin is floor cell (0, 0)'s top-left
-//! corner and +y points down.
+//! cell. A hull template ([`crate::hull`]) or a hand-placed [`Derelict`] places each room
+//! in one floor-wide grid (see [`crate::ship`]); in the sim, world space is floor points:
+//! the origin is floor cell (0, 0)'s top-left corner and +y points down.
 
 use crate::{Fx, FxVec2};
 
@@ -94,6 +94,105 @@ impl ExitKind {
 
     const fn can_be_to(self) -> bool {
         matches!(self, Self::Entrance | Self::Either)
+    }
+}
+
+/// What a room is aboard (issue #28): which template slots may take it (see
+/// [`Zone`](crate::hull::Zone)), and later, what loot it hands out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Theme {
+    /// A stretch of passage between rooms: wherever the template draws one.
+    Corridor,
+    Airlock,
+    Bridge,
+    Cargo,
+    Crew,
+    Engineering,
+}
+
+/// Room size classes (issue #28), in cells including the walls. Every room of a class
+/// has the same [`Self::hatches`], so it fits any template slot of that class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Size {
+    S,
+    M,
+    L,
+}
+
+const S_HATCHES: [Exit; 4] = Size::S.hatch_points();
+const M_HATCHES: [Exit; 4] = Size::M.hatch_points();
+const L_HATCHES: [Exit; 4] = Size::L.hatch_points();
+
+impl Size {
+    /// (width, height).
+    #[must_use]
+    pub const fn dims(self) -> (usize, usize) {
+        match self {
+            Self::S => (12, 10),
+            Self::M => (18, 12),
+            Self::L => (24, 14),
+        }
+    }
+
+    /// The class of a `width` x `height` room, if it is one.
+    #[must_use]
+    pub const fn of(width: usize, height: usize) -> Option<Self> {
+        match (width, height) {
+            (12, 10) => Some(Self::S),
+            (18, 12) => Some(Self::M),
+            (24, 14) => Some(Self::L),
+            _ => None,
+        }
+    }
+
+    /// The standard hatch points: a 2-wide gap centered on each side, in the order north,
+    /// east, south, west. Rooms of the class leave all four open, as their exits; a
+    /// template walls off the ones its slot doesn't use.
+    #[must_use]
+    pub const fn hatches(self) -> &'static [Exit; 4] {
+        match self {
+            Self::S => &S_HATCHES,
+            Self::M => &M_HATCHES,
+            Self::L => &L_HATCHES,
+        }
+    }
+
+    /// The hatch point on side `dir`.
+    #[must_use]
+    pub const fn hatch(self, dir: Dir) -> Exit {
+        let [north, east, south, west] = *self.hatches();
+        match dir {
+            Dir::North => north,
+            Dir::East => east,
+            Dir::South => south,
+            Dir::West => west,
+        }
+    }
+
+    const fn hatch_points(self) -> [Exit; 4] {
+        let (width, height) = self.dims();
+        // Even sides: the gap's two cells straddle the middle.
+        let (x, y) = (
+            (width / 2).saturating_sub(1),
+            (height / 2).saturating_sub(1),
+        );
+        let (right, bottom) = (width.saturating_sub(1), height.saturating_sub(1));
+        [
+            hatch_point(Dir::North, x, 0),
+            hatch_point(Dir::East, right, y),
+            hatch_point(Dir::South, x, bottom),
+            hatch_point(Dir::West, 0, y),
+        ]
+    }
+}
+
+const fn hatch_point(dir: Dir, x: usize, y: usize) -> Exit {
+    Exit {
+        dir,
+        x,
+        y,
+        width: 2,
+        kind: ExitKind::Either,
     }
 }
 
@@ -212,6 +311,7 @@ pub enum RoomAction {
 pub struct PrototypeRoom {
     pub name: &'static str,
     pub category: Category,
+    pub theme: Theme,
     /// Row-major text grid; see [`Cell`] for the characters.
     pub cells: &'static [&'static str],
     pub exits: &'static [Exit],
@@ -292,7 +392,7 @@ impl RoomError {
 }
 
 /// `items[i]` for const fns (`<[T]>::get` is not const yet).
-const fn nth<T>(items: &[T], i: usize) -> Option<&T> {
+pub(crate) const fn nth<T>(items: &[T], i: usize) -> Option<&T> {
     match items.split_at_checked(i) {
         Some((_, rest)) => rest.first(),
         None => None,
@@ -334,7 +434,7 @@ impl PrototypeRoom {
         }
     }
 
-    const fn floor_at(&self, x: usize, y: usize) -> bool {
+    pub(crate) const fn floor_at(&self, x: usize, y: usize) -> bool {
         matches!(self.cell_at(x, y), Cell::Floor)
     }
 
@@ -357,6 +457,32 @@ impl PrototypeRoom {
             i = i.saturating_add(1);
         }
         None
+    }
+
+    /// The room's size class: `Some` when it is exactly a class's size and its exits are
+    /// exactly that class's hatch points, in order.
+    #[must_use]
+    pub const fn size(&self) -> Option<Size> {
+        let Some(size) = Size::of(self.width(), self.height()) else {
+            return None;
+        };
+        let hatches = size.hatches();
+        if self.exits.len() != hatches.len() {
+            return None;
+        }
+        let mut i = 0;
+        while let (Some(exit), Some(hatch)) = (nth(self.exits, i), nth(hatches, i)) {
+            let same = exit.dir.is(hatch.dir)
+                && exit.x == hatch.x
+                && exit.y == hatch.y
+                && exit.width == hatch.width
+                && matches!(exit.kind, ExitKind::Either);
+            if !same {
+                return None;
+            }
+            i = i.saturating_add(1);
+        }
+        Some(size)
     }
 
     /// Whether any wave has enemies.
@@ -676,8 +802,9 @@ impl Placed {
     }
 }
 
-/// A whole boarding target: rooms placed in one floor grid, the hatches joining them, and
-/// where the party starts.
+/// A whole boarding target placed by hand: rooms placed in one floor grid, the hatches
+/// joining them, and where the party starts. Tests use these; runs generate their ships
+/// from hull templates.
 ///
 /// Rooms may share wall cells; floor cells only meet where two linked exits coincide,
 /// which is the hatch.
