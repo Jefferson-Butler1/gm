@@ -1,13 +1,31 @@
-# Third-party assets
+# GM
 
-Every bundled asset is CC0 1.0 (public domain dedication,
-https://creativecommons.org/publicdomain/zero/1.0/): no attribution required, credited
-here anyway. Licenses were checked on each download page and, for Kenney packs, the
-`License.txt` inside the zip.
+Every third-party asset in the game is listed here with its source and license. The
+in-game credits roll (shown on clearing the derelict) reads this file: `#` is the title,
+`##` a section, `-` a line.
 
-## Audio (`ios/App/Audio/`)
+## Made by
 
-SFX were converted to mono 44.1 kHz 16-bit `.caf`; music to 128 kbps AAC `.m4a` with the
+- Jeff Butler
+
+## Built with
+
+- Rust
+- wgpu (MIT / Apache-2.0)
+- UniFFI (MPL-2.0)
+- fixed (MIT / Apache-2.0)
+- serde (MIT / Apache-2.0)
+- bytemuck (Zlib / Apache-2.0 / MIT)
+- pollster (MIT / Apache-2.0)
+
+## Sound
+
+- Sound effects by Kenney (kenney.nl), CC0
+- Music and victory sting by SRG774, Dark Sci-Fi Audio Pack, CC0
+
+Every file, where it came from and its license (all CC0 1.0, public domain; licenses
+checked on each download page and in each Kenney pack's `License.txt`). Files live in
+`ios/App/Audio/`. SFX were converted to mono 44.1 kHz 16-bit `.caf`; music to 128 kbps AAC `.m4a` with the
 leading silence trimmed so the loops don't gap.
 
 | File | Plays on | Source file | Pack / author | License |
@@ -30,3 +48,12 @@ leading silence trimmed so the loops don't gap.
 | `won.caf` | extraction (run won) | `victory.ogg` | [Dark Sci-Fi Audio Pack](https://opengameart.org/content/dark-sci-fi-audio-pack), SRG774 | CC0 |
 | `music_explore.m4a` | music, exploring | `sector.ogg` | [Dark Sci-Fi Audio Pack](https://opengameart.org/content/dark-sci-fi-audio-pack), SRG774 | CC0 |
 | `music_combat.m4a` | music, fighting | `urgent.ogg` | [Dark Sci-Fi Audio Pack](https://opengameart.org/content/dark-sci-fi-audio-pack), SRG774 | CC0 |
+
+## Inspired by
+
+- Enter the Gungeon
+- Nuclear Throne
+- FTL: Faster Than Light
+- The Expanse
+
+## Thanks for playing
