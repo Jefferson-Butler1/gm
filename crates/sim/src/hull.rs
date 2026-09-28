@@ -7,7 +7,9 @@
 //! - Space: outside the ship.
 //!
 //! Each slot's legend ([`Slot`]) gives its size class, its zone, whether it's optional,
-//! and which of its standard hatch points open onto a corridor. Every room of a class
+//! which of its standard hatch points open onto a corridor, and for an airlock, which
+//! opens onto space. The party boards through a random airlock, and once the bridge (the
+//! boss slot) is clear, leaves through any. Every room of a class
 //! has the same hatch points (see [`Size::hatches`]), so filling can't fail: any pool room
 //! of the slot's class and zone fits it. [`Ship::generate`](crate::Ship::generate) fills
 //! a template from a seed.
@@ -58,6 +60,8 @@ pub struct Slot {
     pub optional: bool,
     /// The sides whose hatch points open onto a corridor; the rest are walled.
     pub hatches: &'static [Dir],
+    /// An airlock: the side whose hatch point is its outer hatch, onto space.
+    pub airlock: Option<Dir>,
 }
 
 impl Slot {
@@ -87,9 +91,6 @@ pub struct Template {
     /// Row-major, one character per floor cell.
     pub rows: &'static [&'static str],
     pub slots: &'static [Slot],
-    /// The slot the party boards through. It starts at its room's center, where the
-    /// room's hatch points line up.
-    pub start: u8,
 }
 
 /// Why a template failed validation. Cells are `(x, y)`; `slot` indexes the legend, and
@@ -113,12 +114,17 @@ pub enum TemplateError {
     SlotShape {
         slot: usize,
     },
-    /// A slot must open at least one hatch, each side at most once.
+    /// A slot must open at least one hatch, each side at most once, and an airlock's outer
+    /// hatch on none of them.
     BadHatches {
         slot: usize,
     },
     /// Just outside each of a slot's open hatch points must be corridor.
     HatchOffCorridor {
+        slot: usize,
+    },
+    /// Just outside an airlock's outer hatch must be outside the ship.
+    AirlockOffHull {
         slot: usize,
     },
     /// Corridor must be walled in: by hull, or by a slot's side.
@@ -139,11 +145,16 @@ pub enum TemplateError {
     EmptySlot {
         slot: usize,
     },
-    /// The start slot must be in the legend, never left out, and only take entrance rooms
-    /// with floor at their center.
-    BadStart,
-    /// Some slot that's never left out must only take exit rooms: somewhere to win.
-    NoExit,
+    /// An airlock is boarded through: it must never be left out, and only take entrance
+    /// rooms with floor at their center.
+    BadAirlock {
+        slot: usize,
+    },
+    /// There must be an airlock: somewhere to board, and to leave.
+    NoAirlock,
+    /// Some slot that's never left out must only take boss rooms: the bridge, whose
+    /// clearing unlocks the airlocks.
+    NoBoss,
 }
 
 impl TemplateError {
@@ -155,14 +166,20 @@ impl TemplateError {
             Self::UnknownCell { .. } => "unknown template cell (use # = space or a slot letter)",
             Self::BadLetter { .. } => "slot letters must be letters, each with one legend",
             Self::SlotShape { .. } => "a slot's cells must be one rectangle of its size class",
-            Self::BadHatches { .. } => "a slot must open at least one hatch, each side once",
+            Self::BadHatches { .. } => {
+                "a slot must open at least one hatch, each side once, none its outer hatch"
+            }
             Self::HatchOffCorridor { .. } => "an open hatch point must face corridor",
+            Self::AirlockOffHull { .. } => "an airlock's outer hatch must face outside the ship",
             Self::OpenCorridor { .. } => "corridor must be walled in by hull or slots",
             Self::StrayHull { .. } => "hull must touch corridor",
             Self::RoomOffClass { .. } => "a pool room is not exactly a size class",
             Self::EmptySlot { .. } => "no pool room fits a slot",
-            Self::BadStart => "the start slot must always hold an entrance, floor at its center",
-            Self::NoExit => "some always-filled slot must only take exit rooms",
+            Self::BadAirlock { .. } => {
+                "an airlock must always hold an entrance, floor at its center"
+            }
+            Self::NoAirlock => "a template needs an airlock",
+            Self::NoBoss => "some always-filled slot must only take boss rooms",
         }
     }
 }
@@ -268,7 +285,7 @@ impl Template {
     /// # Errors
     /// The first problem found.
     pub const fn validate(&self) -> Result<(), TemplateError> {
-        let (width, height) = self.size();
+        let (width, _) = self.size();
         if width == 0 {
             return Err(TemplateError::Empty);
         }
@@ -294,13 +311,15 @@ impl Template {
             s = s.saturating_add(1);
         }
         let mut y = 0;
-        while y < height {
-            let mut x = 0;
-            while x < width {
-                if let Err(error) = self.check_walls((x, y)) {
+        while let Some(row) = nth(self.rows, y) {
+            let (mut x, mut rest) = (0, row.as_bytes());
+            while let [c, tail @ ..] = rest {
+                if matches!(c, b'#' | b'=')
+                    && let Err(error) = self.check_walls((x, y))
+                {
                     return Err(error);
                 }
-                x = x.saturating_add(1);
+                (x, rest) = (x.saturating_add(1), tail);
             }
             y = y.saturating_add(1);
         }
@@ -332,22 +351,23 @@ impl Template {
         };
         let (width, height) = slot.size.dims();
         let (mut inside, mut all) = (0_usize, 0_usize);
-        let (grid_width, grid_height) = self.size();
+        // Walks each row's bytes as a slice pattern: looking up cell by cell would outlast
+        // the const-eval budget on a whole ship.
         let mut y = 0;
-        while y < grid_height {
-            let mut x = 0;
-            while x < grid_width {
-                let in_rect = x >= left
-                    && y >= top
-                    && x < left.saturating_add(width)
-                    && y < top.saturating_add(height);
-                if self.at(x, y) == slot.letter {
+        while let Some(row) = nth(self.rows, y) {
+            let (mut x, mut rest) = (0, row.as_bytes());
+            while let [c, tail @ ..] = rest {
+                if *c == slot.letter {
                     all = all.saturating_add(1);
+                    let in_rect = x >= left
+                        && y >= top
+                        && x < left.saturating_add(width)
+                        && y < top.saturating_add(height);
                     if in_rect {
                         inside = inside.saturating_add(1);
                     }
                 }
-                x = x.saturating_add(1);
+                (x, rest) = (x.saturating_add(1), tail);
             }
             y = y.saturating_add(1);
         }
@@ -379,6 +399,28 @@ impl Template {
                 i = i.saturating_add(1);
             }
             side = side.saturating_add(1);
+        }
+        let Some(outer) = slot.airlock else {
+            return Ok(());
+        };
+        let mut side = 0;
+        while let Some(&dir) = nth(slot.hatches, side) {
+            if same_side(dir, outer) {
+                return Err(TemplateError::BadHatches { slot: s });
+            }
+            side = side.saturating_add(1);
+        }
+        let gap = slot.size.hatch(outer).shifted((left, top));
+        let mut i = 0;
+        while i < gap.width {
+            let space = match toward(gap.cell(i), outer) {
+                Some((x, y)) => self.at(x, y) == b' ',
+                None => true,
+            };
+            if !space {
+                return Err(TemplateError::AirlockOffHull { slot: s });
+            }
+            i = i.saturating_add(1);
         }
         Ok(())
     }
@@ -419,15 +461,15 @@ impl Template {
             }
             r = r.saturating_add(1);
         }
-        let mut has_exit = false;
+        let (mut has_airlock, mut has_boss) = (false, false);
         let mut s = 0;
         while let Some(slot) = nth(self.slots, s) {
-            let (mut any, mut all_exits, mut all_entrances) = (false, true, true);
+            let (mut any, mut all_bosses, mut all_entrances) = (false, true, true);
             let mut r = 0;
             while let Some(room) = nth(POOL, r) {
                 if slot.fits(room) {
                     any = true;
-                    all_exits &= matches!(room.category, Category::Exit);
+                    all_bosses &= matches!(room.category, Category::Boss);
                     all_entrances &= matches!(room.category, Category::Entrance) && centered(room);
                 }
                 r = r.saturating_add(1);
@@ -435,17 +477,20 @@ impl Template {
             if !any {
                 return Err(TemplateError::EmptySlot { slot: s });
             }
-            if slot.letter == self.start && (slot.optional || !all_entrances) {
-                return Err(TemplateError::BadStart);
+            if slot.airlock.is_some() {
+                if slot.optional || !all_entrances {
+                    return Err(TemplateError::BadAirlock { slot: s });
+                }
+                has_airlock = true;
             }
-            has_exit |= !slot.optional && all_exits;
+            has_boss |= !slot.optional && all_bosses;
             s = s.saturating_add(1);
         }
-        if self.slot(self.start).is_none() {
-            return Err(TemplateError::BadStart);
+        if !has_airlock {
+            return Err(TemplateError::NoAirlock);
         }
-        if !has_exit {
-            return Err(TemplateError::NoExit);
+        if !has_boss {
+            return Err(TemplateError::NoBoss);
         }
         Ok(())
     }
@@ -469,6 +514,7 @@ const fn slot(letter: u8, size: Size, zone: Zone, hatches: &'static [Dir]) -> Sl
         zone,
         optional: false,
         hatches,
+        airlock: None,
     }
 }
 
@@ -479,61 +525,80 @@ const fn optional(slot: Slot) -> Slot {
     }
 }
 
+/// `slot` as an airlock whose outer hatch is on side `outer`.
+const fn airlock(slot: Slot, outer: Dir) -> Slot {
+    Slot {
+        airlock: Some(outer),
+        ..slot
+    }
+}
+
 /// The Corvette (issue #27, Rocinante-like): the first hand-built derelict, made a
 /// template.
 ///
-/// You board through the airlock `A` on the port hull into the midship hold
-/// `H`. Aft down the keel are two optional side compartments, port `P` and starboard `S`,
-/// and engineering `E` at the stern; fore through a bulkhead passage is the bridge `B`,
-/// whose extraction pad wins the run.
+/// Three airlocks on the hull, port `A`, starboard `Z` and aft `X`: you board through a
+/// random one. The midship hold `H` joins the port and starboard airlocks to the keel.
+/// Aft down the keel are two optional side compartments, port `P` and starboard `S`, and
+/// engineering `E` at the stern, with the aft airlock beyond it; fore through a bulkhead
+/// passage is the bridge `B`, whose captain guards the airlocks' locks.
 pub const CORVETTE: Template = Template {
     name: "corvette",
     rows: &[
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                                      AAAAAAAAAAAA                                  ",
-        "                   PPPPPPPPPPPP       AAAAAAAAAAAA                                  ",
-        "                   PPPPPPPPPPPP           #==#                                      ",
-        "                   PPPPPPPPPPPP           #==#                                      ",
-        "                   PPPPPPPPPPPP           #==#                                      ",
-        "                   PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE#PPPPPPPPPPPP#HHHHHHHHHHHHHHHHHHHHHHHH####BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE==============HHHHHHHHHHHHHHHHHHHHHHHH====BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE==============HHHHHHHHHHHHHHHHHHHHHHHH====BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE#SSSSSSSSSSSS#HHHHHHHHHHHHHHHHHHHHHHHH####BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "                   SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "                   SSSSSSSSSSSS                                                     ",
-        "                   SSSSSSSSSSSS                                                     ",
-        "                   SSSSSSSSSSSS                                                     ",
-        "                   SSSSSSSSSSSS                                                     ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                                    AAAAAAAAAAAA                                  ",
+        "                                 PPPPPPPPPPPP       AAAAAAAAAAAA                                  ",
+        "                                 PPPPPPPPPPPP           #==#                                      ",
+        "                                 PPPPPPPPPPPP           #==#                                      ",
+        "                                 PPPPPPPPPPPP           #==#                                      ",
+        "                                 PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "              EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX##EEEEEEEEEEEEEEEEEE#PPPPPPPPPPPP#HHHHHHHHHHHHHHHHHHHHHHHH####BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX==EEEEEEEEEEEEEEEEEE==============HHHHHHHHHHHHHHHHHHHHHHHH====BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX==EEEEEEEEEEEEEEEEEE==============HHHHHHHHHHHHHHHHHHHHHHHH====BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX##EEEEEEEEEEEEEEEEEE#SSSSSSSSSSSS#HHHHHHHHHHHHHHHHHHHHHHHH####BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "              EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                                 SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                                 SSSSSSSSSSSS           #==#                                      ",
+        "                                 SSSSSSSSSSSS           #==#                                      ",
+        "                                 SSSSSSSSSSSS           #==#                                      ",
+        "                                 SSSSSSSSSSSS       ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                                                    ZZZZZZZZZZZZ                                  ",
     ],
     slots: &[
-        slot(b'A', Size::S, Zone::Hull, &[Dir::South]),
-        slot(b'E', Size::M, Zone::Aft, &[Dir::East]),
+        airlock(slot(b'A', Size::S, Zone::Hull, &[Dir::South]), Dir::North),
+        airlock(slot(b'Z', Size::S, Zone::Hull, &[Dir::North]), Dir::South),
+        airlock(slot(b'X', Size::S, Zone::Hull, &[Dir::East]), Dir::West),
+        slot(b'E', Size::M, Zone::Aft, &[Dir::East, Dir::West]),
         slot(
             b'H',
             Size::L,
             Zone::Mid,
-            &[Dir::North, Dir::East, Dir::West],
+            &[Dir::North, Dir::East, Dir::South, Dir::West],
         ),
         slot(b'B', Size::L, Zone::Fore, &[Dir::West]),
         optional(slot(b'P', Size::S, Zone::Mid, &[Dir::South])),
         optional(slot(b'S', Size::S, Zone::Mid, &[Dir::North])),
     ],
-    start: b'A',
 }
 .valid();

@@ -370,7 +370,6 @@ mod tests {
         base: &[],
         reinforcements: &[],
         events: &[],
-        extraction: None,
     }
     .valid();
 

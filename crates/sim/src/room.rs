@@ -270,6 +270,9 @@ pub enum EnemyKind {
     Shooter,
     /// A spread shooter while the run's `spread_shooter` experiment is on, else a shooter.
     SpreadShooter,
+    /// The bridge's placeholder elite: arrives with a boss telegraph in whichever wave
+    /// places it (see [`crate::Arrival::Boss`]).
+    Captain,
 }
 
 /// An enemy spawned at the center of cell (`x`, `y`).
@@ -320,10 +323,6 @@ pub struct PrototypeRoom {
     /// Later waves in order: reinforcement `i` is wave `i + 1`.
     pub reinforcements: &'static [Reinforcement],
     pub events: &'static [(RoomTrigger, RoomAction)],
-    /// The extraction pad's cell; `Some` in exactly the [`Category::Exit`] rooms. A living
-    /// player touching it once the room is clear wins the run. Mirrors ETG's exit-room
-    /// elevator: a placeable, not a cell type.
-    pub extraction: Option<(usize, usize)>,
 }
 
 /// Why a room failed validation. Cells are `(x, y)`; `exit` indexes the room's exits.
@@ -365,9 +364,6 @@ pub enum RoomError {
     },
     /// A room that can seal must end its `OnEnemiesCleared` actions unsealed.
     SealsForever,
-    /// Exit rooms, and only exit rooms, have an extraction pad.
-    ExtractionMismatch,
-    ExtractionOffFloor,
 }
 
 impl RoomError {
@@ -385,8 +381,6 @@ impl RoomError {
             Self::UnreachableFloor => "some floor is unreachable",
             Self::Unenclosed { .. } => "floor must be walled in except at exits",
             Self::SealsForever => "room seals but never unseals on OnEnemiesCleared",
-            Self::ExtractionMismatch => "exit rooms, and only exit rooms, need an extraction pad",
-            Self::ExtractionOffFloor => "extraction pad is not on a floor cell",
         }
     }
 }
@@ -540,14 +534,6 @@ impl PrototypeRoom {
         }
         if let Err(error) = self.check_unseals() {
             return Err(error);
-        }
-        if matches!(self.category, Category::Exit) != self.extraction.is_some() {
-            return Err(RoomError::ExtractionMismatch);
-        }
-        if let Some((x, y)) = self.extraction
-            && !self.floor_at(x, y)
-        {
-            return Err(RoomError::ExtractionOffFloor);
         }
         self.check_connected()
     }
@@ -828,8 +814,6 @@ pub enum DerelictError {
     NoRooms,
     TooManyRooms,
     StartOffFloor,
-    /// There must be somewhere to win: at least one [`Category::Exit`] room.
-    NoExitRoom,
     BadExitRef {
         connection: usize,
     },
@@ -865,7 +849,6 @@ impl DerelictError {
             Self::NoRooms => "derelict has no rooms",
             Self::TooManyRooms => "derelict exceeds MAX_ROOMS",
             Self::StartOffFloor => "start cell is not floor in the start room",
-            Self::NoExitRoom => "derelict has no exit room",
             Self::BadExitRef { .. } => "connection names a missing room or exit",
             Self::MismatchedExits { .. } => {
                 "linked exits must face each other, equally wide, on the same cells"
@@ -916,10 +899,8 @@ impl Derelict {
             }
             c = c.saturating_add(1);
         }
-        let mut has_exit_room = false;
         let mut r = 0;
         while let Some(placed) = nth(self.rooms, r) {
-            has_exit_room |= matches!(placed.room.category, Category::Exit);
             let mut e = 0;
             while e < placed.room.exits.len() {
                 if self.links_of(ExitRef { room: r, exit: e }) != 1 {
@@ -928,9 +909,6 @@ impl Derelict {
                 e = e.saturating_add(1);
             }
             r = r.saturating_add(1);
-        }
-        if !has_exit_room {
-            return Err(DerelictError::NoExitRoom);
         }
         if let Err(error) = self.check_overlaps() {
             return Err(error);

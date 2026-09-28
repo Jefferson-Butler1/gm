@@ -24,17 +24,19 @@ use std::hash::{Hash, Hasher};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HatchId(pub u16);
 
-/// A hatch's live state. Later steps add a shoot-open access panel and an airlock that
-/// the bridge unlocks.
+/// A hatch's live state. A later step adds a shoot-open access panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HatchState {
     /// Shut: stops bullets and sight. A player stepping into it opens it, revealing the
-    /// room behind.
+    /// room behind; stepping into an airlock's outer hatch wins instead.
     Closed,
     /// Open for good: players, bullets and sight pass.
     Open,
     /// Combat lockdown: stops everything until the room is cleared.
     Sealed,
+    /// An airlock's outer hatch, before the bridge is clear: stops everything. Clearing
+    /// the bridge turns every one Closed.
+    AirlockLocked,
 }
 
 /// What occupies a floor cell.
@@ -52,8 +54,12 @@ pub enum Spot {
 /// Where a hatch is: the rooms on either side and its gap, in floor cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hatch {
+    /// An airlock's outer hatch has the airlock on both sides: its far side is space.
     pub rooms: [RoomId; 2],
     pub gap: Exit,
+    /// An airlock's outer hatch: it starts [`HatchState::AirlockLocked`], and stepping
+    /// into it once the bridge unlocks it leaves the ship, winning the run.
+    pub airlock: bool,
 }
 
 /// The static floor: never changes during a run.
@@ -85,7 +91,6 @@ const CORRIDOR: PrototypeRoom = PrototypeRoom {
     base: &[],
     reinforcements: &[],
     events: &[],
-    extraction: None,
 };
 
 /// Salts the run seed for the floor's draws, so they aren't the run RNG's own stream.
@@ -100,7 +105,9 @@ impl Ship {
     ///    at the slot with its unused hatch points walled.
     /// 2. Each stretch of corridor becomes a region, walled by the hull and by any outside
     ///    cell touching it (a left-out slot, a room's void).
-    /// 3. A hatch joins each slot's open hatch points to the corridor outside.
+    /// 3. A hatch joins each slot's open hatch points to the corridor outside, and each
+    ///    airlock gets its outer hatch, onto space.
+    /// 4. The party boards through a random airlock.
     ///
     /// It can't fail: templates are validated against the pool when the crate builds, and
     /// a seed sweep in the tests checks every ship joins up.
@@ -108,10 +115,12 @@ impl Ship {
     pub fn generate(template: &Template, seed: u64) -> Self {
         let (width, height) = template.size();
         let mut spots = vec![Spot::Void; width.saturating_mul(height)];
-        let filled = fill(template, seed);
+        let mut rng = Rng::from_seed(seed ^ FLOOR_STREAM);
+        let filled = fill(template, &mut rng);
         for (id, &(slot, placed)) in (0..).map(RoomId).zip(&filled) {
             stamp(&mut spots, width, id, &placed);
-            for dir in DIRS.into_iter().filter(|dir| !slot.hatches.contains(dir)) {
+            let walled = |dir: &Dir| !slot.hatches.contains(dir) && slot.airlock != Some(*dir);
+            for dir in DIRS.into_iter().filter(walled) {
                 let gap = slot.size.hatch(dir).shifted(placed.at);
                 for i in 0..gap.width {
                     let wall = Spot::Room {
@@ -140,17 +149,35 @@ impl Ship {
                 hatches.push(Hatch {
                     rooms: [id, corridor],
                     gap,
+                    airlock: false,
+                });
+            }
+            if let Some(dir) = slot.airlock {
+                let gap = slot.size.hatch(dir).shifted(placed.at);
+                let hatch = HatchId(u16::try_from(hatches.len()).unwrap_or(u16::MAX));
+                for i in 0..gap.width {
+                    set(&mut spots, width, gap.cell(i), Spot::Hatch(hatch));
+                }
+                hatches.push(Hatch {
+                    rooms: [id, id],
+                    gap,
+                    airlock: true,
                 });
             }
         }
 
-        // The start slot is never left out. The party starts at its room's center, where
-        // the room's hatch points line up.
-        let start = (0..)
+        // Airlock slots are never left out. The party starts at a random one's center,
+        // where the room's hatch points line up.
+        let airlocks: Vec<_> = (0..)
             .map(RoomId)
             .zip(&filled)
-            .find(|(_, (slot, _))| slot.letter == template.start)
-            .map(|(id, &(slot, placed))| {
+            .filter(|(_, (slot, _))| slot.airlock.is_some())
+            .collect();
+        let pick = rng.below(u32::try_from(airlocks.len()).unwrap_or(u32::MAX));
+        let start = usize::try_from(pick)
+            .ok()
+            .and_then(|i| airlocks.get(i))
+            .map(|&(id, &(slot, placed))| {
                 let (w, h) = slot.size.dims();
                 let mid = |at: usize, side: usize| {
                     cell_start(i32::try_from(at.saturating_add(side / 2)).unwrap_or(0))
@@ -191,6 +218,7 @@ impl Ship {
             hatches.push(Hatch {
                 rooms: [room(link.from.room), room(link.to.room)],
                 gap,
+                airlock: false,
             });
         }
         let start_room = RoomId(u16::try_from(derelict.start_room).unwrap_or(0));
@@ -319,19 +347,6 @@ impl Ship {
             Spot::Void | Spot::Room { .. } => None,
         })
     }
-
-    /// Whether a box of half-size `half` at `p` overlaps `room`'s extraction pad.
-    #[must_use]
-    pub fn on_extraction(&self, room: RoomId, p: FxVec2, half: Fx) -> bool {
-        let Some(pad) = self.room(room).and_then(|r| {
-            let (x, y) = r.room.extraction?;
-            let cell = |c: usize, at: usize| i32::try_from(c.saturating_add(at)).ok();
-            Some((cell(x, r.at.0)?, cell(y, r.at.1)?))
-        }) else {
-            return false;
-        };
-        cells_under(p, half).any(|c| c == pad)
-    }
 }
 
 /// The ship is static, so it hashes (for state checksums) as its build-time checksum.
@@ -393,8 +408,7 @@ fn set(spots: &mut [Spot], width: usize, at: (usize, usize), spot: Spot) {
 const DIRS: [Dir; 4] = [Dir::North, Dir::East, Dir::South, Dir::West];
 
 /// Step 1 of [`Ship::generate`]: each filled slot and its room, placed at the slot.
-fn fill(template: &Template, seed: u64) -> Vec<(Slot, Placed)> {
-    let mut rng = Rng::from_seed(seed ^ FLOOR_STREAM);
+fn fill(template: &Template, rng: &mut Rng) -> Vec<(Slot, Placed)> {
     let mut used = vec![false; POOL.len()];
     let mut filled = Vec::new();
     for &slot in template.slots {
@@ -551,8 +565,14 @@ impl<'a> Tiles<'a> {
                 match (state.unwrap_or(HatchState::Sealed), body) {
                     (HatchState::Closed | HatchState::Open, Body::Player)
                     | (HatchState::Open, Body::Shot) => false,
-                    (HatchState::Closed | HatchState::Open | HatchState::Sealed, Body::Walker)
-                    | (HatchState::Sealed, Body::Player | Body::Shot)
+                    (
+                        HatchState::Closed
+                        | HatchState::Open
+                        | HatchState::Sealed
+                        | HatchState::AirlockLocked,
+                        Body::Walker,
+                    )
+                    | (HatchState::Sealed | HatchState::AirlockLocked, Body::Player | Body::Shot)
                     | (HatchState::Closed, Body::Shot) => true,
                 }
             }

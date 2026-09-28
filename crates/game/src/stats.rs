@@ -27,7 +27,8 @@ impl Stats {
 
     /// Reads slot 0's HP and gun, the run state, and the room and wave from `state`: the
     /// fight's room, else the one slot 0 stands in (the last one while it crosses a
-    /// hatch). Publishes immediately (bumps `seq`) when anything changed.
+    /// hatch); and the hint, once the airlocks unlock. Publishes immediately (bumps `seq`)
+    /// when anything changed.
     pub fn set_status(&mut self, state: &SimState) {
         let id = match state.run {
             Run::Encounter { room, .. } => Some(room),
@@ -50,6 +51,11 @@ impl Stats {
         } else {
             0
         };
+        let hint = if state.airlocks_unlocked() {
+            "Bridge clear: escape through any airlock"
+        } else {
+            ""
+        };
         let gun = state.players[0].map(|p| p.gun);
         let charges = gun.map_or(0, |g| g.charges);
         let max_charges = state.config.tuning.charges;
@@ -62,12 +68,14 @@ impl Stats {
             || h.vent_progress.to_bits() != vent_progress.to_bits();
         if (h.hp, h.max_hp, h.run, h.wave, h.waves) != (hp, MAX_HP, run, wave, waves)
             || h.room != name
+            || h.hint != hint
             || gun_changed
         {
             (h.hp, h.max_hp, h.run, h.wave, h.waves) = (hp, MAX_HP, run, wave, waves);
             (h.charges, h.max_charges, h.venting, h.vent_progress) =
                 (charges, max_charges, venting, vent_progress);
             h.room = name;
+            hint.clone_into(&mut h.hint);
             h.seq = h.seq.wrapping_add(1);
         }
     }

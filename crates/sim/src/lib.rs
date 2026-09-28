@@ -31,8 +31,9 @@ pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    Arrival, Awareness, BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS,
-    ENEMY_RADIUS, Enemy, EnemyId, Patrol, Pattern, RUSHER_HP, SHOOTER_HP, SPREAD_SHOOTER_HP, chase,
+    Arrival, Awareness, BULLET_RADIUS, Behavior, Bullet, CAPTAIN_HP, DEATH_TICKS,
+    ENEMY_BULLET_RADIUS, ENEMY_RADIUS, Enemy, EnemyId, Patrol, Pattern, RUSHER_HP, SHOOTER_HP,
+    SPREAD_SHOOTER_HP, chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use gun::PhasePistol;
@@ -84,7 +85,7 @@ pub enum Run {
     Dead {
         ticks_until_restart: u32,
     },
-    /// Extracted: the world stays frozen as it was.
+    /// Escaped through an airlock: the world stays frozen as it was.
     Won,
 }
 
@@ -121,7 +122,7 @@ pub struct SimState {
 
 impl SimState {
     /// A fresh single-player run: a Corvette generated from `seed`, the party standing in
-    /// its start room with every hatch closed. `config` is clamped to what the sim handles (see [`RunConfig::sanitized`]).
+    /// its start airlock with every hatch closed, and every airlock's outer hatch locked. `config` is clamped to what the sim handles (see [`RunConfig::sanitized`]).
     #[must_use]
     pub fn new(seed: u64, config: RunConfig) -> Self {
         let config = config.sanitized();
@@ -137,7 +138,17 @@ impl SimState {
             seed,
             rng: Rng::from_seed(seed),
             run: Run::Boarding,
-            hatches: vec![HatchState::Closed; ship.hatches().len()],
+            hatches: ship
+                .hatches()
+                .iter()
+                .map(|h| {
+                    if h.airlock {
+                        HatchState::AirlockLocked
+                    } else {
+                        HatchState::Closed
+                    }
+                })
+                .collect(),
             ship: Arc::new(ship),
             players: [Some(player), None, None, None],
             enemies: Arena::default(),
@@ -188,12 +199,12 @@ impl SimState {
         self.cleared & bit(room) != 0
     }
 
-    /// Whether `room` has nothing left to fight: every wave cleared, or none to begin
-    /// with. Its extraction pad, if any, wins only then; presentation lights it from this
-    /// too.
+    /// Whether the bridge is clear, so the airlocks are unlocked: stepping into any
+    /// airlock's outer hatch wins.
     #[must_use]
-    pub fn extraction_live(&self, room: RoomId) -> bool {
-        self.cleared(room) || self.ship.room(room).is_some_and(|r| !r.room.has_enemies())
+    pub fn airlocks_unlocked(&self) -> bool {
+        (self.ship.hatches().iter().zip(&self.hatches))
+            .any(|(h, s)| h.airlock && *s == HatchState::Closed)
     }
 
     /// Endianness-pinned hash of the whole state, comparable across machines.
@@ -260,7 +271,7 @@ pub enum Event {
     RoomCleared {
         room: RoomId,
     },
-    /// A player reached the extraction pad: the run is won.
+    /// A player stepped out through an unlocked airlock: the run is won.
     Won,
 }
 

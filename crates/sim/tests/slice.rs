@@ -1,80 +1,131 @@
-//! The whole slice: extraction -> `Run::Won`, restart from Won, and a scripted player that
-//! walks whole generated ships, fighting through every room to the win.
+//! The whole slice: the bridge's captain, the airlocks it unlocks -> `Run::Won`, restart
+//! from Won, and a scripted player that walks whole generated ships, fighting through every
+//! room to the bridge and out an airlock.
 
 use sim::room::{CELL, Category, Cell, cell_center, cell_of};
 use sim::ship::{Body, Tiles};
 use sim::{
-    Buttons, Difficulty, Event, FxVec2, MAX_HP, MOVE_BUCKETS, PlayerInput, Rng, RoomId, Run,
-    RunConfig, Ship, SimState, TickInputs, step, trig,
+    Arrival, Buttons, Difficulty, Event, FxVec2, HatchState, MAX_HP, MOVE_BUCKETS, Pattern,
+    PlayerInput, Rng, RoomId, Run, RunConfig, Ship, SimState, TickInputs, step, trig,
 };
 use std::collections::VecDeque;
 
 const SEED: u64 = 11;
 
-/// The Corvette's exit room: the bridge.
-fn exit_room(ship: &Ship) -> RoomId {
+/// The Corvette's boss room: the bridge.
+fn bridge(ship: &Ship) -> RoomId {
     let index = ship
         .rooms()
         .iter()
-        .position(|r| r.room.category == Category::Exit)
+        .position(|r| r.room.category == Category::Boss)
         .unwrap_or_default();
     RoomId(u16::try_from(index).unwrap_or_default())
 }
 
-/// The exit room's extraction pad, in floor cells.
-fn pad(ship: &Ship) -> (usize, usize) {
-    let placed = ship.room(exit_room(ship));
-    let (x, y) = placed.and_then(|p| p.room.extraction).unwrap_or_default();
-    let (ox, oy) = placed.map(|p| p.at).unwrap_or_default();
-    (x.saturating_add(ox), y.saturating_add(oy))
+/// The cells of the airlocks' outer hatches, and their live states.
+fn outer_hatches(state: &SimState) -> Vec<((usize, usize), HatchState)> {
+    (state.ship.hatches().iter().zip(&state.hatches))
+        .filter(|(h, _)| h.airlock)
+        .map(|(h, &live)| (h.gap.cell(0), live))
+        .collect()
 }
 
-/// A fresh run, slot 0 standing on the exit room's extraction pad.
-fn on_the_pad(run: Run) -> SimState {
+/// A fresh run, slot 0 standing in the boarding airlock's outer hatch.
+fn in_an_outer_hatch() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
-    state.run = run;
-    let (x, y) = pad(&state.ship);
+    let (start, _) = state.ship.start();
+    let hatch = (state.ship.hatches().iter())
+        .find(|h| h.airlock && h.rooms[0] == start)
+        .map(|h| h.gap.cell(0))
+        .unwrap_or_default();
     if let Some(player) = &mut state.players[0] {
-        player.pos = cell_center(x, y);
+        player.pos = cell_center(hatch.0, hatch.1);
     }
     state
 }
 
 #[test]
-fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
-    let room = exit_room(&SimState::new(SEED, RunConfig::default()).ship);
-    // Mid-fight (a wave still telegraphing in), the pad does nothing.
-    let mut fighting = on_the_pad(Run::Encounter { room, wave: 1 });
-    fighting
-        .enemies
-        .insert(sim::Enemy::rusher(cell_center(2, 2)));
-    let events = step(&mut fighting, &TickInputs::default()).events;
-    assert!(!events.contains(&Event::Won), "{events:?}");
-    assert!(matches!(fighting.run, Run::Encounter { .. }));
+fn every_airlock_starts_locked_and_the_bridges_last_wave_unlocks_them_all() {
+    let state = SimState::new(SEED, RunConfig::default());
+    let hatches = outer_hatches(&state);
+    assert_eq!(hatches.len(), 3);
+    assert!(hatches.iter().all(|&(_, s)| s == HatchState::AirlockLocked));
+    assert!(!state.airlocks_unlocked());
 
-    let mut clear = on_the_pad(Run::Boarding);
-    clear.cleared = 1 << room.0;
-    let events = step(&mut clear, &TickInputs::default()).events;
+    // Another room's last wave dying unlocks nothing.
+    let mut other = state.clone();
+    let midship = RoomId(4);
+    assert_eq!(
+        other.ship.room(midship).map(|r| r.room.category),
+        Some(Category::Normal)
+    );
+    other.run = Run::Encounter {
+        room: midship,
+        wave: 1,
+    };
+    let events = step(&mut other, &TickInputs::default()).events;
+    assert!(
+        events.contains(&Event::RoomCleared { room: midship }),
+        "{events:?}"
+    );
+    assert!(!other.airlocks_unlocked());
+
+    let mut cleared = state;
+    let room = bridge(&cleared.ship);
+    let waves = cleared
+        .ship
+        .room(room)
+        .map_or(0, |r| r.room.reinforcements.len());
+    cleared.run = Run::Encounter {
+        room,
+        wave: u8::try_from(waves).unwrap(),
+    };
+    let events = step(&mut cleared, &TickInputs::default()).events;
+    assert!(events.contains(&Event::RoomCleared { room }), "{events:?}");
+    assert!(
+        outer_hatches(&cleared)
+            .iter()
+            .all(|&(_, s)| s == HatchState::Closed)
+    );
+    assert!(cleared.airlocks_unlocked());
+}
+
+#[test]
+fn stepping_into_an_airlocks_outer_hatch_wins_only_once_it_is_unlocked() {
+    let mut locked = in_an_outer_hatch();
+    for _ in 0..30 {
+        let events = step(&mut locked, &TickInputs::default()).events;
+        assert!(!events.contains(&Event::Won), "{events:?}");
+    }
+    assert_eq!(locked.run, Run::Boarding);
+
+    let mut unlocked = in_an_outer_hatch();
+    for s in &mut unlocked.hatches {
+        if *s == HatchState::AirlockLocked {
+            *s = HatchState::Closed;
+        }
+    }
+    let events = step(&mut unlocked, &TickInputs::default()).events;
     assert_eq!(events, [Event::Won]);
-    assert_eq!(clear.run, Run::Won);
+    assert_eq!(unlocked.run, Run::Won);
 
     // The world freezes until restart.
-    let frozen = clear.clone();
+    let frozen = unlocked.clone();
     let mut walk = TickInputs::default();
     walk.players[0].move_mag = u8::MAX;
-    assert!(step(&mut clear, &walk).events.is_empty());
-    assert_eq!(clear.players, frozen.players);
+    assert!(step(&mut unlocked, &walk).events.is_empty());
+    assert_eq!(unlocked.players, frozen.players);
 }
 
 /// Walks the party east from the passage fore of the hold (every other room cleared)
-/// through its hatch into the exit room's encounter.
-fn enter_the_exit_room() -> SimState {
+/// through its hatch into the bridge's encounter.
+fn enter_the_bridge() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
-    state.cleared = !(1 << exit_room(&state.ship).0);
+    state.cleared = !(1 << bridge(&state.ship).0);
     if let Some(player) = &mut state.players[0] {
-        // In the passage's floor cells (56..=59, 19..=20), centered on its rows.
+        // In the passage's floor cells (70..=73, 19..=20), centered on its rows.
         player.pos = FxVec2 {
-            x: cell_center(57, 19).x,
+            x: cell_center(71, 19).x,
             y: CELL.saturating_mul_int(20),
         };
         player.solid = player.pos;
@@ -88,40 +139,51 @@ fn enter_the_exit_room() -> SimState {
 }
 
 #[test]
-fn the_pad_stays_dead_while_the_exit_rooms_last_wave_lives() {
-    let mut state = enter_the_exit_room();
-    let room = exit_room(&state.ship);
+fn the_captain_warps_in_last_with_the_boss_telegraph_and_the_airlocks_open_when_it_dies() {
+    let mut state = enter_the_bridge();
+    let room = bridge(&state.ship);
     assert!(matches!(state.run, Run::Encounter { room: r, wave: 0, .. } if r == room));
-    // The base wave dies: the last wave spawns.
-    state.enemies.retain(|_, _| false);
-    let events = step(&mut state, &TickInputs::default()).events;
-    assert!(
-        events.contains(&Event::WaveStarted { wave: 1 }),
-        "{events:?}"
-    );
+    // The first two waves die: the captain's wave spawns.
+    for wave in [1, 2] {
+        state.enemies.retain(|_, _| false);
+        let events = step(&mut state, &TickInputs::default()).events;
+        assert!(events.contains(&Event::WaveStarted { wave }), "{events:?}");
+    }
+    let captain = |state: &SimState| {
+        state.enemies.iter().map(|(_, e)| *e).find(|e| {
+            matches!(
+                e.behavior,
+                sim::Behavior::Shooter {
+                    pattern: Pattern::Captain,
+                    ..
+                }
+            )
+        })
+    };
+    let boss = captain(&state).unwrap();
+    assert_eq!((boss.arrival, boss.hp), (Arrival::Boss, sim::CAPTAIN_HP));
+    assert!(boss.hunting(), "arrives knowing where the party is");
+    assert_eq!(boss.spawn_ticks, Arrival::Boss.telegraph_ticks());
 
-    // Stand on the pad through the whole telegraph and beyond, unhurt.
-    let (x, y) = pad(&state.ship);
+    // Its wave lives: the airlocks stay locked.
     for _ in 0..120 {
         if let Some(player) = &mut state.players[0] {
-            player.pos = cell_center(x, y);
             player.hp = MAX_HP;
         }
-        let events = step(&mut state, &TickInputs::default()).events;
-        assert!(!state.enemies.is_empty());
-        assert!(!events.contains(&Event::Won), "{events:?}");
-        assert!(
-            matches!(state.run, Run::Encounter { wave: 1, .. }),
-            "{:?}",
-            state.run
-        );
-        assert!(!state.extraction_live(room));
+        step(&mut state, &TickInputs::default());
+        assert!(!state.airlocks_unlocked());
     }
+    assert!(captain(&state).is_some());
+    state.enemies.retain(|_, _| false);
+    let events = step(&mut state, &TickInputs::default()).events;
+    assert!(events.contains(&Event::RoomCleared { room }), "{events:?}");
+    assert!(state.airlocks_unlocked());
 }
 
 #[test]
 fn restart_from_won_starts_a_fresh_run() {
-    let mut state = on_the_pad(Run::Won);
+    let mut state = in_an_outer_hatch();
+    state.run = Run::Won;
     state.cleared = 0b11110;
     let mut restart = TickInputs::default();
     restart.players[0].buttons = Buttons::RESTART;
@@ -261,13 +323,13 @@ fn waypoint(pos: FxVec2, here: (i32, i32), next: (i32, i32)) -> Option<FxVec2> {
 }
 
 /// Where the scripted player heads between fights: into the first uncleared room with
-/// enemies (its first placement), the exit room last, then to the extraction pad.
-fn next_goal(state: &SimState) -> Option<(i32, i32)> {
+/// enemies (its first placement), the bridge last, then out the nearest airlock.
+fn next_goal(state: &SimState, here: (i32, i32)) -> Option<(i32, i32)> {
     let next = (0..)
         .map(RoomId)
         .zip(state.ship.rooms())
         .filter(|&(id, r)| r.room.has_enemies() && !state.cleared(id))
-        .min_by_key(|(_, r)| r.room.category == Category::Exit)
+        .min_by_key(|(_, r)| r.room.category == Category::Boss)
         .and_then(|(_, r)| {
             let first = r.room.base.first()?;
             Some((
@@ -275,8 +337,16 @@ fn next_goal(state: &SimState) -> Option<(i32, i32)> {
                 first.y.saturating_add(r.at.1),
             ))
         });
-    let (x, y) = next.unwrap_or_else(|| pad(&state.ship));
-    Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?))
+    let cell = |(x, y): (usize, usize)| Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?));
+    next.map_or_else(
+        || {
+            outer_hatches(state)
+                .into_iter()
+                .filter_map(|(at, _)| cell(at))
+                .min_by_key(|&at| cells_apart(at, here))
+        },
+        cell,
+    )
 }
 
 /// One tick of the scripted player: in a fight, walk toward the nearest active enemy
@@ -299,7 +369,7 @@ fn scripted_input(state: &SimState) -> Option<PlayerInput> {
                 .filter(|&e| cells_apart(cell(e), here) > 3 || !clear_shot(tiles, player.pos, e))
                 .map(cell)
         }
-        Run::Boarding => next_goal(state),
+        Run::Boarding => next_goal(state, here),
         Run::Dead { .. } | Run::Won => return None,
     };
     let mut input = goal
@@ -319,10 +389,10 @@ fn scripted_input(state: &SimState) -> Option<PlayerInput> {
 /// Plays whole Corvettes on Normal with the scripted player and a test-only cheat: slot 0
 /// is topped back up to full HP every tick, so the run can't die. It fights through the
 /// phase pistol's vents and vents manually between rooms. The seeds' ships hold every
-/// room in the pool between them.
+/// room in the pool between them, and board through different airlocks.
 #[test]
-fn a_scripted_player_clears_every_room_and_extracts() {
-    for seed in [1, 5] {
+fn a_scripted_player_clears_every_room_kills_the_captain_and_escapes() {
+    for seed in [1, 3] {
         let mut state = SimState::new(seed, RunConfig::default());
         assert_eq!(state.config.difficulty, Difficulty::Normal);
         let mut events = Vec::new();
@@ -387,7 +457,7 @@ fn a_scripted_player_clears_every_room_and_extracts() {
         let mut sorted = cleared.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, fights, "every fight, once");
-        assert_eq!(cleared.last(), Some(&exit_room(ship)), "the bridge last");
+        assert_eq!(cleared.last(), Some(&bridge(ship)), "the bridge last");
         let placed: usize = ship
             .rooms()
             .iter()
@@ -397,8 +467,6 @@ fn a_scripted_player_clears_every_room_and_extracts() {
             })
             .map(<[_]>::len)
             .sum();
-        // Every room and corridor was revealed on the way.
-        assert!((0..ship.rooms().len()).all(|i| state.visited(RoomId(u16::try_from(i).unwrap()))));
         assert_eq!(kills, placed, "every placed enemy died");
         assert_eq!(events.last(), Some(&Event::Won));
     }

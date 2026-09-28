@@ -10,7 +10,7 @@
 //! | engine room   | M    | Engineering | shooter-heavy, pillars to hide behind            |
 //! | cargo hold    | L    | Cargo       | rushers with a shooter; a pillar and a pit strip |
 //! | shuttle bay   | L    | Cargo       | a pit trench the shooters fire across            |
-//! | bridge        | L    | Bridge      | a thick mix, then a spread shooter; the pad wins |
+//! | bridge        | L    | Bridge      | two thick waves, then the captain; the boss room |
 //!
 //! Spread shooters are the pattern experiment (issue #15); with it off they're shooters.
 //!
@@ -52,6 +52,15 @@ const fn spread_shooter(x: usize, y: usize) -> Placement {
     }
 }
 
+/// The bridge captain, a placeholder elite: it always arrives with the boss telegraph.
+const fn captain(x: usize, y: usize) -> Placement {
+    Placement {
+        kind: EnemyKind::Captain,
+        x,
+        y,
+    }
+}
+
 /// The next wave once the current one is dead.
 const fn then(placements: &'static [Placement]) -> Reinforcement {
     Reinforcement {
@@ -81,7 +90,6 @@ const AIRLOCK: PrototypeRoom = PrototypeRoom {
     base: &[],
     reinforcements: &[],
     events: &[],
-    extraction: None,
 }
 .valid();
 
@@ -106,7 +114,6 @@ const GALLEY: PrototypeRoom = PrototypeRoom {
     base: &[rusher(2, 1), rusher(9, 8), shooter(9, 1)],
     reinforcements: &[],
     events: LOCKDOWN,
-    extraction: None,
 }
 .valid();
 
@@ -131,7 +138,6 @@ const CREW_QUARTERS: PrototypeRoom = PrototypeRoom {
     base: &[shooter(10, 1), rusher(1, 8), rusher(10, 8)],
     reinforcements: &[],
     events: LOCKDOWN,
-    extraction: None,
 }
 .valid();
 
@@ -164,7 +170,6 @@ const ENGINE_ROOM: PrototypeRoom = PrototypeRoom {
         rusher(16, 5),
     ])],
     events: LOCKDOWN,
-    extraction: None,
 }
 .valid();
 
@@ -198,7 +203,6 @@ const CARGO_HOLD: PrototypeRoom = PrototypeRoom {
         shooter(14, 1),
     ])],
     events: LOCKDOWN,
-    extraction: None,
 }
 .valid();
 
@@ -240,16 +244,14 @@ const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
         rusher(12, 7),
     ])],
     events: LOCKDOWN,
-    extraction: None,
 }
 .valid();
 
-/// The ship's goal: four pillars, a thicker mix, and a second wave that brings a spread
-/// shooter. Once it's clear, the extraction pad at the bow end wins the run (a stand-in
-/// until the bridge's captain and the airlocks arrive).
+/// The ship's goal: four pillars, a thicker mix, then the captain (a placeholder elite)
+/// warps in with two rushers. Clearing it unlocks the airlocks.
 const BRIDGE: PrototypeRoom = PrototypeRoom {
     name: "bridge",
-    category: Category::Exit,
+    category: Category::Boss,
     theme: Theme::Bridge,
     cells: &[
         "###########..###########",
@@ -269,15 +271,17 @@ const BRIDGE: PrototypeRoom = PrototypeRoom {
     ],
     exits: Size::L.hatches(),
     base: &[rusher(3, 1), rusher(20, 1), shooter(11, 2), shooter(20, 11)],
-    reinforcements: &[then(&[
-        rusher(3, 6),
-        rusher(20, 7),
-        rusher(11, 1),
-        shooter(3, 1),
-        spread_shooter(20, 2),
-    ])],
+    reinforcements: &[
+        then(&[
+            rusher(3, 6),
+            rusher(20, 7),
+            rusher(11, 1),
+            shooter(3, 1),
+            spread_shooter(20, 2),
+        ]),
+        then(&[captain(20, 6), rusher(18, 2), rusher(18, 11)]),
+    ],
     events: LOCKDOWN,
-    extraction: Some((21, 6)),
 }
 .valid();
 

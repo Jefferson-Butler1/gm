@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::de::value::{Error, SeqDeserializer};
 use sim::hull::{Slot, Template, TemplateError, Zone};
 use sim::room::{Category, Cell, Dir, MAX_ROOMS, Size, cell_of};
-use sim::ship::Spot;
+use sim::ship::{Hatch, Spot};
 use sim::{CORVETTE, POOL, RoomId, Ship};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -47,38 +47,63 @@ fn draw(ship: &Ship) -> String {
     text
 }
 
-/// Everything wrong with `ship`, checked on its grid alone: it is walled in, every room
-/// is walkable to from the start (hatches passable, pits too, as rolls cross them), the
-/// party starts on floor in an entrance, and an exit room has a pad.
+/// The airlocks' outer hatches.
+fn outer_hatches(ship: &Ship) -> impl Iterator<Item = &Hatch> {
+    ship.hatches().iter().filter(|h| h.airlock)
+}
+
+/// Everything wrong with `ship`, checked on its grid alone: it is walled in but for the
+/// airlocks' outer hatches, every room is walkable to from the start (hatches passable,
+/// pits too, as rolls cross them), the party starts on floor in an airlock, and there's a
+/// bridge (the boss room).
 fn problems(ship: &Ship) -> Vec<String> {
     let mut problems = Vec::new();
     let open = |(x, y)| !matches!(ship.cell(x, y), Cell::Wall | Cell::Void);
+    let outer = |(x, y)| match ship.spot(x, y) {
+        Spot::Hatch(id) => ship
+            .hatches()
+            .get(usize::from(id.0))
+            .is_some_and(|h| h.airlock),
+        Spot::Void | Spot::Room { .. } => false,
+    };
     if ship.rooms().len() > MAX_ROOMS {
         problems.push(format!("{} rooms", ship.rooms().len()));
     }
     for at in cells(ship) {
-        if open(at)
-            && sides(at)
-                .iter()
-                .any(|&(x, y)| ship.spot(x, y) == Spot::Void)
-        {
-            problems.push(format!("{at:?} is open to outside the ship"));
+        let to_space = sides(at)
+            .iter()
+            .filter(|&&(x, y)| ship.spot(x, y) == Spot::Void)
+            .count();
+        // An outer hatch opens onto space on exactly one side: its outward one.
+        let expected = usize::from(outer(at));
+        if open(at) && to_space != expected {
+            problems.push(format!(
+                "{at:?} is open to outside the ship {to_space} ways"
+            ));
         }
     }
     let (start_room, start) = ship.start();
     let at = (cell_of(start.x), cell_of(start.y));
+    let airlock_rooms: BTreeSet<RoomId> = outer_hatches(ship).map(|h| h.rooms[0]).collect();
     if ship.room(start_room).map(|r| r.room.category) != Some(Category::Entrance)
+        || !airlock_rooms.contains(&start_room)
         || ship.room_at(start) != Some(start_room)
         || ship.cell(at.0, at.1) != Cell::Floor
     {
-        problems.push("the start is not on an entrance's floor".into());
+        problems.push("the start is not on an airlock's floor".into());
+    }
+    for hatch in outer_hatches(ship) {
+        let [a, b] = hatch.rooms;
+        if a != b || ship.room(a).map(|r| r.room.category) != Some(Category::Entrance) {
+            problems.push(format!("outer hatch {hatch:?} is not an airlock's"));
+        }
     }
     if !ship
         .rooms()
         .iter()
-        .any(|r| r.room.category == Category::Exit && r.room.extraction.is_some())
+        .any(|r| r.room.category == Category::Boss)
     {
-        problems.push("no exit room with a pad".into());
+        problems.push("no bridge".into());
     }
     let mut seen = BTreeSet::from([at]);
     let mut queue = VecDeque::from([at]);
@@ -107,7 +132,7 @@ fn problems(ship: &Ship) -> Vec<String> {
     }
     for (i, hatch) in ship.hatches().iter().enumerate() {
         let [a, b] = hatch.rooms;
-        if a == b || ship.room(a).is_none() || ship.room(b).is_none() {
+        if (a == b) != hatch.airlock || ship.room(a).is_none() || ship.room(b).is_none() {
             problems.push(format!("hatch {i} joins {a:?} to {b:?}"));
         }
     }
@@ -123,13 +148,15 @@ fn filling(ship: &Ship, slot: &Slot) -> Option<&'static str> {
         .map(|r| r.room.name)
 }
 
-/// 10,000 seeds: every ship is walled in and joins up, and the sweep sees every slot
-/// take every room that fits it, and every optional slot both filled and left out. A
+/// 10,000 seeds: every ship is walled in and joins up, with its 3 airlocks and its
+/// bridge reachable, and the sweep sees every slot take every room that fits it, every
+/// optional slot both filled and left out, and the party board through each airlock. A
 /// ship's checksum covers all its static data, so each distinct one is checked once.
 /// About 6 s in debug, under 1 s in release.
 #[test]
 fn every_seed_yields_a_fully_connected_corvette_and_every_fill_turns_up() {
     let mut seen: BTreeMap<u8, BTreeSet<Option<&str>>> = BTreeMap::new();
+    let mut boarded = BTreeSet::new();
     let mut layouts = BTreeSet::new();
     for seed in 0..10_000 {
         let ship = Ship::generate(&CORVETTE, seed);
@@ -142,6 +169,8 @@ fn every_seed_yields_a_fully_connected_corvette_and_every_fill_turns_up() {
             "seed {seed}: {problems:?}\n{}",
             draw(&ship)
         );
+        assert_eq!(outer_hatches(&ship).count(), 3, "seed {seed}");
+        boarded.insert(ship.room(ship.start().0).map(|r| r.at));
         for slot in CORVETTE.slots {
             seen.entry(slot.letter)
                 .or_default()
@@ -164,6 +193,11 @@ fn every_seed_yields_a_fully_connected_corvette_and_every_fill_turns_up() {
             char::from(slot.letter)
         );
     }
+    let airlocks: BTreeSet<_> = (CORVETTE.slots.iter())
+        .filter(|slot| slot.airlock.is_some())
+        .map(|slot| CORVETTE.origin(slot.letter))
+        .collect();
+    assert_eq!(boarded, airlocks, "boarded through every airlock");
     println!("{} different Corvettes", layouts.len());
 }
 
@@ -184,8 +218,8 @@ fn a_seed_always_generates_the_same_ship_and_a_peer_rebuilds_it_from_seed_and_ch
 
 // --- template validation ------------------------------------------------------------
 
-/// An airlock (`A`) and a bridge (`B`) joined by a walled corridor: about the smallest
-/// valid ship.
+/// An airlock (`A`, its outer hatch west) and a bridge (`B`) joined by a walled corridor:
+/// about the smallest valid ship.
 const TWO_ROOMS: [&str; 14] = [
     "              BBBBBBBBBBBBBBBBBBBBBBBB",
     "              BBBBBBBBBBBBBBBBBBBBBBBB",
@@ -209,6 +243,7 @@ const AIRLOCK: Slot = Slot {
     zone: Zone::Hull,
     optional: false,
     hatches: &[Dir::East],
+    airlock: Some(Dir::West),
 };
 
 const BRIDGE: Slot = Slot {
@@ -217,11 +252,12 @@ const BRIDGE: Slot = Slot {
     zone: Zone::Fore,
     optional: false,
     hatches: &[Dir::West],
+    airlock: None,
 };
 
 /// [`TWO_ROOMS`], with row `y` replaced if `edit` is `Some((y, row))`, and the airlock's
-/// legend.
-fn two_rooms(edit: Option<(usize, &'static str)>, airlock: Slot) -> Template {
+/// and bridge's legends.
+fn two_rooms(edit: Option<(usize, &'static str)>, airlock: Slot, bridge: Slot) -> Template {
     let mut rows = TWO_ROOMS;
     if let Some((y, row)) = edit
         && let Some(old) = rows.get_mut(y)
@@ -231,19 +267,18 @@ fn two_rooms(edit: Option<(usize, &'static str)>, airlock: Slot) -> Template {
     Template {
         name: "two rooms",
         rows: Box::leak(Box::new(rows)),
-        slots: Box::leak(Box::new([airlock, BRIDGE])),
-        start: b'A',
+        slots: Box::leak(Box::new([airlock, bridge])),
     }
 }
 
 #[test]
 fn templates_are_rejected_when_slots_hatches_or_walls_are_malformed() {
-    let valid = two_rooms(None, AIRLOCK);
+    let valid = two_rooms(None, AIRLOCK, BRIDGE);
     assert_eq!(valid.validate(), Ok(()));
     let ship = Ship::generate(&valid, 0);
     assert!(problems(&ship).is_empty(), "{}", draw(&ship));
 
-    let with = |airlock| two_rooms(None, airlock).validate();
+    let with = |airlock| two_rooms(None, airlock, BRIDGE).validate();
     let shape = with(Slot {
         size: Size::M,
         ..AIRLOCK
@@ -267,18 +302,54 @@ fn templates_are_rejected_when_slots_hatches_or_walls_are_malformed() {
         ..AIRLOCK
     });
     assert_eq!(no_room, Err(TemplateError::EmptySlot { slot: 0 }));
-    let optional_start = with(Slot {
+    let optional_airlock = with(Slot {
         optional: true,
         ..AIRLOCK
     });
-    assert_eq!(optional_start, Err(TemplateError::BadStart));
+    assert_eq!(optional_airlock, Err(TemplateError::BadAirlock { slot: 0 }));
+    let outer_on_corridor = with(Slot {
+        airlock: Some(Dir::East),
+        ..AIRLOCK
+    });
+    assert_eq!(
+        outer_on_corridor,
+        Err(TemplateError::BadHatches { slot: 0 })
+    );
+    let no_airlock = with(Slot {
+        airlock: None,
+        ..AIRLOCK
+    });
+    assert_eq!(no_airlock, Err(TemplateError::NoAirlock));
+    let north = Slot {
+        airlock: Some(Dir::North),
+        ..AIRLOCK
+    };
+    assert_eq!(two_rooms(None, north, BRIDGE).validate(), Ok(()));
+    let hulled = two_rooms(
+        Some((1, "     ##       BBBBBBBBBBBBBBBBBBBBBBBB")),
+        north,
+        BRIDGE,
+    );
+    assert_eq!(
+        hulled.validate(),
+        Err(TemplateError::AirlockOffHull { slot: 0 }),
+        "hull beyond the outer hatch"
+    );
 
-    let open = two_rooms(Some((5, "AAAAAAAAAAAA  BBBBBBBBBBBBBBBBBBBBBBBB")), AIRLOCK);
+    let open = two_rooms(
+        Some((5, "AAAAAAAAAAAA  BBBBBBBBBBBBBBBBBBBBBBBB")),
+        AIRLOCK,
+        BRIDGE,
+    );
     assert_eq!(
         open.validate(),
         Err(TemplateError::OpenCorridor { x: 12, y: 6 })
     );
-    let stray = two_rooms(Some((0, "#             BBBBBBBBBBBBBBBBBBBBBBBB")), AIRLOCK);
+    let stray = two_rooms(
+        Some((0, "#             BBBBBBBBBBBBBBBBBBBBBBBB")),
+        AIRLOCK,
+        BRIDGE,
+    );
     assert_eq!(
         stray.validate(),
         Err(TemplateError::StrayHull { x: 0, y: 0 })
