@@ -65,6 +65,10 @@ enum RunSettingsStore {
 
 /// Difficulty picker and the debug Tuning sliders. Everything applies live, mid-run.
 struct RunSettingsSections: View {
+    /// The Tuning sliders are archived: the defaults feel right. Flip to bring them back
+    /// (saved values still apply while hidden).
+    static let showTuning = false
+
     @Bindable var model: GameModel
 
     var body: some View {
@@ -81,8 +85,12 @@ struct RunSettingsSections: View {
             Text("Enemy bullets and fire rate.")
         }
 
+        if Self.showTuning { tuning }
+    }
+
+    private var tuning: some View {
         let enemy = enemyDefaults(difficulty: model.runSettings.difficulty)
-        Section {
+        return Section {
             SliderRow(label: "Move speed", value: $model.runSettings.moveSpeed, range: 120...400, step: 5) {
                 "\(Int($0)) pt/s"
             }
