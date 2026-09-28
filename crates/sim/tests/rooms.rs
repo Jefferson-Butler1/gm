@@ -480,7 +480,7 @@ fn sealed_hatches_stop_players_and_bullets() {
 }
 
 #[test]
-fn waves_advance_on_clear_then_the_hatches_open_and_the_room_stays_cleared() {
+fn waves_advance_on_clear_then_the_hatches_unseal_and_the_room_stays_cleared() {
     let (mut state, _) = walk_into_the_hold();
 
     state.enemies.retain(|_, _| false);
@@ -506,10 +506,13 @@ fn waves_advance_on_clear_then_the_hatches_open_and_the_room_stays_cleared() {
     let events = run(&mut state, 1, &TickInputs::default());
     assert!(events.contains(&Event::RoomCleared { room: CARGO_HOLD }));
     assert_eq!(state.run, Run::Boarding);
-    for hatch in [INTO_HOLD, OUT_OF_HOLD] {
-        assert_eq!(state.hatches[usize::from(hatch.0)], HatchState::Open);
-    }
-    assert!(state.visited(ENGINE_ROOM), "opening reveals what's behind");
+    assert_eq!(state.hatches[usize::from(INTO_HOLD.0)], HatchState::Open);
+    assert_eq!(
+        state.hatches[usize::from(OUT_OF_HOLD.0)],
+        HatchState::Closed,
+        "an unexplored side stays shut"
+    );
+    assert!(!state.visited(ENGINE_ROOM), "still fogged until touched");
 
     // Open: walk back up into the airlock, then down into a quiet hold.
     run(&mut state, 40, &walk(NORTH));

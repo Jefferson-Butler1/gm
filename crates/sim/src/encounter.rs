@@ -99,7 +99,7 @@ fn react(state: &mut SimState, id: RoomId, room: &Placed, trigger: RoomTrigger) 
                         *s = HatchState::Sealed;
                     }
                 }
-                RoomAction::Unseal => open(state, hatch),
+                RoomAction::Unseal => unseal(state, hatch),
             }
         }
     }
@@ -112,6 +112,22 @@ fn open(state: &mut SimState, hatch: HatchId) {
     }
     if let Some(h) = state.ship.hatches().get(usize::from(hatch.0)) {
         state.visited |= h.rooms.iter().fold(0, |bits, &r| bits | bit(r));
+    }
+}
+
+/// Lifts `hatch`'s seal: Open if both sides are already revealed, else Closed, so the
+/// room behind stays fogged until a player touches the hatch (ETG).
+fn unseal(state: &mut SimState, hatch: HatchId) {
+    let Some(h) = state.ship.hatches().get(usize::from(hatch.0)) else {
+        return;
+    };
+    let revealed = h.rooms.iter().all(|&r| state.visited(r));
+    if let Some(s) = state.hatches.get_mut(usize::from(hatch.0)) {
+        *s = if revealed {
+            HatchState::Open
+        } else {
+            HatchState::Closed
+        };
     }
 }
 
