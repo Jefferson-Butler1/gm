@@ -98,10 +98,10 @@ const PATROL_LOOK_TICKS: u16 = 40;
 /// A patrol walk ends within this of its goal (or a step's length, if longer).
 const PATROL_ARRIVED: Fx = Fx::from_bits(2 << 32);
 
-/// Spawn telegraph: a new enemy spends 30 ticks = 0.5 s as a warning marker. Meanwhile
+/// Spawn telegraph: a new enemy spends 90 ticks = 1.5 s as a warning marker. Meanwhile
 /// it is inert: it doesn't move, hurt, push or get pushed, and it can't be targeted or
 /// hit (bullets pass through).
-pub const SPAWN_TELEGRAPH_TICKS: u8 = 30;
+pub const SPAWN_TELEGRAPH_TICKS: u8 = 90;
 
 /// Ticks from all players dying until restart is accepted: 0.75 s, so a panicked tap
 /// doesn't skip the death.
