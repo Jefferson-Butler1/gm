@@ -222,6 +222,15 @@ struct ContentView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
                         .background(.black.opacity(0.5))
+                    // What to do next, when there's something to say.
+                    if !hud.hint.isEmpty {
+                        Text(hud.hint)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.black.opacity(0.5))
+                    }
                 }
                 .allowsHitTesting(false)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

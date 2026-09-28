@@ -40,7 +40,6 @@ const ARENA: PrototypeRoom = PrototypeRoom {
     base: &[],
     reinforcements: &[],
     events: &[],
-    extraction: None,
 }
 .valid();
 
@@ -485,8 +484,8 @@ fn dodge_iframes_let_enemy_bullets_pass_through() {
 
 #[test]
 fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
-    // In the Corvette's bridge (room 3, from floor cell (60, 13)), its southwest pillar
-    // covers floor cells (66..=67, 21..=22), x 2112..2176; the player hides west of it at
+    // In the Corvette's bridge (room 5, from floor cell (74, 13)), its southwest pillar
+    // covers floor cells (80..=81, 21..=22), x 2560..2624; the player hides west of it at
     // its height. The bridge counts as cleared, so no fight starts.
     let row = |x: i32| FxVec2 {
         x: Fx::from_num(x),
@@ -494,18 +493,18 @@ fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
     };
     let behind_the_pillar = || {
         let mut state = SimState::new(SEED, RunConfig::default());
-        state.cleared = 1 << 3;
-        state.players[0].as_mut().unwrap().pos = row(2032);
+        state.cleared = 1 << 5;
+        state.players[0].as_mut().unwrap().pos = row(2480);
         state
     };
     let mut state = behind_the_pillar();
-    bullet_flying_left(&mut state, row(2252));
+    bullet_flying_left(&mut state, row(2700));
     let events = run(&mut state, 60, &TickInputs::default());
     assert!(events.is_empty(), "{events:?}");
     assert!(state.enemy_bullets.is_empty(), "the pillar ate it");
 
     let mut state = behind_the_pillar();
-    add_shooter(&mut state, row(2212), 1);
+    add_shooter(&mut state, row(2660), 1);
     run(&mut state, 1, &TickInputs::default());
     assert_eq!(
         first_enemy(&state).unwrap().aiming(AIM_TICKS),
@@ -678,14 +677,14 @@ fn spread_placements_follow_the_experiment_toggle() {
         let mut config = RunConfig::default();
         config.tuning.spread_shooter = on;
         let mut state = SimState::new(SEED, config);
-        // The bridge (the Corvette's fore slot, from floor cell (60, 13)) with its base
+        // The bridge (the Corvette's fore slot, from floor cell (74, 13)) with its base
         // wave dead: the next tick spawns its second wave, two shooters of which one is a
         // spread placement.
         state.run = Run::Encounter {
-            room: RoomId(3),
+            room: RoomId(5),
             wave: 0,
         };
-        state.players[0].as_mut().unwrap().pos = cell_center(60 + 7, 13 + 6);
+        state.players[0].as_mut().unwrap().pos = cell_center(74 + 7, 13 + 6);
         step(&mut state, &TickInputs::default());
         let patterns: Vec<Pattern> = state
             .enemies

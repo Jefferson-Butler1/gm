@@ -41,8 +41,12 @@ const CONTACT_COOLDOWN: u8 = 30;
 pub const SHOOTER_HP: u8 = 10;
 /// 3 hits: the spread shooter is the heavier threat (ETG's Shotgun Kin has 2x the HP).
 pub const SPREAD_SHOOTER_HP: u8 = 15;
+/// 12 hits at Normal damage: the bridge captain, a placeholder elite.
+pub const CAPTAIN_HP: u8 = 60;
 /// Angle between neighboring spread pellets: 12 degrees.
 const PELLET_SPACING: i16 = 2185;
+/// The captain's ring: this many slow pellets all round, an eighth turn apart.
+const RING_PELLETS: u8 = 8;
 /// Shooter walk speed: 2 pt/tick = 120 pt/s.
 const SHOOTER_SPEED: Fx = Fx::from_bits(2 << 32);
 /// Shooters back off inside this range of their target...
@@ -102,13 +106,16 @@ const PATROL_ARRIVED: Fx = Fx::from_bits(2 << 32);
 ///
 /// The telegraph is a warning marker during which the enemy is inert: it doesn't move,
 /// hurt, push or get pushed, and it can't be targeted or hit (bullets pass through).
-/// Minibosses and bosses get their own arrivals when they exist.
+/// Minibosses and bosses get their own arrivals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Arrival {
     /// Already in the room when the party walks in (the first wave): no telegraph.
     Prespawn,
     /// A later wave warping into a fight in progress: 60 ticks = 1 s of warning.
     Reinforcement,
+    /// The bridge captain, whatever its wave: 90 ticks = 1.5 s of warning, already
+    /// hunting when it lands.
+    Boss,
 }
 
 impl Arrival {
@@ -117,6 +124,7 @@ impl Arrival {
         match self {
             Self::Prespawn => 0,
             Self::Reinforcement => 60,
+            Self::Boss => 90,
         }
     }
 }
@@ -220,12 +228,15 @@ pub enum Pattern {
     /// The pattern experiment: a fan of slow pellets centered on the target (5, or 7 on
     /// Hard), every `RunConfig::spread_interval`.
     Spread,
+    /// The bridge captain's (a placeholder elite): the spread fan plus a ring of
+    /// [`RING_PELLETS`] slow pellets all round, every `RunConfig::shooter_interval`.
+    Captain,
 }
 
 impl Pattern {
     fn interval(self, config: &RunConfig) -> u16 {
         match self {
-            Self::Aimed => config.shooter_interval(),
+            Self::Aimed | Self::Captain => config.shooter_interval(),
             Self::Spread => config.spread_interval(),
         }
     }
@@ -280,6 +291,7 @@ impl Enemy {
             hp: match pattern {
                 Pattern::Aimed => SHOOTER_HP,
                 Pattern::Spread => SPREAD_SHOOTER_HP,
+                Pattern::Captain => CAPTAIN_HP,
             },
             arrival: Arrival::Reinforcement,
             spawn_ticks: Arrival::Reinforcement.telegraph_ticks(),
@@ -345,7 +357,7 @@ impl Enemy {
 
 /// One live tick, in order: players (move, fall, respawn, fire), their bullets, enemies
 /// (notice, move, fire, separate, contact, telegraph countdown), enemy bullets, the death
-/// check, then the room (waves, exits, extraction).
+/// check, then the room (waves, hatches, the airlocks).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
     // Hatches only change in `encounter::tick`, after everything that moves.
     let (ship, hatches) = (Arc::clone(&state.ship), state.hatches.clone());
@@ -897,16 +909,37 @@ fn fire(
     pattern: Pattern,
     config: &RunConfig,
 ) {
-    let (count, speed) = match pattern {
-        Pattern::Aimed => (1, config.enemy_bullet_speed()),
-        Pattern::Spread => (config.difficulty.spread_pellets(), config.pellet_speed()),
+    let pellets = (config.difficulty.spread_pellets(), PELLET_SPACING);
+    let (count, spacing) = match pattern {
+        Pattern::Aimed => (1, 0),
+        Pattern::Spread | Pattern::Captain => pellets,
     };
+    let speed = match pattern {
+        Pattern::Aimed => config.enemy_bullet_speed(),
+        Pattern::Spread | Pattern::Captain => config.pellet_speed(),
+    };
+    volley(bullets, from, angle, (count, spacing), speed);
+    if pattern == Pattern::Captain {
+        // Offset half a gap, so no ring pellet doubles the fan's middle one.
+        let ring = angle.wrapping_add_signed(EIGHTH_TURN / 2);
+        volley(bullets, from, ring, (RING_PELLETS, EIGHTH_TURN), speed);
+    }
+}
+
+/// `count` bullets from `from` at `speed`, `spacing` apart and centered on `angle`.
+fn volley(
+    bullets: &mut Arena<Bullet>,
+    from: FxVec2,
+    angle: u16,
+    (count, spacing): (u8, i16),
+    speed: u16,
+) {
     for i in 0..count {
         // Offsets from the center: (2i - (count - 1)) half-spacings.
         let halves = i16::from(i)
             .saturating_mul(2)
             .saturating_sub(i16::from(count).saturating_sub(1));
-        let offset = halves.saturating_mul(PELLET_SPACING / 2);
+        let offset = halves.saturating_mul(spacing / 2);
         let dir = trig::unit(angle.wrapping_add_signed(offset));
         bullets.insert(Bullet {
             pos: add(from, scale(dir, ENEMY_RADIUS)),
