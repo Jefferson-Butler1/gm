@@ -77,7 +77,7 @@ impl Audio {
                 Event::WaveStarted { .. } => Sound::WaveStarted,
                 Event::RoomCleared { .. } => Sound::RoomCleared,
                 Event::Won => Sound::Won,
-                Event::Restarted => continue,
+                Event::Restarted | Event::EnemyInvestigating { .. } => continue,
             };
             self.add(sound);
         }
