@@ -13,14 +13,18 @@ struct GMApp: App {
 
 @Observable
 final class GameModel {
-    /// Controls setting options, with stable keys for persistence.
-    static let schemes: [(scheme: Scheme, key: String, label: String)] = [
-        (.floatingSticks, "A", "A · Floating twin sticks"),
-        (.fixedSticks, "B", "B · Fixed twin sticks"),
-        (.autoAim, "C", "C · Move + auto-aim (flick to dodge)"),
-        (.aimAssist, "D", "D · Twin sticks + aim assist"),
-        (.fixedAutoAim, "E", "E · Fixed move stick + auto-aim (flick to dodge)"),
-        (.fireButton, "F", "F · Fixed move stick + fire button (auto-aim, drag to aim)"),
+    /// The Controls options: each a touch scheme with the fire mode it plays best with,
+    /// with a stable key for persistence. The first is the default.
+    static let controls: [(key: String, label: String, scheme: Scheme, fireMode: FireMode)] = [
+        ("F-hold", "Fire button · hold to auto-aim, drag to aim", .fireButton, .hold),
+        ("E-tap", "Auto-aim · tap to fire", .fixedAutoAim, .tap),
+        ("E-hold", "Auto-aim · hold to fire, flick to dodge", .fixedAutoAim, .hold),
+        ("C-hold", "Auto-aim, floating stick · hold to fire, flick to dodge", .autoAim, .hold),
+        ("B-hold", "Fixed twin sticks · aim fires", .fixedSticks, .hold),
+        ("B-release", "Fixed twin sticks · drag to aim, lift to fire", .fixedSticks, .release),
+        ("A-hold", "Floating twin sticks · aim fires", .floatingSticks, .hold),
+        ("D-hold", "Twin sticks + aim assist · aim fires", .aimAssist, .hold),
+        ("B-volume", "Twin sticks + volume buttons · volume-up fires, down dodges", .fixedSticks, .trigger),
     ]
     /// Camera look options, with stable keys for persistence.
     static let looks: [(look: LookMode, key: String, label: String)] = [
@@ -29,32 +33,22 @@ final class GameModel {
         (.facing, "facing", "Facing look · always leads where you face"),
         (.enemy, "enemy", "Enemy look · leans toward the nearest enemy (auto-aim)"),
     ]
-    /// Fire mode options, with stable keys for persistence.
-    static let fireModes: [(mode: FireMode, key: String, label: String)] = [
-        (.hold, "hold", "Hold · auto-fire while aiming"),
-        (.tap, "tap", "Tap · one shot per touch"),
-        (.release, "release", "Release · drag to aim, lift to fire"),
-        (.trigger, "trigger", "Volume · each volume-up press fires, volume-down dodges"),
-    ]
-    private static let schemeKey = "controls.scheme.v2"  // v2: resets saved schemes to F
-    private static let fireModeKey = "controls.fireMode"
+    private static let controlsKey = "controls"
     private static let assistKey = "controls.assist"
     private static let cameraKey = "camera"
 
     var hud: HudData?
-    var scheme: Scheme = GameModel.loadScheme() {
+    var controlsKey: String = UserDefaults.standard.string(forKey: GameModel.controlsKey)
+        .flatMap { key in GameModel.controls.first { $0.key == key }?.key } ?? GameModel.controls[0].key {
         didSet {
-            UserDefaults.standard.set(Self.schemes.first { $0.scheme == scheme }?.key, forKey: Self.schemeKey)
+            UserDefaults.standard.set(controlsKey, forKey: Self.controlsKey)
             game?.setScheme(scheme: scheme)
-        }
-    }
-    var fireMode: FireMode = GameModel.loadFireMode() {
-        didSet {
-            UserDefaults.standard.set(Self.fireModes.first { $0.mode == fireMode }?.key, forKey: Self.fireModeKey)
             game?.setFireMode(mode: fireMode)
             syncVolumeButtons()
         }
     }
+    var scheme: Scheme { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).scheme }
+    var fireMode: FireMode { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).fireMode }
     /// Only used by scheme D. The real default is a combat-tuning decision (issue #15).
     var assist: Float = UserDefaults.standard.object(forKey: GameModel.assistKey) as? Float ?? 0.5 {
         didSet {
@@ -130,16 +124,6 @@ final class GameModel {
     /// Restart (end-of-run overlay tap or the settings button); Rust turns it into the sim's RESTART input.
     func restart() {
         game?.restart()
-    }
-
-    private static func loadFireMode() -> FireMode {
-        let key = UserDefaults.standard.string(forKey: fireModeKey)
-        return fireModes.first { $0.key == key }?.mode ?? .hold
-    }
-
-    private static func loadScheme() -> Scheme {
-        let key = UserDefaults.standard.string(forKey: schemeKey)
-        return schemes.first { $0.key == key }?.scheme ?? .fireButton
     }
 
     private static func loadCamera() -> CameraSettings {
@@ -257,16 +241,10 @@ struct ControlsSettings: View {
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Scheme", selection: $model.scheme) {
-                    ForEach(GameModel.schemes, id: \.key) { option in
-                        Text(option.label).tag(option.scheme)
-                    }
-                }
-                .pickerStyle(.inline)
-                Section("Fire mode") {
-                    Picker("Fire mode", selection: $model.fireMode) {
-                        ForEach(GameModel.fireModes, id: \.key) { option in
-                            Text(option.label).tag(option.mode)
+                Section("Controls") {
+                    Picker("Controls", selection: $model.controlsKey) {
+                        ForEach(GameModel.controls, id: \.key) { option in
+                            Text(option.label).tag(option.key)
                         }
                     }
                     .pickerStyle(.inline)
