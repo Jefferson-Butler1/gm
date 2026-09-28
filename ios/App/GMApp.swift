@@ -20,6 +20,7 @@ final class GameModel {
         (.autoAim, "C", "C · Move + auto-aim (flick to dodge)"),
         (.aimAssist, "D", "D · Twin sticks + aim assist"),
         (.fixedAutoAim, "E", "E · Fixed move stick + auto-aim (flick to dodge)"),
+        (.fireButton, "F", "F · Fixed move stick + fire button (auto-aim, drag to aim)"),
     ]
     /// Camera look options, with stable keys for persistence.
     static let looks: [(look: LookMode, key: String, label: String)] = [
@@ -33,7 +34,7 @@ final class GameModel {
         (.hold, "hold", "Hold · auto-fire while aiming"),
         (.tap, "tap", "Tap · one shot per touch"),
         (.release, "release", "Release · drag to aim, lift to fire"),
-        (.trigger, "trigger", "Volume · volume-up fires, volume-down dodges"),
+        (.trigger, "trigger", "Volume · each volume-up press fires, volume-down dodges"),
     ]
     private static let schemeKey = "controls.scheme"
     private static let fireModeKey = "controls.fireMode"
@@ -112,7 +113,7 @@ final class GameModel {
         game.setFireMode(mode: fireMode)
         game.setAssistStrength(strength: assist)
         game.setCamera(settings: camera)
-        volumeButtons.onTrigger = { [weak game] held in game?.setTrigger(held: held) }
+        volumeButtons.onShot = { [weak game] in game?.pullTrigger() }
         volumeButtons.onDodge = { [weak game] in game?.pressDodge() }
         syncVolumeButtons()
         if paused { game.pause() }
@@ -156,7 +157,7 @@ final class GameModel {
 
     private static func loadScheme() -> Scheme {
         let key = UserDefaults.standard.string(forKey: schemeKey)
-        return schemes.first { $0.key == key }?.scheme ?? .fixedAutoAim
+        return schemes.first { $0.key == key }?.scheme ?? .fireButton
     }
 
     private static func loadVolume(_ key: String, _ fallback: Float) -> Float {
