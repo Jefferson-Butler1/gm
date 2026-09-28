@@ -7,12 +7,12 @@ use sim::room::{
     Placed, Placement, PrototypeRoom, RoomAction, RoomError, RoomTrigger, Theme, cell_center,
 };
 use sim::{
-    Awareness, Buttons, DERELICT, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, HatchId, HatchState,
-    MAX_HP, PLAYER_RADIUS, PlayerInput, RoomId, Run, RunConfig, SimState, TickInputs, Tuning,
+    Awareness, Buttons, CORVETTE, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, HatchId, HatchState,
+    MAX_HP, PLAYER_RADIUS, POOL, PlayerInput, RoomId, Run, RunConfig, SimState, TickInputs, Tuning,
     per_tick, step,
 };
 
-const SEED: u64 = 3;
+const SEED: u64 = 2;
 const LEFT: u16 = 32768;
 const UP: u16 = 49152;
 /// Move buckets (32 per turn).
@@ -58,8 +58,9 @@ fn exit(dir: Dir, x: usize, y: usize, width: usize) -> &'static [Exit] {
 }
 
 #[test]
-fn shipped_rooms_and_the_test_box_are_valid() {
-    assert_eq!(DERELICT.validate(), Ok(()));
+fn the_pool_the_corvette_and_the_test_box_are_valid() {
+    assert!(POOL.iter().all(|room| room.validate().is_ok()));
+    assert_eq!(CORVETTE.validate(), Ok(()));
     assert_eq!(BOX.validate(), Ok(()));
 }
 
@@ -341,15 +342,18 @@ fn exit_rooms_and_only_exit_rooms_have_an_extraction_pad_on_floor() {
 
 // --- play ---------------------------------------------------------------------------
 
+// The Corvette at `SEED`. Rooms are its filled slots in legend order, then corridors;
+// hatches go by slot, then side (north, east, south, west).
 const AIRLOCK: RoomId = RoomId(0);
-const CARGO_HOLD: RoomId = RoomId(1);
-const ENGINE_ROOM: RoomId = RoomId(2);
-/// The cargo hold's hatches: to the airlock above it (floor cells 14..=15 of row 9), and
-/// to the engine room below it.
-const INTO_HOLD: HatchId = HatchId(0);
-const OUT_OF_HOLD: HatchId = HatchId(1);
+const ENGINE_ROOM: RoomId = RoomId(1);
+/// The midship slot, whose room at `SEED` is the cargo hold, at floor cell (32, 13).
+const CARGO_HOLD: RoomId = RoomId(2);
+/// The cargo hold's hatches: up to the passage from the airlock (floor cells 43..=44 of
+/// row 13), and east to the passage to the bridge.
+const INTO_HOLD: HatchId = HatchId(2);
+const OUT_OF_HOLD: HatchId = HatchId(3);
 /// The hold's first row: its top edge is the hatch's bottom edge.
-const HOLD_TOP: Fx = CELL.saturating_mul_int(10);
+const HOLD_TOP: Fx = CELL.saturating_mul_int(14);
 
 fn walk(bucket: u8) -> TickInputs {
     let mut inputs = TickInputs::default();
@@ -378,15 +382,17 @@ const fn place(state: &mut SimState, at: FxVec2) {
     }
 }
 
-/// A fresh run with slot 0 in the airlock, lined up over the hatch down into the cargo
-/// hold, two cells above it.
+/// A fresh run with slot 0 in the passage down from the airlock, lined up over the hatch
+/// into the cargo hold, two cells above it.
 fn above_the_hold() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
+    let hold = state.ship.room(CARGO_HOLD).map(|r| r.room.name);
+    assert_eq!(hold, Some("cargo hold"), "SEED's midship room");
     place(
         &mut state,
         FxVec2 {
-            x: CELL.saturating_mul_int(15), // centered on the 2-cell gap
-            y: cell_center(0, 7).y,
+            x: CELL.saturating_mul_int(44), // centered on the 2-cell gap
+            y: cell_center(0, 11).y,
         },
     );
     state
@@ -515,8 +521,8 @@ fn waves_advance_on_clear_then_the_hatches_unseal_and_the_room_stays_cleared() {
     );
     assert!(!state.visited(ENGINE_ROOM), "still fogged until touched");
 
-    // Open: walk back up into the airlock, then down into a quiet hold.
-    run(&mut state, 40, &walk(NORTH));
+    // Open: walk back up the passage into the airlock, then down into a quiet hold.
+    run(&mut state, 60, &walk(NORTH));
     assert_eq!(state.ship.room_at(pos(&state)), Some(AIRLOCK));
     run(&mut state, 60, &walk(SOUTH));
     assert_eq!(state.ship.room_at(pos(&state)), Some(CARGO_HOLD));
@@ -526,7 +532,7 @@ fn waves_advance_on_clear_then_the_hatches_unseal_and_the_room_stays_cleared() {
 
 #[test]
 fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_open_one() {
-    // Cleared, so standing in the hold starts no fight; the player waits in the airlock
+    // Cleared, so standing in the hold starts no fight; the player waits in the passage
     // two cells above the hatch, a hunting-range rusher four cells below it.
     let mut state = above_the_hold();
     state.cleared = 1 << CARGO_HOLD.0;
@@ -561,9 +567,9 @@ fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_ope
 
 #[test]
 fn bullets_fly_over_pits_and_stop_at_walls() {
-    // The airlock's pit is at floor cells (11..=12, 3), its west wall at x = 256..288.
+    // The airlock's pit is at floor cells (41..=42, 3), its west wall at x = 1216..1248.
     let mut state = SimState::new(SEED, RunConfig::default());
-    place(&mut state, cell_center(14, 3));
+    place(&mut state, cell_center(44, 3));
     let mut fire_left = TickInputs::default();
     fire_left.players[0] = PlayerInput {
         aim: LEFT,
@@ -572,8 +578,8 @@ fn bullets_fly_over_pits_and_stop_at_walls() {
     };
     run(&mut state, 1, &fire_left);
     run(&mut state, 7, &TickInputs::default());
-    let past_pit = CELL.saturating_mul_int(11);
-    let wall = CELL.saturating_mul_int(9);
+    let past_pit = CELL.saturating_mul_int(41);
+    let wall = CELL.saturating_mul_int(39);
     let bullet = state.bullets.iter().next().map(|(_, b)| b.pos.x);
     assert!(
         bullet.is_some_and(|x| x < past_pit && x > wall),
