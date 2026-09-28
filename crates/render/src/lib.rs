@@ -334,6 +334,7 @@ impl Renderer {
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
                 Event::EnemyAlerted { enemy } => Flash::Alert(enemy),
                 Event::PlayerDied { .. }
+                | Event::EnemyFired { .. }
                 | Event::Restarted
                 | Event::HatchOpened { .. }
                 | Event::WaveStarted { .. }

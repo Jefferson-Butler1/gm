@@ -541,6 +541,7 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
                             *pattern,
                             &config,
                         );
+                        events.events.push(Event::EnemyFired { enemy: id });
                         *shot_timer = pattern.interval(&config);
                         *strafe = strafe.saturating_neg();
                     }
