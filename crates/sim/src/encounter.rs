@@ -3,7 +3,7 @@
 //! its hatches, waves come from object layers, and a clear room's extraction pad wins.
 //! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
-use crate::combat::{Awareness, Enemy, Pattern, SHOOTER_STAGGER};
+use crate::combat::{Awareness, Enemy, Pattern, SHOOTER_STAGGER, stand_ticks};
 use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
     EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
@@ -136,7 +136,8 @@ fn unseal(state: &mut SimState, hatch: HatchId) {
 
 /// Spawns `placements` (cells of `room`), unaware unless `hunting`: then each already
 /// knows where the nearest living player is (reinforcements join a fight in progress) and
-/// faces it. Unaware ones face one of 8 directions at random.
+/// faces it. Unaware ones face one of 8 directions at random and stand a random while
+/// before their first patrol walk, so a room doesn't set off in step.
 fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting: bool) {
     for placement in placements {
         let pos = cell_center(
@@ -182,9 +183,14 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting:
                 Enemy::shooter(pos, pattern, &state.config, delay)
             }
         };
+        let patrol = crate::Patrol {
+            ticks: stand_ticks(&mut state.rng),
+            ..enemy.patrol
+        };
         state.enemies.insert(Enemy {
             facing,
             awareness,
+            patrol,
             ..enemy
         });
     }

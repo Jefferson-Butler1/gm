@@ -116,6 +116,9 @@ pub struct Tuning {
     /// How fast an enemy turns to face where it's headed, degrees per second. A player
     /// circling it faster than this slips out of its cone.
     pub turn_rate: u16,
+    /// How fast an unaware enemy ambles about its room on patrol, pt/s; 0 = it stands
+    /// still.
+    pub patrol_speed: u16,
 }
 
 impl Tuning {
@@ -151,6 +154,9 @@ impl Tuning {
         // ~88 pt (2.75 cells): about where a rusher is closing in.
         sight_half_angle: 60,
         turn_rate: 150,
+        // A slow amble, 1.25 cells/s: under a third of a shooter's 120, so a moving enemy
+        // reads as idle, not hunting, and a 3-cell leg takes about 2.4 s.
+        patrol_speed: 40,
     };
 }
 
@@ -219,6 +225,8 @@ impl RunConfig {
                 sight_half_angle: t.sight_half_angle.clamp(1, 180),
                 // Up to 4 turns a second: a tick's turn stays well under a half turn.
                 turn_rate: t.turn_rate.clamp(1, 1440),
+                // 4 pt a tick at most: well under a cell.
+                patrol_speed: t.patrol_speed.min(240),
             },
         };
         let interval = sane.shooter_interval();

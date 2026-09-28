@@ -1,13 +1,14 @@
 //! Enemy awareness: room enemies stand unaware until they see (in plain view inside their
 //! sight cone, at any range), hear or are hit by a player, then hunt it, turning at a
-//! finite rate, and give up where they lost it.
+//! finite rate, and give up where they lost it. Unaware, they patrol near where they
+//! spawned.
 //! All in the cargo hold, 32 x 16 cells: an L (void top-right) with a pillar at cells
 //! (5..=6, 3..=4) and a pit strip at (10..=13, 10..=11). Cells here are the hold's own.
 
 use sim::room::cell_center;
 use sim::{
-    Awareness, Buttons, Enemy, EnemyId, Event, Fx, FxVec2, PlayerInput, RoomId, RunConfig,
-    SimState, TickInputs, Tuning, step,
+    Awareness, Buttons, ENEMY_RADIUS, Enemy, EnemyId, Event, Fx, FxVec2, PlayerInput, RoomId,
+    RunConfig, SimState, TickInputs, Tuning, step,
 };
 
 const SEED: u64 = 5;
@@ -73,6 +74,7 @@ fn cells_apart(a: FxVec2, b: FxVec2) -> Fx {
 #[test]
 fn an_unaware_enemy_behind_a_wall_ignores_an_idle_player() {
     let mut state = hold((6, 1));
+    state.config.tuning.patrol_speed = 0;
     // 4 cells down, behind the pillar.
     let id = rusher(&mut state, (6, 5), LEFT);
     let before = state.enemies.clone();
@@ -102,6 +104,7 @@ fn an_enemy_notices_a_player_in_plain_view_in_its_cone_at_any_range_across_a_pit
 #[test]
 fn an_unaware_enemy_facing_away_ignores_a_player_in_plain_view_behind_it() {
     let mut state = hold((1, 11));
+    state.config.tuning.patrol_speed = 0;
     let id = rusher(&mut state, (30, 11), RIGHT);
     let events = idle(&mut state, 600);
     assert!(events.is_empty(), "{events:?}");
@@ -262,8 +265,53 @@ fn a_hunter_that_loses_the_player_searches_where_it_last_saw_it_then_gives_up() 
         cells_apart(spot, last_seen) < 2,
         "gave up at the last-known spot"
     );
-    // Unaware again: it stays where it gave up.
-    let events = idle(&mut state, 300);
+    // Unaware again: it patrols around where it gave up.
+    let events = idle(&mut state, 600);
     assert!(events.is_empty(), "{events:?}");
-    assert_eq!(enemy(&state, id).unwrap().pos, spot);
+    let now = enemy(&state, id).unwrap().pos;
+    assert_ne!(now, spot);
+    assert!(cells_apart(now, spot) < 5, "patrols near where it gave up");
+}
+
+/// An unaware rusher at the hold's cell (7, 13), a few cells from its south hatch and
+/// the pit strip, under `patrol_speed`; the party stays in the start room, out of sight
+/// behind a closed hatch. Returns the rusher as of each tick for 20 s, first checking
+/// it stayed unaware and wholly in the hold, off the pits.
+fn patrolled(patrol_speed: u16) -> Option<Vec<Enemy>> {
+    let mut state = SimState::new(SEED, RunConfig::default());
+    state.config.tuning.patrol_speed = patrol_speed;
+    let id = rusher(&mut state, (7, 13), RIGHT);
+    (0..1200)
+        .map(|_| {
+            idle(&mut state, 1);
+            let e = enemy(&state, id)?;
+            assert_eq!(e.awareness, Awareness::Unaware);
+            assert_eq!(state.ship.inside(e.pos, ENEMY_RADIUS), Some(CARGO_HOLD));
+            assert!(!state.tiles().pit_within(e.pos, ENEMY_RADIUS));
+            Some(e)
+        })
+        .collect()
+}
+
+#[test]
+fn an_unaware_enemy_patrols_away_from_its_spawn_but_stays_in_its_room() {
+    let spawn = at((7, 13));
+    let ticks = patrolled(Tuning::NORMAL.patrol_speed).unwrap();
+    let farthest = ticks
+        .iter()
+        .map(|e| cells_apart(e.pos, spawn))
+        .max()
+        .unwrap();
+    assert!(farthest >= 1, "wandered off: {farthest}");
+    assert!(ticks.iter().any(|e| e.facing != RIGHT), "looked around");
+}
+
+#[test]
+fn a_patrol_speed_of_zero_keeps_an_unaware_enemy_still() {
+    let ticks = patrolled(0).unwrap();
+    assert!(
+        ticks
+            .iter()
+            .all(|e| e.pos == at((7, 13)) && e.facing == RIGHT)
+    );
 }
