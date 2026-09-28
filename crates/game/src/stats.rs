@@ -2,7 +2,7 @@
 //! Also carries the HUD's game status, since this owns the published [`HudData`].
 
 use crate::{HudData, RunState};
-use sim::{DERELICT, MAX_HP, PhasePistol, Run, SimState};
+use sim::{MAX_HP, PhasePistol, Run, SimState};
 
 /// How often the HUD and log refresh, in seconds.
 const WINDOW_SECS: f64 = 0.5;
@@ -25,13 +25,20 @@ impl Stats {
         self.hud.clone()
     }
 
-    /// Reads slot 0's HP and gun, the run state, and the room and wave from `state`.
-    /// Publishes immediately (bumps `seq`) when anything changed.
+    /// Reads slot 0's HP and gun, the run state, and the room and wave from `state`: the
+    /// fight's room, else the one slot 0 stands in (the last one while it crosses a
+    /// hatch). Publishes immediately (bumps `seq`) when anything changed.
     pub fn set_status(&mut self, state: &SimState) {
-        let room = DERELICT.room(state.run.room());
+        let id = match state.run {
+            Run::Encounter { room, .. } => Some(room),
+            Run::Boarding | Run::Dead { .. } | Run::Won => {
+                state.players[0].and_then(|p| state.ship.room_at(p.pos))
+            }
+        };
+        let room = id.and_then(|id| state.ship.room(id)).map(|p| &p.room);
         let hp = state.players[0].map_or(0, |p| p.hp);
         let run = RunState::of(state.run);
-        let name = room.map_or("", |r| r.name);
+        let name = room.map_or(self.hud.room.as_str(), |r| r.name).to_owned();
         // Base layer plus reinforcements; a room without enemies has no waves.
         let waves = room.filter(|r| r.has_enemies()).map_or(0, |r| {
             u8::try_from(r.reinforcements.len())
@@ -60,7 +67,7 @@ impl Stats {
             (h.hp, h.max_hp, h.run, h.wave, h.waves) = (hp, MAX_HP, run, wave, waves);
             (h.charges, h.max_charges, h.venting, h.vent_progress) =
                 (charges, max_charges, venting, vent_progress);
-            name.clone_into(&mut h.room);
+            h.room = name;
             h.seq = h.seq.wrapping_add(1);
         }
     }
