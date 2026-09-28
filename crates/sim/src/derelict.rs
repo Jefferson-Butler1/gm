@@ -25,7 +25,7 @@
 
 use crate::room::{
     Category, Connection, Derelict, Dir, EnemyKind, Exit, ExitKind, ExitRef, LayerTrigger, Placed,
-    Placement, PrototypeRoom, Reinforcement, RoomAction, RoomTrigger,
+    Placement, PrototypeRoom, Reinforcement, RoomAction, RoomTrigger, Theme,
 };
 
 /// Seal on entry, unseal once the last wave dies: the standard combat room.
@@ -79,6 +79,7 @@ const fn exit(dir: Dir, x: usize, y: usize, kind: ExitKind) -> Exit {
 
 const AIRLOCK: PrototypeRoom = PrototypeRoom {
     name: "airlock",
+    theme: Theme::Airlock,
     category: Category::Entrance,
     cells: &[
         "##############",
@@ -103,6 +104,7 @@ const AIRLOCK: PrototypeRoom = PrototypeRoom {
 /// Bigger than a phone screen, L-shaped (void top-right), with a pillar and a pit.
 const CARGO_HOLD: PrototypeRoom = PrototypeRoom {
     name: "cargo hold",
+    theme: Theme::Cargo,
     category: Category::Normal,
     cells: &[
         "#########..#########            ",
@@ -142,6 +144,7 @@ const CARGO_HOLD: PrototypeRoom = PrototypeRoom {
 /// shooters wait at the far (south) end from the hatch in.
 const ENGINE_ROOM: PrototypeRoom = PrototypeRoom {
     name: "engine room",
+    theme: Theme::Engineering,
     category: Category::Normal,
     cells: &[
         "#########..###########",
@@ -177,6 +180,7 @@ const ENGINE_ROOM: PrototypeRoom = PrototypeRoom {
 
 const BRIDGE: PrototypeRoom = PrototypeRoom {
     name: "bridge",
+    theme: Theme::Bridge,
     category: Category::Normal,
     cells: &[
         "################",
@@ -214,6 +218,7 @@ const BRIDGE: PrototypeRoom = PrototypeRoom {
 /// far end.
 const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
     name: "shuttle bay",
+    theme: Theme::Cargo,
     category: Category::Exit,
     cells: &[
         "########################",
@@ -252,6 +257,7 @@ const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
 /// Engine room to bridge, under the cargo hold.
 const SERVICE_PASSAGE: PrototypeRoom = PrototypeRoom {
     name: "service passage",
+    theme: Theme::Corridor,
     category: Category::Connector,
     cells: &["########", "........", "........", "########"],
     exits: &[

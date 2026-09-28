@@ -4,7 +4,7 @@
 
 use sim::room::{
     CELL, Category, Connection, Derelict, DerelictError, Dir, EnemyKind, Exit, ExitKind, ExitRef,
-    Placed, Placement, PrototypeRoom, RoomAction, RoomError, RoomTrigger, cell_center,
+    Placed, Placement, PrototypeRoom, RoomAction, RoomError, RoomTrigger, Theme, cell_center,
 };
 use sim::{
     Awareness, Buttons, DERELICT, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, HatchId, HatchState,
@@ -25,6 +25,7 @@ const NORTH: u8 = 24;
 const BOX: PrototypeRoom = PrototypeRoom {
     name: "box",
     category: Category::Normal,
+    theme: Theme::Cargo,
     cells: &["#####", "#...#", "#....", "#...#", "#####"],
     exits: &[Exit {
         dir: Dir::East,
