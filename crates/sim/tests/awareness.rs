@@ -2,46 +2,62 @@
 //! sight cone, at any range), hear or are hit by a player, then hunt it, turning at a
 //! finite rate, and give up where they lost it. Unaware, they patrol near where they
 //! spawned, and go to look when a hatch bangs open or shut nearby.
-//! All in the cargo hold, 32 x 16 cells: an L (void top-right) with a pillar at cells
-//! (5..=6, 3..=4) and a pit strip at (10..=13, 10..=11). Cells here are the hold's own.
+//! All in the cargo hold (the Corvette's midship room at `SEED`), 24 x 14 cells: an L
+//! (void top-right) with a pillar at cells (5..=6, 3..=4), a pit strip at
+//! (10..=13, 9..=10), and hatches north (11..=12, 0), west (0, 6..=7) and east
+//! (23, 6..=7). Cells here are the hold's own.
 
-use sim::room::cell_center;
+use sim::room::{Dir, cell_center};
 use sim::{
     Awareness, Behavior, Buttons, ENEMY_RADIUS, Enemy, EnemyId, Event, Fx, FxVec2, HatchId,
-    PlayerInput, RoomId, Run, RunConfig, SPAWN_TELEGRAPH_TICKS, SimState, TickInputs, Tuning, step,
+    PlayerInput, RoomId, Run, RunConfig, SimState, TickInputs, Tuning, step,
 };
 
 const SEED: u64 = 5;
-const CARGO_HOLD: RoomId = RoomId(1);
+const CARGO_HOLD: RoomId = RoomId(2);
+/// The hold's cell (0, 0) is this floor cell.
+const HOLD_AT: (usize, usize) = (32, 13);
 /// Facings, `u16` turns.
 const RIGHT: u16 = 0;
 const DOWN: u16 = 16384;
 const LEFT: u16 = 32768;
-/// The hatch down from the airlock into the hold, in the middle of its 2-cell gap (the
-/// hold's cells (9..=10, 0)).
-const INTO_HOLD: HatchId = HatchId(0);
-const HATCH: FxVec2 = FxVec2 {
-    x: Fx::from_bits(480 << 32),
-    y: Fx::from_bits(304 << 32),
-};
-/// The airlock's bottom-left floor cell: out of sight of the hold even through the open
-/// hatch.
-const AIRLOCK_CORNER: FxVec2 = FxVec2 {
-    x: Fx::from_bits(304 << 32),
-    y: Fx::from_bits(272 << 32),
-};
 
-/// The center of the hold's cell (`x`, `y`): its cell (0, 0) is floor cell (32, 13).
+/// The center of the hold's cell (`x`, `y`).
 fn at((x, y): (usize, usize)) -> FxVec2 {
-    cell_center(x.saturating_add(32), y.saturating_add(13))
+    cell_center(x.saturating_add(HOLD_AT.0), y.saturating_add(HOLD_AT.1))
+}
+
+/// A fresh run at `SEED`, checked to have the hold these tests are laid out for.
+fn fresh() -> SimState {
+    let state = SimState::new(SEED, RunConfig::default());
+    let hold = state.ship.room(CARGO_HOLD).map(|r| (r.room.name, r.at));
+    assert_eq!(hold, Some(("cargo hold", HOLD_AT)), "SEED's midship room");
+    state
+}
+
+/// The hold's hatch on its `side`, and the middle of its gap: where its bang is heard
+/// from, and where investigators go.
+fn hatch(state: &SimState, side: Dir) -> Option<(HatchId, FxVec2)> {
+    let ship = &state.ship;
+    let found = ship.hatches_of(CARGO_HOLD).find_map(|id| {
+        let gap = ship.hatches().get(usize::from(id.0))?.gap;
+        (gap.dir == side).then_some((id, gap))
+    });
+    let (id, gap) = found?;
+    let (first, last) = (gap.cell(0), gap.cell(gap.width.saturating_sub(1)));
+    let (a, b) = (cell_center(first.0, first.1), cell_center(last.0, last.1));
+    let two = Fx::from_num(2);
+    let middle = FxVec2 {
+        x: a.x.saturating_add(b.x).saturating_div(two),
+        y: a.y.saturating_add(b.y).saturating_div(two),
+    };
+    Some((id, middle))
 }
 
 /// The party (slot 0) standing in the cargo hold at cell `at`, no enemies. The hold
 /// counts as cleared, so no fight starts.
 fn hold(at: (usize, usize)) -> SimState {
-    let mut state = SimState::new(SEED, RunConfig::default());
-    let hold = state.ship.room(CARGO_HOLD).map(|r| r.room.name);
-    assert_eq!(hold, Some("cargo hold"), "SEED's midship room");
+    let mut state = fresh();
     state.cleared = 1 << CARGO_HOLD.0;
     move_player(&mut state, at);
     state
@@ -106,10 +122,10 @@ fn an_unaware_enemy_behind_a_wall_ignores_an_idle_player() {
 
 #[test]
 fn an_enemy_notices_a_player_in_plain_view_in_its_cone_at_any_range_across_a_pit() {
-    // 29 cells apart along row 11, past the far side of any phone screen, the pit strip
-    // in between: pits don't block sight.
-    let mut state = hold((1, 11));
-    let id = rusher(&mut state, (30, 11), LEFT);
+    // 21 cells apart along row 10, far out of earshot, the pit strip in between: pits
+    // don't block sight.
+    let mut state = hold((1, 10));
+    let id = rusher(&mut state, (22, 10), LEFT);
     let events = idle(&mut state, 1);
     assert_eq!(events, [Event::EnemyAlerted { enemy: id }]);
     assert_eq!(
@@ -123,9 +139,9 @@ fn an_enemy_notices_a_player_in_plain_view_in_its_cone_at_any_range_across_a_pit
 
 #[test]
 fn an_unaware_enemy_facing_away_ignores_a_player_in_plain_view_behind_it() {
-    let mut state = hold((1, 11));
+    let mut state = hold((1, 10));
     state.config.tuning.patrol_speed = 0;
-    let id = rusher(&mut state, (30, 11), RIGHT);
+    let id = rusher(&mut state, (22, 10), RIGHT);
     let events = idle(&mut state, 600);
     assert!(events.is_empty(), "{events:?}");
     assert_eq!(enemy(&state, id).unwrap().awareness, Awareness::Unaware);
@@ -133,9 +149,9 @@ fn an_unaware_enemy_facing_away_ignores_a_player_in_plain_view_behind_it() {
 
 #[test]
 fn a_full_circle_sight_cone_sees_behind_too() {
-    let mut state = hold((1, 11));
+    let mut state = hold((1, 10));
     state.config.tuning.sight_half_angle = 180;
-    let id = rusher(&mut state, (30, 11), RIGHT);
+    let id = rusher(&mut state, (22, 10), RIGHT);
     let events = idle(&mut state, 1);
     assert_eq!(events, [Event::EnemyAlerted { enemy: id }]);
 }
@@ -143,8 +159,8 @@ fn a_full_circle_sight_cone_sees_behind_too() {
 #[test]
 fn a_hit_from_behind_alerts_an_enemy_and_turns_it_toward_the_shooter() {
     // 7 cells apart, out of earshot (5): only the bullet can alert it.
-    let mut state = hold((1, 11));
-    let id = rusher(&mut state, (8, 11), RIGHT);
+    let mut state = hold((1, 10));
+    let id = rusher(&mut state, (8, 10), RIGHT);
     let mut fire = TickInputs::default();
     fire.players[0] = PlayerInput {
         aim: RIGHT,
@@ -181,10 +197,10 @@ fn a_hit_from_behind_alerts_an_enemy_and_turns_it_toward_the_shooter() {
 /// Returns the tick the rusher first lost sight of the player (its `last_seen` went
 /// stale), if it did.
 fn circled(turn_rate: u16) -> Option<usize> {
-    let mut state = hold((24, 11));
+    let mut state = hold((20, 10));
     state.config.tuning.rusher_speed = 30;
     state.config.tuning.turn_rate = turn_rate;
-    let id = rusher(&mut state, (22, 11), RIGHT);
+    let id = rusher(&mut state, (18, 10), RIGHT);
     idle(&mut state, 1);
     let radius = Fx::from_num(64);
     let mut angle = RIGHT;
@@ -245,12 +261,14 @@ fn a_shot_alerts_an_enemy_in_earshot_behind_a_wall() {
 fn a_hunter_that_loses_the_player_searches_where_it_last_saw_it_then_gives_up() {
     let forget = Tuning::NORMAL.forget_ticks;
     // 6 cells west of the rusher, in plain view along the bottom strip.
-    let mut state = hold((22, 12));
-    let id = rusher(&mut state, (28, 12), LEFT);
+    let start = player_pos(&fresh());
+    let mut state = hold((16, 12));
+    let id = rusher(&mut state, (22, 12), LEFT);
     idle(&mut state, 1);
     let last_seen = player_pos(&state);
-    // Then out of sight: round the corner of the L, behind the void.
-    move_player(&mut state, (14, 1));
+    // Then out of sight, for good: back where it started, in the airlock behind its
+    // closed hatch (anywhere in the small hold, the rusher could patrol into view).
+    put_player(&mut state, start);
 
     let mut arrived = None;
     let mut gave_up = None;
@@ -294,14 +312,17 @@ fn a_hunter_that_loses_the_player_searches_where_it_last_saw_it_then_gives_up() 
     assert!(cells_apart(now, spot) < 5, "patrols near where it gave up");
 }
 
-/// An unaware rusher at the hold's cell (7, 13), a few cells from its south hatch and
-/// the pit strip, under `patrol_speed`; the party stays in the start room, out of sight
-/// behind a closed hatch. Returns the rusher as of each tick for 20 s, first checking
-/// it stayed unaware and wholly in the hold, off the pits.
+/// Where [`patrolled`] puts its rusher: a couple of cells up and left of the pit strip,
+/// in patrol range of it.
+const PATROL_HOME: (usize, usize) = (9, 7);
+
+/// An unaware rusher at [`PATROL_HOME`] under `patrol_speed`; the party stays in the
+/// start room, out of sight behind closed hatches. Returns the rusher as of each tick
+/// for 20 s, first checking it stayed unaware and wholly in the hold, off the pits.
 fn patrolled(patrol_speed: u16) -> Option<Vec<Enemy>> {
-    let mut state = SimState::new(SEED, RunConfig::default());
+    let mut state = fresh();
     state.config.tuning.patrol_speed = patrol_speed;
-    let id = rusher(&mut state, (7, 13), RIGHT);
+    let id = rusher(&mut state, PATROL_HOME, RIGHT);
     (0..1200)
         .map(|_| {
             idle(&mut state, 1);
@@ -316,7 +337,7 @@ fn patrolled(patrol_speed: u16) -> Option<Vec<Enemy>> {
 
 #[test]
 fn an_unaware_enemy_patrols_away_from_its_spawn_but_stays_in_its_room() {
-    let spawn = at((7, 13));
+    let spawn = at(PATROL_HOME);
     let ticks = patrolled(Tuning::NORMAL.patrol_speed).unwrap();
     let farthest = ticks
         .iter()
@@ -333,31 +354,39 @@ fn a_patrol_speed_of_zero_keeps_an_unaware_enemy_still() {
     assert!(
         ticks
             .iter()
-            .all(|e| e.pos == at((7, 13)) && e.facing == RIGHT)
+            .all(|e| e.pos == at(PATROL_HOME) && e.facing == RIGHT)
     );
 }
 
-/// The party steps into the closed hatch from the airlock for a tick, banging it open,
-/// then slips back into the airlock's corner, out of sight. The hold counts as cleared,
-/// so no fight starts. Returns that tick's events.
+/// Below the hold's north hatch (whose gap is hold cells (11..=12, 0)): 8 cells down,
+/// within its 10-cell earshot.
+const NEAR_HATCH: (usize, usize) = (11, 8);
+
+/// The party steps into the hold's closed north hatch from the passage above it for a
+/// tick, banging it open, then slips back to where it started in the airlock, out of
+/// sight behind the airlock's own closed hatch. The hold counts as cleared, so no fight
+/// starts. Returns that tick's events.
 fn bang_the_hatch_open(state: &mut SimState) -> Vec<Event> {
     state.cleared = 1 << CARGO_HOLD.0;
-    put_player(state, HATCH);
+    let start = player_pos(state);
+    let spot = hatch(state, Dir::North).map(|(_, spot)| spot);
+    put_player(state, spot.unwrap_or_default());
     let events = idle(state, 1);
-    put_player(state, AIRLOCK_CORNER);
+    put_player(state, start);
     events
 }
 
 #[test]
 fn a_hatch_banging_open_draws_an_unaware_enemy_in_earshot_to_look_without_alerting_it() {
-    let mut state = SimState::new(SEED, RunConfig::default());
-    // 9 cells below the hatch, looking away from it.
-    let id = rusher(&mut state, (9, 9), DOWN);
+    let mut state = fresh();
+    let (into_hold, spot) = hatch(&state, Dir::North).unwrap();
+    // Looking away from the hatch.
+    let id = rusher(&mut state, NEAR_HATCH, DOWN);
     let events = bang_the_hatch_open(&mut state);
     assert_eq!(
         events,
         [
-            Event::HatchOpened { hatch: INTO_HOLD },
+            Event::HatchOpened { hatch: into_hold },
             Event::EnemyInvestigating { enemy: id }
         ]
     );
@@ -367,10 +396,10 @@ fn a_hatch_banging_open_draws_an_unaware_enemy_in_earshot_to_look_without_alerti
         assert!(events.is_empty(), "never alerted: {events:?}");
         let e = enemy(&state, id).unwrap();
         match e.awareness {
-            Awareness::Investigating { spot, looking } => {
-                assert_eq!(spot, HATCH);
+            Awareness::Investigating { spot: to, looking } => {
+                assert_eq!(to, spot);
                 if looking > 0 {
-                    assert!(cells_apart(e.pos, HATCH) < 2, "went to the hatch");
+                    assert!(cells_apart(e.pos, spot) < 2, "went to the hatch");
                     return;
                 }
             }
@@ -383,9 +412,9 @@ fn a_hatch_banging_open_draws_an_unaware_enemy_in_earshot_to_look_without_alerti
 #[test]
 fn an_investigator_that_finds_nobody_goes_back_to_its_patrol() {
     let forget = Tuning::NORMAL.forget_ticks;
-    let mut state = SimState::new(SEED, RunConfig::default());
-    let home = at((9, 9));
-    let id = rusher(&mut state, (9, 9), DOWN);
+    let mut state = fresh();
+    let home = at(NEAR_HATCH);
+    let id = rusher(&mut state, NEAR_HATCH, DOWN);
     bang_the_hatch_open(&mut state);
     let mut arrived = None;
     let mut gave_up = None;
@@ -414,13 +443,19 @@ fn an_investigator_that_finds_nobody_goes_back_to_its_patrol() {
 
 #[test]
 fn an_investigator_that_spots_the_player_hunts_it() {
-    let mut state = SimState::new(SEED, RunConfig::default());
-    let id = rusher(&mut state, (9, 9), DOWN);
+    let mut state = fresh();
+    let id = rusher(&mut state, NEAR_HATCH, DOWN);
     bang_the_hatch_open(&mut state);
     // The player drops into the hold just inside the hatch: behind the rusher as it
     // stands, but where it is headed.
-    move_player(&mut state, (10, 2));
-    let events = idle(&mut state, 120);
+    move_player(&mut state, (12, 2));
+    let mut events = Vec::new();
+    for _ in 0..120 {
+        events.extend(idle(&mut state, 1));
+        if enemy(&state, id).unwrap().hunting() {
+            break;
+        }
+    }
     assert_eq!(events, [Event::EnemyAlerted { enemy: id }]);
     assert_eq!(
         enemy(&state, id).unwrap().awareness,
@@ -433,13 +468,14 @@ fn an_investigator_that_spots_the_player_hunts_it() {
 
 #[test]
 fn an_enemy_out_of_earshot_of_a_hatch_ignores_it_and_an_investigating_ally() {
-    let mut state = SimState::new(SEED, RunConfig::default());
+    let mut state = fresh();
     state.config.tuning.patrol_speed = 0;
-    let near = rusher(&mut state, (9, 9), DOWN);
-    // 12 cells from the hatch, and 3 from its ally in plain view: close enough to be
-    // alerted by a hunter, but an investigator isn't one.
-    let far = rusher(&mut state, (9, 12), DOWN);
+    let near = rusher(&mut state, NEAR_HATCH, DOWN);
+    // 11 cells from the hatch, and 3 from its ally in plain view (across the pits): close
+    // enough to be alerted by a hunter, but an investigator isn't one.
+    let far = rusher(&mut state, (11, 11), DOWN);
     let events = bang_the_hatch_open(&mut state);
+    assert!(events.contains(&Event::EnemyInvestigating { enemy: near }));
     assert!(!events.contains(&Event::EnemyInvestigating { enemy: far }));
     // Under the time it spends looking (it looks from where it stands at patrol speed 0).
     let events = idle(&mut state, 120);
@@ -452,14 +488,18 @@ fn an_enemy_out_of_earshot_of_a_hatch_ignores_it_and_an_investigating_ally() {
 }
 
 #[test]
-fn entering_a_room_seals_it_with_a_bang_that_draws_spawns_near_the_hatch() {
-    // Two cells above the hatch in the airlock, walking down into the hold's fight.
-    let mut state = SimState::new(SEED, RunConfig::default());
+fn entering_a_room_seals_it_with_a_bang_that_draws_spawns_near_the_hatches() {
+    // Two cells above the north hatch in the passage from the airlock, walking down into
+    // the hold's fight.
+    let mut state = fresh();
+    let (_, north) = hatch(&state, Dir::North).unwrap();
+    let (_, west) = hatch(&state, Dir::West).unwrap();
+    let (_, east) = hatch(&state, Dir::East).unwrap();
     put_player(
         &mut state,
         FxVec2 {
-            y: cell_center(0, 7).y,
-            ..HATCH
+            y: north.y.saturating_sub(Fx::from_num(64)),
+            ..north
         },
     );
     let mut south = TickInputs::default();
@@ -468,36 +508,33 @@ fn entering_a_room_seals_it_with_a_bang_that_draws_spawns_near_the_hatch() {
         move_mag: u8::MAX,
         ..PlayerInput::default()
     };
+    let mut sealed = Vec::new();
     for _ in 0..120 {
         if state.run != Run::Boarding {
             break;
         }
-        step(&mut state, &south);
+        sealed = step(&mut state, &south).events;
     }
     assert!(matches!(state.run, Run::Encounter { .. }));
-    // The shooter spawns 7 cells from the hatch in; the rushers, across the hold, are
-    // out of earshot of both hatches.
-    let (shooter, _) = state
+    // Sealing bangs all three of the hold's hatches, and each spawn heard the nearest:
+    // the shooter, top-left, the west one; the rushers, on the right, the east one.
+    let heard: Vec<_> = state
         .enemies
         .iter()
-        .find(|(_, e)| matches!(e.behavior, Behavior::Shooter { .. }))
-        .unwrap();
-    for (id, e) in state.enemies.iter() {
-        let expected = if id == shooter {
-            Awareness::Investigating {
-                spot: HATCH,
-                looking: 0,
-            }
-        } else {
-            Awareness::Unaware
-        };
-        assert_eq!(e.awareness, expected);
+        .map(|(_, e)| match e.behavior {
+            Behavior::Shooter { .. } => (e.awareness, west),
+            Behavior::Rusher { .. } => (e.awareness, east),
+        })
+        .collect();
+    assert_eq!(heard.len(), 3);
+    for (awareness, spot) in heard {
+        assert_eq!(awareness, Awareness::Investigating { spot, looking: 0 });
     }
-    // Its "?" shows once its spawn telegraph is over.
-    let telegraph = usize::from(SPAWN_TELEGRAPH_TICKS);
-    assert_eq!(idle(&mut state, telegraph - 1), []);
-    assert_eq!(
-        idle(&mut state, 1),
-        [Event::EnemyInvestigating { enemy: shooter }]
-    );
+    // First-wave spawns have no telegraph: their "?"s show on the sealing tick itself.
+    let investigating: Vec<_> = state
+        .enemies
+        .iter()
+        .map(|(enemy, _)| Event::EnemyInvestigating { enemy })
+        .collect();
+    assert_eq!(sealed, investigating);
 }
