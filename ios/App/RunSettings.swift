@@ -20,6 +20,9 @@ enum RunSettingsStore {
         ("regenDelaySecs", \.regenDelaySecs),
         ("regenChargeSecs", \.regenChargeSecs),
         ("fallSecs", \.fallSecs),
+        ("hearingRadius", \.hearingRadius),
+        ("alertRadius", \.alertRadius),
+        ("forgetSecs", \.forgetSecs),
     ]
     /// Absent = the difficulty's value.
     private static let overrides: [(key: String, path: WritableKeyPath<RunSettings, Float?>)] = [
@@ -121,12 +124,26 @@ struct RunSettingsSections: View {
             SliderRow(label: "Pit fall", value: $model.runSettings.fallSecs, range: 0.1...2, step: 0.05) {
                 String(format: "%.2f s", $0)
             }
+            SliderRow(label: "Enemy hearing", value: $model.runSettings.hearingRadius, range: 0...480, step: 16) {
+                cells($0)
+            }
+            SliderRow(label: "Enemy alert range", value: $model.runSettings.alertRadius, range: 0...480, step: 16) {
+                cells($0)
+            }
+            SliderRow(label: "Enemy search time", value: $model.runSettings.forgetSecs, range: 0.5...10, step: 0.5) {
+                String(format: "%.1f s", $0)
+            }
             Button("Reset to defaults") { model.resetTuning() }
         } header: {
             Text("Tuning")
         } footer: {
             Text("Applies on restart. Enemy values follow the difficulty until moved.")
         }
+    }
+
+    /// A distance in pt as room cells (32 pt each).
+    private func cells(_ points: Float) -> String {
+        String(format: "%.1f cells", points / 32)
     }
 
     private var charges: Binding<Float> {

@@ -4,7 +4,7 @@
 //! starting table; the debug Tuning settings override them for playtesting.
 //!
 //! Units are integers the sim can use without floats: speeds in points per second,
-//! times in ticks at [`TICK_HZ`], fractions in percent.
+//! distances in points, times in ticks at [`TICK_HZ`], fractions in percent.
 
 use crate::{Fx, TICK_HZ};
 use serde::{Deserialize, Serialize};
@@ -102,6 +102,13 @@ pub struct Tuning {
     pub regen_charge_ticks: u16,
     /// The pattern experiment: some waves field spread shooters instead of shooters.
     pub spread_shooter: bool,
+    /// A player's shot alerts every enemy this close, pt, walls or not.
+    pub hearing_radius: u16,
+    /// An enemy hunting a player alerts unaware allies this close, pt, that it can see.
+    pub alert_radius: u16,
+    /// An enemy that reaches where it last saw a player and finds nobody gives up after
+    /// this many ticks.
+    pub forget_ticks: u16,
 }
 
 impl Tuning {
@@ -129,6 +136,10 @@ impl Tuning {
         regen_delay_ticks: 36,
         regen_charge_ticks: 24,
         spread_shooter: true,
+        // 5 and 4 cells of 32 pt; 3 s.
+        hearing_radius: 160,
+        alert_radius: 128,
+        forget_ticks: 180,
     };
 }
 
@@ -174,6 +185,9 @@ impl RunConfig {
                 regen_delay_ticks: t.regen_delay_ticks.clamp(1, 600),
                 regen_charge_ticks: t.regen_charge_ticks.clamp(1, 600),
                 spread_shooter: t.spread_shooter,
+                hearing_radius: t.hearing_radius.min(2048),
+                alert_radius: t.alert_radius.min(2048),
+                forget_ticks: t.forget_ticks.clamp(1, 3600),
             },
         };
         let interval = sane.shooter_interval();

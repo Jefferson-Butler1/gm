@@ -1,9 +1,9 @@
 //! Rooms in play: walking through exits, room events (seal/unseal), waves from object
 //! layers, and extraction. Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
-use crate::combat::{Enemy, Pattern, SHOOTER_STAGGER};
+use crate::combat::{Awareness, Enemy, Pattern, SHOOTER_STAGGER};
 use crate::derelict::DERELICT;
-use crate::player::PLAYER_RADIUS;
+use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
     EnemyKind, LayerTrigger, Placement, PrototypeRoom, RoomAction, RoomTrigger, cell_center,
     cell_of,
@@ -29,7 +29,7 @@ pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEven
     state.run = if state.cleared(id) || !room.has_enemies() {
         Run::Boarding { room: id }
     } else {
-        spawn(state, room.base);
+        spawn(state, room.base, false);
         Run::Encounter {
             room: id,
             wave: 0,
@@ -60,6 +60,7 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     }
     let mut living = state.players.iter().flatten().filter(|p| p.alive());
     if let Run::Boarding { room } = state.run
+        && state.extraction_live()
         && living.any(|p| tiles.room.on_extraction(p.pos, PLAYER_RADIUS))
     {
         state.run = Run::Won { room };
@@ -99,7 +100,7 @@ fn next_wave(
         match layer.trigger {
             LayerTrigger::OnEnemiesCleared => {
                 let wave = wave.saturating_add(1);
-                spawn(state, layer.placements);
+                spawn(state, layer.placements, true);
                 state.run = Run::Encounter {
                     room: id,
                     wave,
@@ -111,8 +112,6 @@ fn next_wave(
         return;
     }
     let doors_locked = react(room, RoomTrigger::OnEnemiesCleared, doors_locked);
-    // Gungeon-style: clearing the room clears its enemy fire too.
-    state.enemy_bullets.retain(|_, _| false);
     state.set_cleared(id);
     events.events.push(Event::RoomCleared { room: id });
     state.run = if doors_locked {
@@ -138,10 +137,26 @@ fn react(room: &PrototypeRoom, trigger: RoomTrigger, doors_locked: bool) -> bool
         })
 }
 
-fn spawn(state: &mut SimState, placements: &[Placement]) {
+/// Spawns `placements`, unaware unless `hunting`: then each already knows where the
+/// nearest living player is (reinforcements join a fight in progress).
+fn spawn(state: &mut SimState, placements: &[Placement], hunting: bool) {
     for placement in placements {
         let pos = cell_center(placement.x, placement.y);
-        state.enemies.insert(match placement.kind {
+        let nearest = state
+            .players
+            .iter()
+            .flatten()
+            .filter(|p| p.alive())
+            .map(|p| p.pos)
+            .min_by_key(|&p| dist_sq(p, pos));
+        let awareness = match nearest {
+            Some(last_seen) if hunting => Awareness::Alert {
+                last_seen,
+                searching: 0,
+            },
+            Some(_) | None => Awareness::Unaware,
+        };
+        let enemy = match placement.kind {
             EnemyKind::Rusher => Enemy::rusher(pos),
             EnemyKind::Shooter | EnemyKind::SpreadShooter => {
                 // Spread placements field plain shooters unless the experiment is on.
@@ -156,6 +171,7 @@ fn spawn(state: &mut SimState, placements: &[Placement]) {
                 let delay = u16::try_from(delay).unwrap_or(0);
                 Enemy::shooter(pos, pattern, &state.config, delay)
             }
-        });
+        };
+        state.enemies.insert(Enemy { awareness, ..enemy });
     }
 }

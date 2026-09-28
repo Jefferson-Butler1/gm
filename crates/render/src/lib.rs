@@ -1,8 +1,10 @@
 //! wgpu renderer drawing into a Swift-owned `CAMetalLayer`.
 //!
 //! Reads the previous and current [`SimState`] and interpolates between them; it never
-//! mutates the sim. Hit flashes, muzzle flashes and death puffs come from sim [`Event`]s. Placeholder art is flat colored
-//! squares, circles and rings, converted to NDC on the CPU so there are no bind groups.
+//! mutates the sim. Hit flashes, muzzle flashes, death puffs and the "!" over an enemy
+//! that notices the party come from sim [`Event`]s. Placeholder art is flat colored
+//! squares, circles, rings and carets, converted to NDC on the CPU so there are no bind
+//! groups.
 //! On-screen controls arrive as an [`Overlay`] in view points, since their layout belongs
 //! to `game`.
 
@@ -24,6 +26,11 @@ const FLOOR_COLOR: [f32; 4] = [0.08, 0.09, 0.13, 1.0];
 const WALL_COLOR: [f32; 4] = [0.22, 0.25, 0.33, 1.0];
 /// Darker than the clear color, so pits read as holes in the floor.
 const PIT_COLOR: [f32; 4] = [0.0, 0.0, 0.01, 1.0];
+/// Brick lip along pit edges: the edge course, then the staggered inner course.
+const PIT_LIP_COLOR: [f32; 4] = [0.42, 0.33, 0.27, 1.0];
+const PIT_LIP_DARK_COLOR: [f32; 4] = [0.31, 0.24, 0.2, 1.0];
+/// Each lip course is this fraction of a cell deep, two courses in all.
+const PIT_LIP_COURSE: f32 = 0.125;
 const DOOR_OPEN_COLOR: [f32; 4] = [0.1, 0.3, 0.2, 1.0];
 const DOOR_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
 const PAD_COLOR: [f32; 4] = [0.3, 1.0, 0.6, 1.0];
@@ -40,6 +47,13 @@ const SHOOTER_COLOR: [f32; 4] = [0.7, 0.4, 1.0, 1.0];
 const SPREAD_SHOOTER_COLOR: [f32; 4] = [1.0, 0.35, 0.75, 1.0];
 /// A shooter's aim telegraph: a white core swelling to this fraction of its body.
 const AIM_CORE: f32 = 0.7;
+/// The "!" over an enemy that just noticed the party: a bar over a dot, their centers
+/// this far above the body's top edge, in world pt.
+const ALERT_COLOR: [f32; 4] = [1.0, 0.85, 0.2, 1.0];
+const ALERT_HALF_WIDTH: f32 = 2.5;
+const ALERT_BAR_HALF_HEIGHT: f32 = 6.0;
+const ALERT_DOT_RISE: f32 = 5.0;
+const ALERT_BAR_RISE: f32 = 16.0;
 const ENEMY_BULLET_COLOR: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
 /// The spawn telegraph's ring starts this many radii beyond the body.
 const TELEGRAPH_RING_GROWTH: f32 = 1.5;
@@ -60,9 +74,17 @@ const VENT_COLOR: [f32; 3] = [1.0, 0.75, 0.25];
 const BUTTON_READY_ALPHA: f32 = 0.35;
 const BUTTON_UNREADY_ALPHA: f32 = 0.1;
 
+/// With no enemy on screen, a caret at the screen edge points to the nearest one: its
+/// half-size, and its inset from the edge, in view points.
+const CARET_COLOR: [f32; 4] = [1.0, 0.2, 0.2, 0.9];
+const CARET_HALF: f32 = 9.0;
+const CARET_MARGIN: f32 = 16.0;
+
 const SQUARE: f32 = 0.0;
 const CIRCLE: f32 = 1.0;
 const RING: f32 = 2.0;
+/// A triangle pointing along the quad's `dir`.
+const CARET: f32 = 3.0;
 
 const SHADER: &str = r"
 struct Inst {
@@ -70,12 +92,14 @@ struct Inst {
     @location(1) half_size: vec2f,
     @location(2) color: vec4f,
     @location(3) shape: f32,
+    @location(4) dir: vec2f,
 };
 struct VOut {
     @builtin(position) pos: vec4f,
     @location(0) uv: vec2f,
     @location(1) color: vec4f,
     @location(2) shape: f32,
+    @location(3) dir: vec2f,
 };
 @vertex fn vs(@builtin(vertex_index) vi: u32, i: Inst) -> VOut {
     var corners = array<vec2f, 6>(
@@ -87,11 +111,17 @@ struct VOut {
     o.uv = c;
     o.color = i.color;
     o.shape = i.shape;
+    o.dir = i.dir;
     return o;
 }
-// shape: 0 = square, 1 = filled circle, 2 = ring.
+// shape: 0 = square, 1 = filled circle, 2 = ring, 3 = caret.
 @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    if (v.shape > 0.5) {
+    if (v.shape > 2.5) {
+        // In the caret's frame (x along dir): a triangle inscribed in the unit circle,
+        // tip at (1, 0), base at x = -0.5.
+        let p = vec2f(dot(v.uv, v.dir), dot(v.uv, vec2f(-v.dir.y, v.dir.x)));
+        if (p.x < -0.5 || abs(p.y) > (1.0 - p.x) * 0.57735) { discard; }
+    } else if (v.shape > 0.5) {
         let d = length(v.uv);
         if (d > 1.0) { discard; }
         if (v.shape > 1.5 && d < 0.88) { discard; }
@@ -108,6 +138,9 @@ struct Quad {
     half: [f32; 2],
     color: [f32; 4],
     shape: f32,
+    /// Unit direction a caret points, NDC-oriented (+y up); ignored by other shapes. True
+    /// to angle only on a quad that is square in points.
+    dir: [f32; 2],
 }
 
 /// On-screen controls, in view points (origin top-left).
@@ -179,6 +212,8 @@ pub struct Renderer {
 enum Flash {
     /// An enemy took a hit.
     Enemy(EnemyId),
+    /// An enemy noticed the party: a "!" over it.
+    Alert(EnemyId),
     /// A player took a hit.
     Player(usize),
     /// A player's gun fired.
@@ -192,6 +227,7 @@ impl Flash {
     const fn ticks(self) -> u16 {
         match self {
             Self::Enemy(_) | Self::Player(_) => 6,
+            Self::Alert(_) => 40,
             Self::Muzzle(_) => 3,
             Self::Puff(_) => 15,
         }
@@ -285,6 +321,7 @@ impl Renderer {
                 Event::PlayerHit { slot } | Event::PlayerFell { slot } => Flash::Player(slot),
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
+                Event::EnemyAlerted { enemy } => Flash::Alert(enemy),
                 Event::PlayerDied { .. }
                 | Event::Restarted
                 | Event::RoomEntered { .. }
@@ -414,24 +451,35 @@ impl Renderer {
         if let Some(room) = sim::DERELICT.room(current.run.room()) {
             let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| p.0);
             self.camera = self.camera_for(room, focus);
-            let pad_live = !matches!(current.run, sim::Run::Encounter { .. });
-            self.push_room(room, current.run.doors_locked(), pad_live);
+            self.push_room(room, current.run.doors_locked(), current.extraction_live());
         }
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
         let telegraph = current.config.tuning.shooter_telegraph;
+        // Where each enemy is drawn, spawns telegraphing in included.
+        let mut enemies = Vec::with_capacity(current.enemies.len());
         for (id, e) in current.enemies.iter() {
             if !e.active() {
                 self.push_telegraph(e, radius, alpha);
+                enemies.push([e.pos.x.to_num(), e.pos.y.to_num()]);
                 continue;
             }
             let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
             let pos = lerp(from, e.pos, alpha);
+            enemies.push(pos);
             let color = if self.flashing(Flash::Enemy(id)) {
                 HIT_COLOR
             } else {
                 enemy_color(e)
             };
             self.push_world(pos, [radius, radius], color, CIRCLE);
+            if self.flashing(Flash::Alert(id)) {
+                let [x, top] = [pos[0], pos[1] - radius];
+                let dot = [x, top - ALERT_DOT_RISE];
+                let bar = [x, top - ALERT_BAR_RISE];
+                let half = ALERT_HALF_WIDTH;
+                self.push_world(dot, [half, half], ALERT_COLOR, SQUARE);
+                self.push_world(bar, [half, ALERT_BAR_HALF_HEIGHT], ALERT_COLOR, SQUARE);
+            }
             if let Some(left) = e.aiming(telegraph) {
                 // 0 -> 1 over the telegraph, interpolated like `push_telegraph`.
                 let aimed =
@@ -475,6 +523,54 @@ impl Renderer {
             self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
         }
         self.push_effects(&players, current.tick, alpha);
+        if let Some((focus, _)) = players.iter().flatten().next() {
+            self.push_enemy_caret(*focus, &enemies);
+        }
+    }
+
+    /// With enemies in the room but none on screen, a caret on the screen edge points to
+    /// the nearest one: where the line from the player (`focus`) to it leaves the screen,
+    /// inset by [`CARET_MARGIN`]. `enemies` are room-space positions, as drawn.
+    fn push_enemy_caret(&mut self, focus: [f32; 2], enemies: &[[f32; 2]]) {
+        let [w, h] = self.size_pt;
+        let on_screen = |[x, y]: [f32; 2]| (0.0..=w).contains(&x) && (0.0..=h).contains(&y);
+        if enemies.iter().any(|&e| on_screen(self.view_point(e))) {
+            return;
+        }
+        let offset = |[x, y]: [f32; 2]| [x - focus[0], y - focus[1]];
+        let dist_sq = |e: [f32; 2]| {
+            let [dx, dy] = offset(e);
+            dx.mul_add(dx, dy * dy)
+        };
+        let Some(&nearest) = enemies
+            .iter()
+            .min_by(|a, b| dist_sq(**a).total_cmp(&dist_sq(**b)))
+        else {
+            return;
+        };
+        let [dx, dy] = offset(nearest);
+        let len = dx.hypot(dy);
+        if len <= f32::EPSILON {
+            return;
+        }
+        let [px, py] = self.view_point(focus);
+        // How far along (dx, dy) to the inset edge on one axis; the nearer axis wins.
+        let reach = |d: f32, p: f32, size: f32| {
+            if d > 0.0 {
+                (size - CARET_MARGIN - p) / d
+            } else if d < 0.0 {
+                (CARET_MARGIN - p) / d
+            } else {
+                f32::INFINITY
+            }
+        };
+        let t = reach(dx, px, w).min(reach(dy, py, h)).max(0.0);
+        let at = [dx.mul_add(t, px), dy.mul_add(t, py)];
+        self.push_screen(at, CARET_HALF, CARET_COLOR, CARET);
+        if let Some(caret) = self.quads.last_mut() {
+            // View points are +y down; the shader's frame is +y up.
+            caret.dir = [dx / len, -dy / len];
+        }
     }
 
     /// Muzzle flashes and death puffs, fading over their lifetimes. `players` are the
@@ -504,7 +600,7 @@ impl Renderer {
                     let core = rusher * left;
                     self.push_world(at, [core, core], [1.0, 1.0, 1.0, 0.6 * left], CIRCLE);
                 }
-                Flash::Enemy(_) | Flash::Player(_) => {}
+                Flash::Enemy(_) | Flash::Player(_) | Flash::Alert(_) => {}
             }
         }
         self.flashes = effects;
@@ -619,6 +715,7 @@ impl Renderer {
                 );
             }
         }
+        self.push_pit_lips(room);
         if let Some((x, y)) = room.extraction {
             // The ring marks the pad's reach: touching the cell with any part of the body.
             let center = sim::room::cell_center(x, y);
@@ -628,6 +725,87 @@ impl Renderer {
             self.push_world(at, [half, half], [r, g, b, alpha], SQUARE);
             let reach = half + sim::PLAYER_RADIUS.to_num::<f32>();
             self.push_world(at, [reach, reach], [r, g, b, alpha * 0.8], RING);
+        }
+    }
+
+    /// A brick lip on every floor edge that drops into a pit, so pits read at a glance: two
+    /// staggered courses of half-tile bricks laid along the edge, on the floor side.
+    fn push_pit_lips(&mut self, room: &PrototypeRoom) {
+        let cell = sim::room::CELL.to_num::<f32>();
+        let course = cell * PIT_LIP_COURSE;
+        for y in 0..room.height() {
+            for x in 0..room.width() {
+                let (Ok(cx), Ok(cy)) = (i32::try_from(x), i32::try_from(y)) else {
+                    continue;
+                };
+                if room.cell(cx, cy) != Cell::Floor || room.exit_at(cx, cy).is_some() {
+                    continue;
+                }
+                let center = sim::room::cell_center(x, y);
+                let [mx, my] = [center.x.to_num::<f32>(), center.y.to_num::<f32>()];
+                // (dx, dy): the unit step toward the pit neighbor.
+                for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                    let (Some(nx), Some(ny)) = (cx.checked_add(dx), cy.checked_add(dy)) else {
+                        continue;
+                    };
+                    if room.cell(nx, ny) != Cell::Pit {
+                        continue;
+                    }
+                    let [nx, ny] = [
+                        f32::from(i8::try_from(dx).unwrap_or(0)),
+                        f32::from(i8::try_from(dy).unwrap_or(0)),
+                    ];
+                    // (course, color, bricks as (center along the edge, length), in cells).
+                    // The outer course sits on the edge; the inner one is staggered half a brick.
+                    for (row, color, bricks) in [
+                        (0.5, PIT_LIP_COLOR, &[(-0.25_f32, 0.5_f32), (0.25, 0.5)][..]),
+                        (
+                            1.5,
+                            PIT_LIP_DARK_COLOR,
+                            &[(-0.375, 0.25), (0.0, 0.5), (0.375, 0.25)][..],
+                        ),
+                    ] {
+                        let depth = course.mul_add(-row, cell / 2.0);
+                        for &(along, len) in bricks {
+                            let along = along * cell;
+                            let at = [
+                                ny.abs().mul_add(along, nx.mul_add(depth, mx)),
+                                nx.abs().mul_add(along, ny.mul_add(depth, my)),
+                            ];
+                            // Shrunk a hair on each side so mortar lines show between bricks.
+                            let (long, short) =
+                                (len.mul_add(cell / 2.0, -0.75), course / 2.0 - 0.5);
+                            let half = if dx == 0 {
+                                [long, short]
+                            } else {
+                                [short, long]
+                            };
+                            self.push_world(at, half, color, SQUARE);
+                        }
+                    }
+                }
+                // Corner stones, so the lip turns corners cleanly: outside a pit's corner
+                // (only the diagonal is pit) to join the two runs, and inside one (both
+                // sides are pit) to cover where the runs cross.
+                for (dx, dy) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                    let pit = |x: Option<i32>, y: Option<i32>| {
+                        x.zip(y).is_some_and(|(x, y)| room.cell(x, y) == Cell::Pit)
+                    };
+                    let (nx, ny) = (cx.checked_add(dx), cy.checked_add(dy));
+                    let (side_x, side_y) = (pit(nx, Some(cy)), pit(Some(cx), ny));
+                    let outside = pit(nx, ny) && !side_x && !side_y;
+                    if !(outside || side_x && side_y) {
+                        continue;
+                    }
+                    let [sx, sy] = [
+                        f32::from(i8::try_from(dx).unwrap_or(0)),
+                        f32::from(i8::try_from(dy).unwrap_or(0)),
+                    ];
+                    let inset = cell / 2.0 - course;
+                    let at = [sx.mul_add(inset, mx), sy.mul_add(inset, my)];
+                    self.push_world(at, [course - 0.5, course - 0.5], PIT_LIP_COLOR, SQUARE);
+                }
+            }
         }
     }
 
@@ -650,6 +828,7 @@ impl Renderer {
             half: [hx * sx, hy * sy],
             color,
             shape,
+            dir: [1.0, 0.0],
         });
     }
 
@@ -661,6 +840,7 @@ impl Renderer {
             half: [radius / w * 2.0, radius / h * 2.0],
             color,
             shape,
+            dir: [1.0, 0.0],
         });
     }
 }
@@ -707,8 +887,7 @@ fn make_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Re
         bind_group_layouts: &[],
         immediate_size: 0,
     });
-    let attrs =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
+    let attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32, 4 => Float32x2];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("quad"),
         layout: Some(&layout),
