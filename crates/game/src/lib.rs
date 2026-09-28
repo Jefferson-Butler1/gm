@@ -258,6 +258,13 @@ impl Game {
         self.lock().current.set_config(settings.run_config());
     }
 
+    /// Tilt peek: gravity in screen axes (+x right, +y down), in g, polled each frame;
+    /// `None` while the peek is off.
+    pub fn set_tilt(&self, gravity: Option<Vec<f32>>) {
+        let gravity = gravity.and_then(|g| Some([*g.first()?, *g.get(1)?]));
+        self.lock().look.set_tilt(gravity);
+    }
+
     pub fn set_camera(&self, settings: CameraSettings) {
         eprintln!("[gm] camera: {settings:?}");
         self.lock().look.set(settings);
