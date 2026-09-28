@@ -16,6 +16,7 @@ final class GameUIView: UIView {
     private var game: Game?
     private var link: CADisplayLink?
     private var lastSeq: UInt64 = 0
+    private let haptics = HapticsPlayer()
 
     init(model: GameModel) {
         self.model = model
@@ -86,6 +87,7 @@ final class GameUIView: UIView {
     @objc private func step(_ link: CADisplayLink) {
         guard let game else { return }
         let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
+        if model.haptics { haptics.play(hud.haptics) }
         // Only touch SwiftUI state when Rust publishes new numbers.
         if hud.seq != lastSeq {
             lastSeq = hud.seq

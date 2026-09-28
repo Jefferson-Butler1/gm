@@ -35,6 +35,7 @@ final class GameModel {
     private static let controlsKey = "controls"
     private static let assistKey = "controls.assist"
     private static let cameraKey = "camera"
+    private static let hapticsKey = "haptics"
 
     var hud: HudData?
     var controlsKey: String = UserDefaults.standard.string(forKey: GameModel.controlsKey)
@@ -65,6 +66,10 @@ final class GameModel {
             ], forKey: Self.cameraKey)
             game?.setCamera(settings: camera)
         }
+    }
+    /// Swift-only: GameUIView skips the frame's haptics when off.
+    var haptics: Bool = UserDefaults.standard.object(forKey: GameModel.hapticsKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(haptics, forKey: Self.hapticsKey) }
     }
     /// Difficulty and tuning; the game applies them live.
     var runSettings: RunSettings = RunSettingsStore.load() {
@@ -241,6 +246,9 @@ struct ControlsSettings: View {
                                 .font(.system(.body, design: .monospaced))
                         }
                     }
+                }
+                Section("Feedback") {
+                    Toggle("Haptics", isOn: $model.haptics)
                 }
                 Section("Camera") {
                     Picker("Camera look", selection: $model.camera.look) {

@@ -6,11 +6,13 @@
 
 mod camera;
 mod controls;
+mod haptics;
 mod settings;
 mod stats;
 
 use camera::{CameraLook, CameraSettings};
 use controls::{Controls, FireMode, Scheme, Viewport};
+use haptics::{Haptic, Haptics};
 use render::Renderer;
 use settings::RunSettings;
 use sim::{Run, SimState, TICK_HZ, TickInputs};
@@ -62,6 +64,9 @@ pub struct HudData {
     /// the vent (0 when not venting).
     pub venting: bool,
     pub vent_progress: f32,
+    /// This frame's haptics, strongest first. Per frame: play them whether or not `seq`
+    /// changed.
+    pub haptics: Vec<Haptic>,
 }
 
 /// The run as the HUD needs it.
@@ -119,6 +124,7 @@ struct Inner {
     sim_clock: Option<f64>,
     paused: bool,
     stats: Stats,
+    haptics: Haptics,
 }
 
 #[derive(uniffi::Object)]
@@ -176,6 +182,7 @@ impl Game {
                 sim_clock: None,
                 paused: false,
                 stats: Stats::default(),
+                haptics: Haptics::default(),
             }),
         }))
     }
@@ -281,6 +288,7 @@ impl Game {
                 g.prev.clone_from(&g.current);
                 let events = sim::step(&mut g.current, &inputs);
                 g.renderer.note_events(g.current.tick, &events.events);
+                g.haptics.note(&g.prev, &g.current, &events.events);
                 clock += dt;
             }
             g.sim_clock = Some(clock);
@@ -325,11 +333,14 @@ impl Game {
             player.map(|p| g.renderer.view_point([p.pos.x.to_num(), p.pos.y.to_num()]));
         g.controls.set_player_view(player_view);
         g.stats.set_status(&g.current);
-        g.stats.record(
-            timestamp,
-            started.elapsed().as_secs_f64(),
-            presented,
-            g.current.tick,
-        )
+        HudData {
+            haptics: g.haptics.take(timestamp),
+            ..g.stats.record(
+                timestamp,
+                started.elapsed().as_secs_f64(),
+                presented,
+                g.current.tick,
+            )
+        }
     }
 }
