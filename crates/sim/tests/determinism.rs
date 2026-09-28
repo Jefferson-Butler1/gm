@@ -8,7 +8,7 @@ use sim::{
 use std::ops::Range;
 use std::sync::Arc;
 
-const SEED: u64 = 23;
+const SEED: u64 = 2;
 const TICKS: u64 = 2700;
 /// Ticks when the party holds only RESTART (the scripted start, then after the death).
 /// RESTART also abandons a live run, so each window presses it on its last tick only:
@@ -29,7 +29,7 @@ const AUTO_FIGHT: Range<u64> = 1355..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x2959_f95e_92c7_92cb;
+const GOLDEN_TRACE: u64 = 0xa099_93bc_e763_0325;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist

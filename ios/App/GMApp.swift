@@ -175,6 +175,11 @@ final class GameModel {
         game?.restart()
     }
 
+    /// Debug: a fresh run on a ship that places pool room `name`.
+    func previewRoom(_ name: String) {
+        game?.previewRoom(name: name)
+    }
+
     private static func loadCamera() -> CameraSettings {
         var camera = defaultCameraSettings()
         guard let saved = UserDefaults.standard.dictionary(forKey: cameraKey) else { return camera }
@@ -379,6 +384,23 @@ struct ControlsSettings: View {
                         model.restart()
                         dismiss()
                     }
+                }
+                Section {
+                    Picker("Room preview", selection: Binding<String?>(
+                        get: { nil },
+                        set: { name in
+                            if let name {
+                                model.previewRoom(name)
+                                dismiss()
+                            }
+                        })) {
+                        Text("Pick a room").tag(String?.none)
+                        ForEach(previewRooms(), id: \.self) { name in
+                            Text(name).tag(Optional(name))
+                        }
+                    }
+                } footer: {
+                    Text("Debug. Starts a new run on a ship that has the room.")
                 }
             }
             .navigationTitle("Settings")
