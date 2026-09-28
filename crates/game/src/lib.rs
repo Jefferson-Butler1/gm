@@ -207,9 +207,9 @@ impl Game {
         self.lock().controls.set_scheme(scheme);
     }
 
-    /// [`FireMode::Trigger`]'s trigger (the volume-up button) went down or up.
-    pub fn set_trigger(&self, held: bool) {
-        self.lock().controls.set_trigger(held);
+    /// [`FireMode::Trigger`]: the volume-up button was pressed; one shot.
+    pub fn pull_trigger(&self) {
+        self.lock().controls.pull_trigger();
     }
 
     /// A dodge from a hardware button (volume-down).

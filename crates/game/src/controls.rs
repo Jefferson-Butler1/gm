@@ -45,8 +45,12 @@ pub enum Scheme {
     /// D: like A, with aim bent toward targets by the assist strength.
     AimAssist,
     /// E: C with B's anchored move stick.
-    #[default]
     FixedAutoAim,
+    /// F: Brawl Stars / Soul Knight style. B's anchored sticks, but the right one is a
+    /// fire button: held still it fires at the nearest target, dragged it aims by hand.
+    /// Dodge button.
+    #[default]
+    FireButton,
 }
 
 impl Scheme {
@@ -58,7 +62,7 @@ impl Scheme {
     /// Whether `side`'s stick (0 move, 1 aim) is anchored at its base.
     const fn fixed(self, side: usize) -> bool {
         match self {
-            Self::FixedSticks => true,
+            Self::FixedSticks | Self::FireButton => true,
             Self::FixedAutoAim => side == 0,
             Self::FloatingSticks | Self::AutoAim | Self::AimAssist => false,
         }
@@ -76,9 +80,9 @@ pub enum FireMode {
     Tap,
     /// Drag to aim; lifting the finger fires one shot along the aim.
     Release,
-    /// The phone's volume-up button is the trigger (Swift reports it); the aim side only
-    /// aims, and fires along the last aim when released. Auto-aim schemes fire at the
-    /// nearest target.
+    /// Each press of the phone's volume-up button fires one shot (Swift reports them; a
+    /// held button repeats). The aim side only aims; with it released, shots go along the
+    /// last aim. Auto-aim schemes and an undeflected fire button fire at the nearest target.
     Trigger,
 }
 
@@ -196,8 +200,6 @@ pub struct Controls {
     player_view: Option<[f32; 2]>,
     /// A vent tap waiting for the next sim tick.
     vent: bool,
-    /// [`FireMode::Trigger`]: the volume-up trigger is held.
-    trigger: bool,
     /// The last aim stick angle, in turns: where a trigger shot goes with no stick held.
     last_aim: f32,
     /// A restart tap waiting for the next sim tick.
@@ -216,7 +218,6 @@ impl Controls {
             shot: None,
             player_view: None,
             vent: false,
-            trigger: false,
             last_aim: 0.0,
             restart: false,
         }
@@ -252,8 +253,18 @@ impl Controls {
         self.shot = None;
     }
 
-    pub const fn set_trigger(&mut self, held: bool) {
-        self.trigger = held;
+    /// One [`FireMode::Trigger`] shot, on the next tick.
+    pub fn pull_trigger(&mut self) {
+        let aim = self.sticks[1]
+            .as_ref()
+            .map(Stick::polar)
+            .filter(|&(_, mag)| mag > AIM_DEADZONE);
+        self.shot = Some(match (self.scheme, aim) {
+            (s, _) if s.auto_aim() => Shot::Auto,
+            (_, Some((t, _))) => Shot::At(t),
+            (Scheme::FireButton, None) => Shot::Auto,
+            (_, None) => Shot::At(self.last_aim),
+        });
     }
 
     /// A dodge from outside the touch layout (the volume-down button).
@@ -328,7 +339,14 @@ impl Controls {
         }
         if self.scheme.fixed(side) {
             if dist(p, base) < FIXED_GRAB_RADIUS {
-                let mut stick = Stick::new(id, base, p, true);
+                // Scheme F's fire button measures a drag from where the thumb landed, so
+                // an off-center press still auto-aims.
+                let origin = if self.scheme == Scheme::FireButton && side == 1 {
+                    p
+                } else {
+                    base
+                };
+                let mut stick = Stick::new(id, origin, p, true);
                 stick.drag(p);
                 *slot = Some(stick);
             }
@@ -356,7 +374,11 @@ impl Controls {
             return Some(Shot::Auto);
         }
         let (t, mag) = stick.polar();
-        (mag > AIM_DEADZONE).then_some(Shot::At(t))
+        if mag > AIM_DEADZONE {
+            Some(Shot::At(t))
+        } else {
+            (self.scheme == Scheme::FireButton).then_some(Shot::Auto)
+        }
     }
 
     /// How far the aim is pushed, `0..=1`, for the camera's aim look: the aim stick's
@@ -406,13 +428,11 @@ impl Controls {
         // Hold fires from the held stick; tap and release only through pending shots.
         let held = self.fire_mode == FireMode::Hold;
         let shot = match self.scheme {
-            _ if self.fire_mode == FireMode::Trigger => self.trigger.then(|| {
-                if self.scheme.auto_aim() {
-                    Shot::Auto
-                } else {
-                    Shot::At(aim.map_or(self.last_aim, |(t, _)| t))
-                }
-            }),
+            _ if self.fire_mode == FireMode::Trigger => None,
+            Scheme::FireButton if held => right
+                .as_ref()
+                .map(|_| aim.map_or(Shot::Auto, |(t, _)| Shot::At(t))),
+            Scheme::FireButton => None,
             Scheme::FloatingSticks | Scheme::FixedSticks | Scheme::AimAssist => {
                 aim.filter(|_| held).map(|(t, _)| Shot::At(t))
             }
@@ -692,11 +712,26 @@ mod tests {
         c.touch(1, TouchPhase::Began, x, y + STICK_RADIUS); // straight down
         let (fired_angle, aimed_angle) = aimed(c.next_input());
         assert_eq!((fired_angle, aimed_angle), (None, Some(1 << 14)));
-        c.set_trigger(true);
+        c.pull_trigger();
         assert_eq!(fired(c.next_input()), Some(1 << 14));
+        assert_eq!(fired(c.next_input()), None, "one shot per pull");
         c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
+        c.pull_trigger();
         assert_eq!(fired(c.next_input()), Some(1 << 14), "along the last aim");
-        c.set_trigger(false);
+    }
+
+    #[test]
+    fn scheme_f_fires_at_the_nearest_target_until_dragged_to_aim() {
+        let mut c = controls(Scheme::FireButton);
+        let [x, y] = c.layout.bases[1];
+        c.touch(1, TouchPhase::Began, x, y);
+        let input = c.next_input();
+        assert!(input.buttons.contains(Buttons::FIRE | Buttons::AUTO_AIM));
+        c.touch(1, TouchPhase::Moved, x, y + STICK_RADIUS); // dragged straight down
+        let input = c.next_input();
+        assert!(!input.buttons.contains(Buttons::AUTO_AIM));
+        assert_eq!(fired(input), Some(1 << 14));
+        c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
         assert_eq!(fired(c.next_input()), None);
     }
 
