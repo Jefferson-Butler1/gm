@@ -4,8 +4,8 @@
 //! mutates the sim. The whole floor is drawn, but only the rooms the party has revealed
 //! (ETG fog); the camera follows the player. Hit flashes, muzzle flashes, death puffs and the "!" over an enemy
 //! that notices the party come from sim [`Event`]s. Placeholder art is flat colored
-//! squares, circles, rings and carets, converted to NDC on the CPU so there are no bind
-//! groups.
+//! squares, circles, rings, carets and sectors (enemy sight cones), converted to NDC on
+//! the CPU so there are no bind groups.
 //! On-screen controls arrive as an [`Overlay`] in view points, since their layout belongs
 //! to `game`.
 
@@ -13,8 +13,8 @@ use bytemuck::{Pod, Zeroable};
 use sim::room::{Cell, Placed};
 use sim::ship::Spot;
 use sim::{
-    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, RoomId, Ship,
-    SimState,
+    Awareness, Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, RoomId,
+    Ship, SimState,
 };
 use std::f32::consts::TAU;
 use std::ffi::c_void;
@@ -93,6 +93,15 @@ const CIRCLE: f32 = 1.0;
 const RING: f32 = 2.0;
 /// A triangle pointing along the quad's `dir`.
 const CARET: f32 = 3.0;
+/// A wedge of the disc centered on the quad's `dir`, `param` the cosine of its half-angle
+/// (-1 = the whole disc), fading toward the rim.
+const SECTOR: f32 = 4.0;
+
+/// An enemy's sight cone, faint so it reads as a hint rather than a wall of color: drawn
+/// this far out (sight itself has no range), dim while unaware, red once hunting.
+const CONE_RADIUS: f32 = 112.0;
+const CONE_UNAWARE_COLOR: [f32; 4] = [1.0, 0.95, 0.7, 0.1];
+const CONE_ALERT_COLOR: [f32; 4] = [1.0, 0.3, 0.25, 0.16];
 
 const SHADER: &str = r"
 struct Inst {
@@ -101,6 +110,7 @@ struct Inst {
     @location(2) color: vec4f,
     @location(3) shape: f32,
     @location(4) dir: vec2f,
+    @location(5) param: f32,
 };
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -108,6 +118,7 @@ struct VOut {
     @location(1) color: vec4f,
     @location(2) shape: f32,
     @location(3) dir: vec2f,
+    @location(4) param: f32,
 };
 @vertex fn vs(@builtin(vertex_index) vi: u32, i: Inst) -> VOut {
     var corners = array<vec2f, 6>(
@@ -120,11 +131,17 @@ struct VOut {
     o.color = i.color;
     o.shape = i.shape;
     o.dir = i.dir;
+    o.param = i.param;
     return o;
 }
-// shape: 0 = square, 1 = filled circle, 2 = ring, 3 = caret.
+// shape: 0 = square, 1 = filled circle, 2 = ring, 3 = caret, 4 = sector.
 @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    if (v.shape > 2.5) {
+    if (v.shape > 3.5) {
+        // Within the half-angle of dir: cos(angle to uv) >= param, without normalizing.
+        let d = length(v.uv);
+        if (d > 1.0 || dot(v.uv, v.dir) < v.param * d) { discard; }
+        return vec4f(v.color.rgb, v.color.a * (1.0 - d * d));
+    } else if (v.shape > 2.5) {
         // In the caret's frame (x along dir): a triangle inscribed in the unit circle,
         // tip at (1, 0), base at x = -0.5.
         let p = vec2f(dot(v.uv, v.dir), dot(v.uv, vec2f(-v.dir.y, v.dir.x)));
@@ -146,9 +163,11 @@ struct Quad {
     half: [f32; 2],
     color: [f32; 4],
     shape: f32,
-    /// Unit direction a caret points, NDC-oriented (+y up); ignored by other shapes. True
-    /// to angle only on a quad that is square in points.
+    /// Unit direction a caret points or a sector faces, NDC-oriented (+y up); ignored by
+    /// other shapes. True to angle only on a quad that is square in points.
     dir: [f32; 2],
+    /// A sector's cosine of its half-angle; ignored by other shapes.
+    param: f32,
 }
 
 /// On-screen controls, in view points (origin top-left).
@@ -457,6 +476,9 @@ impl Renderer {
         self.push_floor(current);
         let radius = sim::ENEMY_RADIUS.to_num::<f32>();
         let telegraph = current.config.tuning.shooter_telegraph;
+        let cos_half = f32::from(current.config.tuning.sight_half_angle)
+            .to_radians()
+            .cos();
         // Where each enemy is drawn, spawns telegraphing in included.
         let mut enemies = Vec::with_capacity(current.enemies.len());
         for (id, e) in current.enemies.iter() {
@@ -468,6 +490,8 @@ impl Renderer {
             let from = prev.enemies.get(id).map_or(e.pos, |p| p.pos);
             let pos = lerp(from, e.pos, alpha);
             enemies.push(pos);
+            let facing = prev.enemies.get(id).map_or(e.facing, |p| p.facing);
+            self.push_cone(pos, e, facing, cos_half, alpha);
             let color = if self.flashing(Flash::Enemy(id)) {
                 HIT_COLOR
             } else {
@@ -619,6 +643,25 @@ impl Renderer {
         let [r, g, b, _] = enemy_color(e);
         self.push_world(pos, [ring, ring], [r, g, b, 0.9], RING);
         self.push_world(pos, [radius, radius], [r, g, b, 0.3 * (1.0 - left)], CIRCLE);
+    }
+
+    /// `e`'s sight cone at `pos`, turning from `prev_facing` by `alpha`. `cos_half` is the
+    /// cosine of the run's `sight_half_angle`.
+    fn push_cone(&mut self, pos: [f32; 2], e: &Enemy, prev_facing: u16, cos_half: f32, alpha: f32) {
+        let turn = f32::from(sim::trig::angle_diff(prev_facing, e.facing));
+        let turns = turn.mul_add(alpha, f32::from(prev_facing)) / 65536.0;
+        let (sin, cos) = (turns * TAU).sin_cos();
+        let color = if e.awareness == Awareness::Unaware {
+            CONE_UNAWARE_COLOR
+        } else {
+            CONE_ALERT_COLOR
+        };
+        self.push_world(pos, [CONE_RADIUS, CONE_RADIUS], color, SECTOR);
+        if let Some(cone) = self.quads.last_mut() {
+            // Floor space is +y down; the shader's frame is +y up.
+            cone.dir = [cos, -sin];
+            cone.param = cos_half;
+        }
     }
 
     /// `fall` is how much of a fall into a pit is left (1 -> 0): the player shrinks and
@@ -870,6 +913,7 @@ impl Renderer {
             color,
             shape,
             dir: [1.0, 0.0],
+            param: 0.0,
         });
     }
 
@@ -882,6 +926,7 @@ impl Renderer {
             color,
             shape,
             dir: [1.0, 0.0],
+            param: 0.0,
         });
     }
 }
@@ -928,7 +973,7 @@ fn make_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Re
         bind_group_layouts: &[],
         immediate_size: 0,
     });
-    let attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32, 4 => Float32x2];
+    let attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32, 4 => Float32x2, 5 => Float32];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("quad"),
         layout: Some(&layout),
