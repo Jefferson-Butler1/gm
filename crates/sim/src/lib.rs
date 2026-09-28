@@ -218,6 +218,10 @@ pub enum Event {
     EnemyAlerted {
         enemy: EnemyId,
     },
+    /// A shooter fired (one event per volley, however many pellets).
+    EnemyFired {
+        enemy: EnemyId,
+    },
     /// Also preceded by the killing `EnemyHit`. `pos` is where it died; the ID is stale.
     EnemyKilled {
         enemy: EnemyId,

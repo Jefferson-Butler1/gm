@@ -4,10 +4,12 @@
 //! calls [`Game::frame`], which steps the sim at a fixed [`TICK_HZ`] toward the display
 //! time, renders `prev` -> `current` interpolated, and returns [`HudData`] for `SwiftUI`.
 
+mod audio;
 mod controls;
 mod settings;
 mod stats;
 
+use audio::{Audio, Mood, Sound};
 use controls::{Controls, FireMode, Scheme, Viewport};
 use render::Renderer;
 use settings::RunSettings;
@@ -60,6 +62,11 @@ pub struct HudData {
     /// the vent (0 when not venting).
     pub venting: bool,
     pub vent_progress: f32,
+    /// This frame's sounds, each at most once. Per frame: play them whether or not `seq`
+    /// changed.
+    pub sounds: Vec<Sound>,
+    /// The music to play. Per frame, like `sounds`.
+    pub mood: Mood,
 }
 
 /// The run as the HUD needs it.
@@ -116,6 +123,7 @@ struct Inner {
     sim_clock: Option<f64>,
     paused: bool,
     stats: Stats,
+    audio: Audio,
 }
 
 #[derive(uniffi::Object)]
@@ -172,6 +180,7 @@ impl Game {
                 sim_clock: None,
                 paused: false,
                 stats: Stats::default(),
+                audio: Audio::default(),
             }),
         }))
     }
@@ -272,6 +281,7 @@ impl Game {
                 g.prev.clone_from(&g.current);
                 let events = sim::step(&mut g.current, &inputs);
                 g.renderer.note_events(g.current.tick, &events.events);
+                g.audio.note(&g.prev, &g.current, &events.events);
                 clock += dt;
             }
             g.sim_clock = Some(clock);
@@ -294,11 +304,15 @@ impl Game {
             player.map(|p| g.renderer.view_point([p.pos.x.to_num(), p.pos.y.to_num()]));
         g.controls.set_player_view(player_view);
         g.stats.set_status(&g.current);
-        g.stats.record(
-            timestamp,
-            started.elapsed().as_secs_f64(),
-            presented,
-            g.current.tick,
-        )
+        HudData {
+            sounds: g.audio.take(),
+            mood: Mood::of(g.current.run),
+            ..g.stats.record(
+                timestamp,
+                started.elapsed().as_secs_f64(),
+                presented,
+                g.current.tick,
+            )
+        }
     }
 }
