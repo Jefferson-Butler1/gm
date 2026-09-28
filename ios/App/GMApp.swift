@@ -36,7 +36,7 @@ final class GameModel {
         (.release, "release", "Release · drag to aim, lift to fire"),
         (.trigger, "trigger", "Volume · each volume-up press fires, volume-down dodges"),
     ]
-    private static let schemeKey = "controls.scheme"
+    private static let schemeKey = "controls.scheme.v2"  // v2: resets saved schemes to F
     private static let fireModeKey = "controls.fireMode"
     private static let assistKey = "controls.assist"
     private static let cameraKey = "camera"
