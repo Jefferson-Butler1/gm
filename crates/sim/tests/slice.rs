@@ -55,13 +55,12 @@ fn every_airlock_starts_locked_and_the_bridges_last_wave_unlocks_them_all() {
     // Another room's last wave dying unlocks nothing.
     let mut other = state.clone();
     let midship = RoomId(4);
-    assert_eq!(
-        other.ship.room(midship).map(|r| r.room.category),
-        Some(Category::Normal)
-    );
+    let room = other.ship.room(midship).map(|r| r.room);
+    assert_eq!(room.map(|r| r.category), Some(Category::Normal));
+    let waves = room.map_or(0, |r| r.reinforcements.len());
     other.run = Run::Encounter {
         room: midship,
-        wave: 1,
+        wave: u8::try_from(waves).unwrap(),
     };
     let events = step(&mut other, &TickInputs::default()).events;
     assert!(
