@@ -539,6 +539,7 @@ fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_ope
     let player = pos(&state);
     let rusher = state.enemies.insert(Enemy {
         spawn_ticks: 0,
+        facing: UP,
         ..Enemy::rusher(FxVec2 {
             y: HOLD_TOP.saturating_add(CELL.saturating_mul_int(4)),
             ..player
