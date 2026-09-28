@@ -33,6 +33,7 @@ final class GameModel {
         (.hold, "hold", "Hold · auto-fire while aiming"),
         (.tap, "tap", "Tap · one shot per touch"),
         (.release, "release", "Release · drag to aim, lift to fire"),
+        (.trigger, "trigger", "Volume · volume-up fires, volume-down dodges"),
     ]
     private static let schemeKey = "controls.scheme"
     private static let fireModeKey = "controls.fireMode"
@@ -50,6 +51,7 @@ final class GameModel {
         didSet {
             UserDefaults.standard.set(Self.fireModes.first { $0.mode == fireMode }?.key, forKey: Self.fireModeKey)
             game?.setFireMode(mode: fireMode)
+            syncVolumeButtons()
         }
     }
     /// Only used by scheme D. The real default is a combat-tuning decision (issue #15).
@@ -82,6 +84,7 @@ final class GameModel {
     var settingsOpen = false { didSet { syncPause() } }
     var appActive = true { didSet { syncPause() } }
     @ObservationIgnored private var game: Game?
+    @ObservationIgnored private let volumeButtons = VolumeButtons()
     @ObservationIgnored private var paused = false
 
     /// Pushes the persisted settings into a freshly created game.
@@ -91,7 +94,21 @@ final class GameModel {
         game.setFireMode(mode: fireMode)
         game.setAssistStrength(strength: assist)
         game.setCamera(settings: camera)
+        volumeButtons.onTrigger = { [weak game] held in game?.setTrigger(held: held) }
+        volumeButtons.onDodge = { [weak game] in game?.pressDodge() }
+        syncVolumeButtons()
         if paused { game.pause() }
+    }
+
+    /// The volume buttons are game buttons only in the Volume fire mode.
+    private func syncVolumeButtons() {
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+        if fireMode == .trigger, game != nil, let window {
+            volumeButtons.start(in: window)
+        } else {
+            volumeButtons.stop()
+        }
     }
 
     /// Only acts on transitions: `resume` resyncs the sim clock.

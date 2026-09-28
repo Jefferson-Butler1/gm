@@ -207,6 +207,16 @@ impl Game {
         self.lock().controls.set_scheme(scheme);
     }
 
+    /// [`FireMode::Trigger`]'s trigger (the volume-up button) went down or up.
+    pub fn set_trigger(&self, held: bool) {
+        self.lock().controls.set_trigger(held);
+    }
+
+    /// A dodge from a hardware button (volume-down).
+    pub fn press_dodge(&self) {
+        self.lock().controls.press_dodge();
+    }
+
     /// Aim assist strength for [`Scheme::AimAssist`], `0..=1`.
     pub fn set_assist_strength(&self, strength: f32) {
         eprintln!("[gm] assist={strength}");
