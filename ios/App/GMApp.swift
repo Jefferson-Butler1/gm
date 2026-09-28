@@ -44,8 +44,18 @@ final class GameModel {
             UserDefaults.standard.set(controlsKey, forKey: Self.controlsKey)
             game?.setScheme(scheme: scheme)
             game?.setFireMode(mode: fireMode)
+            game?.setLayout(layout: layouts[controlsKey])
         }
     }
+    /// Control layouts from the editor, by preset key; a preset without one uses Rust's
+    /// default. Applied through `setLayout` on attach, preset change and editor save.
+    var layouts: [String: ControlLayout] = ControlLayoutStore.load() {
+        didSet { ControlLayoutStore.save(layouts) }
+    }
+    /// The layout editor is open over the paused game.
+    var editingLayout = false { didSet { syncPause() } }
+    /// The viewport GameUIView last laid out: what the layout editor places controls on.
+    var viewport: Viewport?
     var scheme: Scheme { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).scheme }
     var fireMode: FireMode { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).fireMode }
     /// Only used by scheme D. The real default is a combat-tuning decision (issue #15).
@@ -97,7 +107,8 @@ final class GameModel {
     var masterVolume: Float = GameModel.loadVolume("master", 0) { didSet { saveVolumes() } }
     var musicVolume: Float = GameModel.loadVolume("music", 0.6) { didSet { saveVolumes() } }
     var sfxVolume: Float = GameModel.loadVolume("sfx", 0.8) { didSet { saveVolumes() } }
-    /// The game pauses while either holds; pause lives outside the sim (Rust stops stepping).
+    /// The game pauses while either holds, or the layout editor is open; pause lives outside
+    /// the sim (Rust stops stepping).
     var settingsOpen = false { didSet { syncPause() } }
     var appActive = true { didSet { syncPause() } }
     @ObservationIgnored private var game: Game?
@@ -119,6 +130,7 @@ final class GameModel {
         self.game = game
         game.setScheme(scheme: scheme)
         game.setFireMode(mode: fireMode)
+        game.setLayout(layout: layouts[controlsKey])
         game.setAssistStrength(strength: assist)
         game.setCamera(settings: camera)
         game.setGyroSensitivity(sensitivity: gyroSensitivity)
@@ -127,10 +139,28 @@ final class GameModel {
 
     /// Only acts on transitions: `resume` resyncs the sim clock.
     private func syncPause() {
-        let shouldPause = settingsOpen || !appActive
+        let shouldPause = settingsOpen || editingLayout || !appActive
         guard shouldPause != paused else { return }
         paused = shouldPause
         if paused { game?.pause() } else { game?.resume() }
+    }
+
+    /// Shows `layout` live while the editor drags, without saving it.
+    func previewLayout(_ layout: ControlLayout) {
+        game?.setLayout(layout: layout)
+    }
+
+    /// Closes the layout editor. Saving stores `layout` for the current preset (the
+    /// default is stored as no layout) and exports every preset's layout for reading off
+    /// the device; cancelling (`nil`) puts the saved one back.
+    func finishLayoutEditing(saving layout: ControlLayout?) {
+        if let layout, let viewport {
+            let isDefault = layout == defaultControlLayout(scheme: scheme, viewport: viewport)
+            layouts[controlsKey] = isDefault ? nil : layout
+            ControlLayoutStore.export(layouts, active: controlsKey, viewport: viewport)
+        }
+        game?.setLayout(layout: layouts[controlsKey])
+        editingLayout = false
     }
 
     /// Tuning back to Rust's defaults; the difficulty stays.
@@ -220,15 +250,19 @@ struct ContentView: View {
                     EmptyView()
                 }
             }
-            Button { model.settingsOpen = true } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 18))
-                    .padding(10)
-                    .background(.white.opacity(0.15), in: Circle())
-                    .foregroundStyle(.white)
+            if model.editingLayout, let viewport = model.viewport {
+                LayoutEditor(model: model, viewport: viewport)
+            } else {
+                Button { model.settingsOpen = true } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 18))
+                        .padding(10)
+                        .background(.white.opacity(0.15), in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(8)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            .padding(8)
         }
         .background(.black)
         .statusBarHidden(true)
@@ -274,6 +308,12 @@ struct ControlsSettings: View {
                     }
                     .pickerStyle(.inline)
                     .labelsHidden()
+                    // Pause holds across the handoff: the editor opens before the sheet closes.
+                    Button("Edit layout") {
+                        model.editingLayout = true
+                        dismiss()
+                    }
+                    .disabled(model.viewport == nil)
                 }
                 if model.scheme == .aimAssist {
                     Section("Aim assist strength") {
