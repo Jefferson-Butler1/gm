@@ -86,6 +86,8 @@ final class GameUIView: UIView {
     @objc private func step(_ link: CADisplayLink) {
         guard let game else { return }
         let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
+        // Sounds and mood are per frame, not gated on `seq`.
+        model.audio.frame(sounds: hud.sounds, mood: hud.mood)
         // Only touch SwiftUI state when Rust publishes new numbers.
         if hud.seq != lastSeq {
             lastSeq = hud.seq

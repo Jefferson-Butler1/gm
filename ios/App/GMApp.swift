@@ -29,6 +29,7 @@ final class GameModel {
     private static let schemeKey = "controls.scheme"
     private static let fireModeKey = "controls.fireMode"
     private static let assistKey = "controls.assist"
+    private static let volumeKey = "audio.volume.v2"  // v2: sound starts off
 
     var hud: HudData?
     var scheme: Scheme = GameModel.loadScheme() {
@@ -57,11 +58,28 @@ final class GameModel {
             game?.setRunSettings(settings: runSettings)
         }
     }
+    /// Plays Rust's per-frame sounds and music mood (GameUIView feeds it).
+    @ObservationIgnored let audio = AudioEngine()
+    /// Sound volumes, 0...1; apply live.
+    var masterVolume: Float = GameModel.loadVolume("master", 0) { didSet { saveVolumes() } }
+    var musicVolume: Float = GameModel.loadVolume("music", 0.6) { didSet { saveVolumes() } }
+    var sfxVolume: Float = GameModel.loadVolume("sfx", 0.8) { didSet { saveVolumes() } }
     /// The game pauses while either holds; pause lives outside the sim (Rust stops stepping).
     var settingsOpen = false { didSet { syncPause() } }
     var appActive = true { didSet { syncPause() } }
     @ObservationIgnored private var game: Game?
     @ObservationIgnored private var paused = false
+
+    init() {
+        audio.setVolumes(master: masterVolume, music: musicVolume, sfx: sfxVolume)
+    }
+
+    private func saveVolumes() {
+        UserDefaults.standard.set([
+            "master": Double(masterVolume), "music": Double(musicVolume), "sfx": Double(sfxVolume),
+        ], forKey: Self.volumeKey)
+        audio.setVolumes(master: masterVolume, music: musicVolume, sfx: sfxVolume)
+    }
 
     /// Pushes the persisted settings into a freshly created game.
     func attach(_ game: Game) {
@@ -100,6 +118,11 @@ final class GameModel {
     private static func loadScheme() -> Scheme {
         let key = UserDefaults.standard.string(forKey: schemeKey)
         return schemes.first { $0.key == key }?.scheme ?? .fixedSticks
+    }
+
+    private static func loadVolume(_ key: String, _ fallback: Float) -> Float {
+        let saved = UserDefaults.standard.dictionary(forKey: volumeKey)?[key] as? Double
+        return saved.map(Float.init) ?? fallback
     }
 }
 
@@ -227,6 +250,17 @@ struct ControlsSettings: View {
                             Text(String(format: "%.2f", model.assist))
                                 .font(.system(.body, design: .monospaced))
                         }
+                    }
+                }
+                Section("Sound") {
+                    SliderRow(label: "Master", value: $model.masterVolume, range: 0...1, step: 0.05) {
+                        "\(Int(($0 * 100).rounded()))%"
+                    }
+                    SliderRow(label: "Music", value: $model.musicVolume, range: 0...1, step: 0.05) {
+                        "\(Int(($0 * 100).rounded()))%"
+                    }
+                    SliderRow(label: "Effects", value: $model.sfxVolume, range: 0...1, step: 0.05) {
+                        "\(Int(($0 * 100).rounded()))%"
                     }
                 }
                 RunSettingsSections(model: model)
