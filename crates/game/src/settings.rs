@@ -47,11 +47,15 @@ pub struct RunSettings {
     /// A fall into a pit, before the respawn.
     pub fall_secs: f32,
     /// Enemy awareness, pt: how far an unaware enemy hears a shot, and how far a hunting
-    /// one alerts its allies. (Sight is line of sight, at any range.)
+    /// one alerts its allies. (Sight is line of sight inside its cone, at any range.)
     pub hearing_radius: f32,
     pub alert_radius: f32,
     /// How long a hunter searches where it lost the player before giving up.
     pub forget_secs: f32,
+    /// Degrees either side of an enemy's facing it can see; 180 = all around.
+    pub sight_half_angle: f32,
+    /// How fast an enemy turns, degrees per second.
+    pub turn_rate: f32,
 }
 
 /// What a difficulty sets for the enemy tunables, for sliders without an override.
@@ -85,6 +89,8 @@ pub fn default_run_settings() -> RunSettings {
         hearing_radius: f32::from(t.hearing_radius),
         alert_radius: f32::from(t.alert_radius),
         forget_secs: secs(t.forget_ticks),
+        sight_half_angle: f32::from(t.sight_half_angle),
+        turn_rate: f32::from(t.turn_rate),
     }
 }
 
@@ -127,6 +133,8 @@ impl RunSettings {
                 hearing_radius: whole(self.hearing_radius),
                 alert_radius: whole(self.alert_radius),
                 forget_ticks: ticks(self.forget_secs),
+                sight_half_angle: whole(self.sight_half_angle),
+                turn_rate: whole(self.turn_rate),
                 ..Tuning::NORMAL
             },
         }
