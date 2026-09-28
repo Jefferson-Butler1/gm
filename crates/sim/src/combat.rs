@@ -10,7 +10,7 @@ use crate::path::{FlowField, FlowFields, walk_clear};
 use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
 use crate::rng::Rng;
 use crate::room::{cell_center, cell_of};
-use crate::ship::{Body, Tiles};
+use crate::ship::{Body, HatchId, Spot, Tiles};
 use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -357,9 +357,10 @@ impl Enemy {
 
 /// One live tick, in order: players (move, fall, respawn, fire), their bullets, enemies
 /// (notice, move, fire, separate, contact, telegraph countdown), enemy bullets, the death
-/// check, then the room (waves, hatches, the airlocks).
+/// check, the access panels shot, then the room (waves, hatches, chests, the airlocks).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
-    // Hatches only change in `encounter::tick`, after everything that moves.
+    // Hatches only change after everything that moves: panels shot, then
+    // `encounter::tick`.
     let (ship, hatches) = (Arc::clone(&state.ship), state.hatches.clone());
     let tiles = Tiles::new(&ship, &hatches);
     // Who alerts allies this tick is decided by last tick's states, so an alert spreads
@@ -377,7 +378,7 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
         })
         .collect();
     let shots = players(state, inputs, tiles, events);
-    bullets(state, tiles, events);
+    let struck = bullets(state, tiles, events);
     let senses = Senses {
         tiles,
         tuning: state.config.tuning,
@@ -392,6 +393,9 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
             ticks_until_restart: DEATH_TICKS,
         };
         return;
+    }
+    for hatch in struck {
+        encounter::reveal(state, hatch);
     }
     encounter::tick(state, events);
 }
@@ -465,7 +469,9 @@ fn fly(bullet: &mut Bullet, tiles: Tiles<'_>) -> bool {
     bullet.ticks_left > 0 && !tiles.blocks_point(bullet.pos, Body::Shot)
 }
 
-fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) {
+/// Returns the hatches bullets stopped in: shot access panels open (see
+/// [`encounter::reveal`]).
+fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) -> Vec<HatchId> {
     // Each bullet hits at most the first live enemy it overlaps, in slot order. A hit
     // alerts it to the nearest living player (bullets don't record who fired them).
     let damage = state.config.tuning.damage;
@@ -477,8 +483,15 @@ fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) {
         .map(|p| p.pos)
         .collect();
     let enemies = &mut state.enemies;
+    let mut struck = Vec::new();
     state.bullets.retain(|_, bullet| {
         if !fly(bullet, tiles) {
+            if let Spot::Hatch(hatch) = tiles
+                .ship
+                .spot(cell_of(bullet.pos.x), cell_of(bullet.pos.y))
+            {
+                struck.push(hatch);
+            }
             return false;
         }
         let reach = BULLET_RADIUS.saturating_add(ENEMY_RADIUS);
@@ -498,6 +511,7 @@ fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) {
         false
     });
     enemies.retain(|_, e| e.hp > 0);
+    struck
 }
 
 /// Enemy bullets hurt the first player (in slot order) they overlap who can take the hit.

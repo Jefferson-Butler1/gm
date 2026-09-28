@@ -3,7 +3,7 @@
 //! room to the bridge and out an airlock.
 
 use sim::room::{CELL, Category, Cell, cell_center, cell_of};
-use sim::ship::{Body, Tiles};
+use sim::ship::{Body, HatchKind, Tiles};
 use sim::{
     Arrival, Buttons, Difficulty, Event, FxVec2, HatchState, MAX_HP, MOVE_BUCKETS, Pattern,
     PlayerInput, Rng, RoomId, Run, RunConfig, Ship, SimState, TickInputs, step, trig,
@@ -25,7 +25,7 @@ fn bridge(ship: &Ship) -> RoomId {
 /// The cells of the airlocks' outer hatches, and their live states.
 fn outer_hatches(state: &SimState) -> Vec<((usize, usize), HatchState)> {
     (state.ship.hatches().iter().zip(&state.hatches))
-        .filter(|(h, _)| h.airlock)
+        .filter(|(h, _)| h.kind == HatchKind::Airlock)
         .map(|(h, &live)| (h.gap.cell(0), live))
         .collect()
 }
@@ -35,7 +35,7 @@ fn in_an_outer_hatch() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     let (start, _) = state.ship.start();
     let hatch = (state.ship.hatches().iter())
-        .find(|h| h.airlock && h.rooms[0] == start)
+        .find(|h| h.kind == HatchKind::Airlock && h.rooms[0] == start)
         .map(|h| h.gap.cell(0))
         .unwrap_or_default();
     if let Some(player) = &mut state.players[0] {

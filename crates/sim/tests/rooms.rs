@@ -1,21 +1,22 @@
 //! Rooms through the public API: format validation, placing rooms in one floor grid,
 //! walls and pits, walking through hatches with no cut, fog, seal on entry, waves, open
-//! on clear, and enemies kept in their room.
+//! on clear, enemies kept in their room, access panels, and chests.
 
 use sim::room::{
     CELL, Category, Connection, Derelict, DerelictError, Dir, EnemyKind, Exit, ExitKind, ExitRef,
     Placed, Placement, PrototypeRoom, RoomAction, RoomError, RoomTrigger, Theme, cell_center,
 };
 use sim::{
-    Awareness, Buttons, CORVETTE, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, HatchId, HatchState,
-    MAX_HP, PLAYER_RADIUS, POOL, PlayerInput, RoomId, Run, RunConfig, SimState, TickInputs, Tuning,
-    per_tick, step,
+    Awareness, Buttons, CORVETTE, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, HatchId, HatchKind,
+    HatchState, MAX_HP, PLAYER_RADIUS, POOL, PlayerInput, RoomId, Run, RunConfig, SimState,
+    TickInputs, Tuning, per_tick, reveal, step,
 };
 
-const SEED: u64 = 3;
+const SEED: u64 = 10;
 const LEFT: u16 = 32768;
 const UP: u16 = 49152;
 /// Move buckets (32 per turn).
+const EAST: u8 = 0;
 const SOUTH: u8 = 8;
 const NORTH: u8 = 24;
 
@@ -313,8 +314,8 @@ const ENGINE_ROOM: RoomId = RoomId(3);
 const CARGO_HOLD: RoomId = RoomId(4);
 /// The cargo hold's hatches: up to the passage from the port airlock (floor cells 57..=58
 /// of row 13), and east to the passage to the bridge.
-const INTO_HOLD: HatchId = HatchId(8);
-const OUT_OF_HOLD: HatchId = HatchId(9);
+const INTO_HOLD: HatchId = HatchId(10);
+const OUT_OF_HOLD: HatchId = HatchId(11);
 /// The hold's first row: its top edge is the hatch's bottom edge.
 const HOLD_TOP: Fx = CELL.saturating_mul_int(14);
 
@@ -557,4 +558,90 @@ fn bullets_fly_over_pits_and_stop_at_walls() {
         state.bullets.is_empty(),
         "stopped by the wall, not lifetime"
     );
+}
+
+/// The crawlspace's access panel, and the middle of the dead-end passage below it (floor
+/// cells 22..=23, 12..=13, off the engine room's north hatch).
+fn at_the_panel() -> (SimState, HatchId) {
+    let mut state = SimState::new(SEED, RunConfig::default());
+    let panel = (state.ship.hatches().iter())
+        .position(|h| h.kind == HatchKind::Panel)
+        .and_then(|i| u16::try_from(i).ok())
+        .map_or(HatchId(u16::MAX), HatchId);
+    place(
+        &mut state,
+        FxVec2 {
+            x: CELL.saturating_mul_int(23), // centered on the 2-cell gap
+            y: cell_center(0, 13).y,
+        },
+    );
+    (state, panel)
+}
+
+#[test]
+fn an_access_panel_stops_everything_until_a_shot_reveals_it_then_it_opens_like_a_hatch() {
+    let (mut state, panel) = at_the_panel();
+    let crawlspace = state.ship.hatches()[usize::from(panel.0)].rooms[0];
+    assert_eq!(
+        state.ship.room(crawlspace).map(|r| r.room.category),
+        Some(Category::Secret)
+    );
+    assert_eq!(state.hatches[usize::from(panel.0)], HatchState::Panel);
+    let before = pos(&state);
+    run(&mut state, 30, &walk(NORTH));
+    assert_eq!(
+        pos(&state).y,
+        CELL.saturating_mul_int(12).saturating_add(PLAYER_RADIUS)
+    );
+    assert!(pos(&state).y < before.y, "walked up to it, and no further");
+
+    let mut fire_up = TickInputs::default();
+    fire_up.players[0] = PlayerInput {
+        aim: UP,
+        buttons: Buttons::FIRE,
+        ..PlayerInput::default()
+    };
+    run(&mut state, 1, &fire_up);
+    run(&mut state, 3, &TickInputs::default());
+    assert!(state.bullets.is_empty());
+    assert_eq!(state.hatches[usize::from(panel.0)], HatchState::Closed);
+    assert!(!state.visited(crawlspace), "still fogged until touched");
+
+    let events = run(&mut state, 30, &walk(NORTH));
+    assert!(
+        events.contains(&Event::HatchOpened { hatch: panel }),
+        "{events:?}"
+    );
+    assert!(state.visited(crawlspace));
+}
+
+#[test]
+fn reveal_turns_only_a_panel_closed() {
+    let (mut state, panel) = at_the_panel();
+    assert!(reveal(&mut state, panel));
+    assert_eq!(state.hatches[usize::from(panel.0)], HatchState::Closed);
+    assert!(!reveal(&mut state, panel), "already revealed");
+    let plain = HatchId(0);
+    assert!(!reveal(&mut state, plain));
+    assert_eq!(state.hatches[usize::from(plain.0)], HatchState::Closed);
+}
+
+#[test]
+fn touching_a_chest_opens_it_once() {
+    let mut state = SimState::new(SEED, RunConfig::default());
+    let stores = (0..)
+        .map(RoomId)
+        .zip(state.ship.rooms())
+        .find(|(_, r)| r.room.category == Category::Reward)
+        .map(|(id, _)| id)
+        .unwrap();
+    let (x, y) = state.ship.chest(stores).unwrap();
+    // Standing just west of it, then walking onto it.
+    place(&mut state, cell_center(x.saturating_sub(1), y));
+    assert!(run(&mut state, 1, &TickInputs::default()).is_empty());
+    let events = run(&mut state, 30, &walk(EAST));
+    assert_eq!(events, [Event::ChestOpened { room: stores }]);
+    assert!(state.chest_opened(stores));
+    place(&mut state, cell_center(x, y));
+    assert!(run(&mut state, 10, &TickInputs::default()).is_empty());
 }

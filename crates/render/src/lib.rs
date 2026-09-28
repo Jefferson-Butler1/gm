@@ -10,10 +10,11 @@
 //! to `game`.
 
 use bytemuck::{Pod, Zeroable};
-use sim::room::Cell;
+use sim::room::{Cell, Dir};
 use sim::ship::Spot;
 use sim::{
-    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, Ship, SimState,
+    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchKind, HatchState, Pattern, Player, RoomId,
+    Ship, SimState,
 };
 use std::f32::consts::TAU;
 use std::ffi::c_void;
@@ -45,6 +46,14 @@ const HATCH_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
 const AIRLOCK_LOCKED_COLOR: [f32; 4] = [0.75, 0.1, 0.12, 1.0];
 const AIRLOCK_OPEN_COLOR: [f32; 4] = [0.3, 1.0, 0.6, 1.0];
 const AIRLOCK_PULSE_TICKS: u16 = 60;
+/// An access panel is wall with this faint seam through it: findable if you look.
+const PANEL_SEAM_COLOR: [f32; 4] = [0.17, 0.19, 0.26, 1.0];
+/// The placeholder chest: a gold box with a dark lid line; opened, dull brown.
+const CHEST_COLOR: [f32; 4] = [0.9, 0.65, 0.2, 1.0];
+const CHEST_LID_COLOR: [f32; 4] = [0.45, 0.3, 0.1, 1.0];
+const CHEST_OPEN_COLOR: [f32; 4] = [0.35, 0.25, 0.12, 1.0];
+/// Its half-size, in world pt.
+const CHEST_HALF: [f32; 2] = [11.0, 8.0];
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
 const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
@@ -381,6 +390,7 @@ impl Renderer {
                 | Event::HatchOpened { .. }
                 | Event::WaveStarted { .. }
                 | Event::RoomCleared { .. }
+                | Event::ChestOpened { .. }
                 | Event::Won => continue,
             };
             if !self.flashes.contains(&(flash, tick)) {
@@ -787,9 +797,10 @@ impl Renderer {
         ]
     }
 
-    /// Every revealed room and corridor, and the hatches in their walls by state: an
-    /// airlock's outer hatch red while locked, then pulsing green (over `alpha` of the
-    /// tick, so the pulse runs smooth). Unrevealed rooms stay black.
+    /// Every revealed room and corridor, the hatches in their walls by state (an airlock's
+    /// outer hatch red while locked, then pulsing green over `alpha` of the tick, so the
+    /// pulse runs smooth; an access panel as wall), and their chests. Unrevealed rooms stay
+    /// black.
     fn push_floor(&mut self, state: &SimState, alpha: f32) {
         let ship = &state.ship;
         self.push_cells(state);
@@ -805,7 +816,7 @@ impl Renderer {
                 continue;
             }
             let color = match live {
-                HatchState::Closed if hatch.airlock => {
+                HatchState::Closed if hatch.kind == HatchKind::Airlock => {
                     let [r, g, b, _] = AIRLOCK_OPEN_COLOR;
                     [r, g, b, pulse.mul_add(0.6, 0.4)]
                 }
@@ -813,6 +824,10 @@ impl Renderer {
                 HatchState::Open => HATCH_OPEN_COLOR,
                 HatchState::Sealed => HATCH_SEALED_COLOR,
                 HatchState::AirlockLocked => AIRLOCK_LOCKED_COLOR,
+                HatchState::Panel => {
+                    self.push_panel(hatch.gap);
+                    continue;
+                }
             };
             for i in 0..hatch.gap.width {
                 let (x, y) = hatch.gap.cell(i);
@@ -820,6 +835,38 @@ impl Renderer {
                 let at = [center.x.to_num(), center.y.to_num()];
                 self.push_world(at, [half - 0.5, half - 0.5], color, SQUARE);
             }
+        }
+        let rooms = (0..).map(RoomId).take(ship.rooms().len());
+        for id in rooms.filter(|&id| state.visited(id)) {
+            let Some((x, y)) = ship.chest(id) else {
+                continue;
+            };
+            let center = sim::room::cell_center(x, y);
+            let at = [center.x.to_num(), center.y.to_num()];
+            let opened = state.chest_opened(id);
+            let (color, lid) = if opened {
+                (CHEST_OPEN_COLOR, CHEST_OPEN_COLOR)
+            } else {
+                (CHEST_COLOR, CHEST_LID_COLOR)
+            };
+            let [w, h] = CHEST_HALF;
+            self.push_world(at, [w, h], color, SQUARE);
+            self.push_world([at[0], at[1] - h / 3.0], [w, 1.0], lid, SQUARE);
+        }
+    }
+
+    /// An access panel over `gap`: wall, but for a faint seam down its middle, along the
+    /// wall.
+    fn push_panel(&mut self, gap: sim::room::Exit) {
+        let half = sim::room::CELL.to_num::<f32>() / 2.0;
+        let along_x = matches!(gap.dir, Dir::North | Dir::South);
+        for i in 0..gap.width {
+            let (x, y) = gap.cell(i);
+            let center = sim::room::cell_center(x, y);
+            let at = [center.x.to_num(), center.y.to_num()];
+            self.push_world(at, [half - 0.5, half - 0.5], WALL_COLOR, SQUARE);
+            let seam = if along_x { [half, 0.75] } else { [0.75, half] };
+            self.push_world(at, seam, PANEL_SEAM_COLOR, SQUARE);
         }
     }
 
@@ -991,7 +1038,7 @@ const fn enemy_color(e: &Enemy) -> [f32; 4] {
 /// the way out. (How to find them is otherwise unspecified; the caret is the minimal aid.)
 fn unlocked_airlocks(state: &SimState) -> Vec<[f32; 2]> {
     (state.ship.hatches().iter().zip(&state.hatches))
-        .filter(|&(h, s)| h.airlock && *s == HatchState::Closed)
+        .filter(|&(h, s)| h.kind == HatchKind::Airlock && *s == HatchState::Closed)
         .map(|(h, _)| {
             let (x, y) = h.gap.cell(0);
             let at = sim::room::cell_center(x, y);

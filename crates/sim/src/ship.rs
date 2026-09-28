@@ -10,7 +10,7 @@
 //! through an open one; enemies never leave their room (see [`Tiles`]).
 
 use crate::checksum;
-use crate::hull::{AROUND, CORVETTE, Slot, Template, toward};
+use crate::hull::{AROUND, CORVETTE, Slot, Template, Zone, toward};
 use crate::pool::POOL;
 use crate::room::{
     Category, Cell, Derelict, Dir, Exit, Placed, PrototypeRoom, Theme, cell_center, cell_of,
@@ -24,7 +24,7 @@ use std::hash::{Hash, Hasher};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HatchId(pub u16);
 
-/// A hatch's live state. A later step adds a shoot-open access panel.
+/// A hatch's live state; each starts as its [`HatchKind::initial`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HatchState {
     /// Shut: stops bullets and sight. A player stepping into it opens it, revealing the
@@ -37,6 +37,9 @@ pub enum HatchState {
     /// An airlock's outer hatch, before the bridge is clear: stops everything. Clearing
     /// the bridge turns every one Closed.
     AirlockLocked,
+    /// A crawlspace's access panel, drawn as wall: stops everything. Shooting it, or
+    /// anything else that calls [`crate::reveal`] (future EMPs), turns it Closed.
+    Panel,
 }
 
 /// What occupies a floor cell.
@@ -51,15 +54,37 @@ pub enum Spot {
     Hatch(HatchId),
 }
 
+/// What a hatch is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HatchKind {
+    /// Between a room and a corridor.
+    Plain,
+    /// An airlock's outer hatch, onto space: stepping into it once the bridge unlocks it
+    /// leaves the ship, winning the run.
+    Airlock,
+    /// Into a crawlspace: hidden until revealed, then plain.
+    Panel,
+}
+
+impl HatchKind {
+    /// The state a hatch of this kind starts a run in.
+    #[must_use]
+    pub const fn initial(self) -> HatchState {
+        match self {
+            Self::Plain => HatchState::Closed,
+            Self::Airlock => HatchState::AirlockLocked,
+            Self::Panel => HatchState::Panel,
+        }
+    }
+}
+
 /// Where a hatch is: the rooms on either side and its gap, in floor cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hatch {
     /// An airlock's outer hatch has the airlock on both sides: its far side is space.
     pub rooms: [RoomId; 2],
     pub gap: Exit,
-    /// An airlock's outer hatch: it starts [`HatchState::AirlockLocked`], and stepping
-    /// into it once the bridge unlocks it leaves the ship, winning the run.
-    pub airlock: bool,
+    pub kind: HatchKind,
 }
 
 /// The static floor: never changes during a run.
@@ -105,8 +130,8 @@ impl Ship {
     ///    at the slot with its unused hatch points walled.
     /// 2. Each stretch of corridor becomes a region, walled by the hull and by any outside
     ///    cell touching it (a left-out slot, a room's void).
-    /// 3. A hatch joins each slot's open hatch points to the corridor outside, and each
-    ///    airlock gets its outer hatch, onto space.
+    /// 3. A hatch joins each slot's open hatch points to the corridor outside (a panel, for
+    ///    a crawlspace), and each airlock gets its outer hatch, onto space.
     /// 4. The party boards through a random airlock.
     ///
     /// It can't fail: templates are validated against the pool when the crate builds, and
@@ -146,10 +171,15 @@ impl Ship {
                 for i in 0..gap.width {
                     set(&mut spots, width, gap.cell(i), Spot::Hatch(hatch));
                 }
+                let kind = if slot.zone == Zone::Crawlspace {
+                    HatchKind::Panel
+                } else {
+                    HatchKind::Plain
+                };
                 hatches.push(Hatch {
                     rooms: [id, corridor],
                     gap,
-                    airlock: false,
+                    kind,
                 });
             }
             if let Some(dir) = slot.airlock {
@@ -161,7 +191,7 @@ impl Ship {
                 hatches.push(Hatch {
                     rooms: [id, id],
                     gap,
-                    airlock: true,
+                    kind: HatchKind::Airlock,
                 });
             }
         }
@@ -218,7 +248,7 @@ impl Ship {
             hatches.push(Hatch {
                 rooms: [room(link.from.room), room(link.to.room)],
                 gap,
-                airlock: false,
+                kind: HatchKind::Plain,
             });
         }
         let start_room = RoomId(u16::try_from(derelict.start_room).unwrap_or(0));
@@ -338,6 +368,24 @@ impl Ship {
     pub fn inside(&self, p: FxVec2, half: Fx) -> Option<RoomId> {
         let in_hatch = cells_under(p, half).any(|(x, y)| matches!(self.spot(x, y), Spot::Hatch(_)));
         if in_hatch { None } else { self.room_at(p) }
+    }
+
+    /// The floor cell of `room`'s chest, if it has one (see [`PrototypeRoom::chest`]).
+    #[must_use]
+    pub fn chest(&self, room: RoomId) -> Option<(usize, usize)> {
+        let placed = self.room(room)?;
+        let (x, y) = placed.room.chest()?;
+        Some((x.saturating_add(placed.at.0), y.saturating_add(placed.at.1)))
+    }
+
+    /// The room whose chest a box of half-size `half` at `p` (its center in that room)
+    /// overlaps, if any.
+    #[must_use]
+    pub fn on_chest(&self, p: FxVec2, half: Fx) -> Option<RoomId> {
+        let room = self.room_at(p)?;
+        let (x, y) = self.chest(room)?;
+        let chest = (i32::try_from(x).ok()?, i32::try_from(y).ok()?);
+        cells_under(p, half).any(|c| c == chest).then_some(room)
     }
 
     /// The hatches a box of half-size `half` at `p` overlaps.
@@ -569,10 +617,14 @@ impl<'a> Tiles<'a> {
                         HatchState::Closed
                         | HatchState::Open
                         | HatchState::Sealed
-                        | HatchState::AirlockLocked,
+                        | HatchState::AirlockLocked
+                        | HatchState::Panel,
                         Body::Walker,
                     )
-                    | (HatchState::Sealed | HatchState::AirlockLocked, Body::Player | Body::Shot)
+                    | (
+                        HatchState::Sealed | HatchState::AirlockLocked | HatchState::Panel,
+                        Body::Player | Body::Shot,
+                    )
                     | (HatchState::Closed, Body::Shot) => true,
                 }
             }

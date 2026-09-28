@@ -11,6 +11,8 @@
 //! | cargo hold    | L    | Cargo       | rushers with a shooter; a pillar and a pit strip |
 //! | shuttle bay   | L    | Cargo       | a pit trench the shooters fire across            |
 //! | bridge        | L    | Bridge      | two thick waves, then the captain; the boss room |
+//! | crawlspace    | S    | Crawlspace  | none: behind an access panel, a chest            |
+//! | stores        | S    | Stores      | none: the reward room, a chest                   |
 //!
 //! Spread shooters are the pattern experiment (issue #15); with it off they're shooters.
 //!
@@ -285,6 +287,54 @@ const BRIDGE: PrototypeRoom = PrototypeRoom {
 }
 .valid();
 
+/// Behind an access panel: a cramped maintenance crawlspace, pipes around a chest.
+const CRAWLSPACE: PrototypeRoom = PrototypeRoom {
+    name: "crawlspace",
+    category: Category::Secret,
+    theme: Theme::Crawlspace,
+    cells: &[
+        "#####..#####",
+        "#..........#",
+        "#.###..###.#",
+        "#.#......#.#",
+        ".....##.....",
+        "............",
+        "#.#......#.#",
+        "#.###..###.#",
+        "#..........#",
+        "#####..#####",
+    ],
+    exits: Size::S.hatches(),
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+}
+.valid();
+
+/// Shelving bays around a chest: the reward room.
+const STORES: PrototypeRoom = PrototypeRoom {
+    name: "stores",
+    category: Category::Reward,
+    theme: Theme::Stores,
+    cells: &[
+        "#####..#####",
+        "#...#..#...#",
+        "#...#..#...#",
+        "#..........#",
+        "............",
+        "............",
+        "#..........#",
+        "#...#..#...#",
+        "#...#..#...#",
+        "#####..#####",
+    ],
+    exits: Size::S.hatches(),
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+}
+.valid();
+
 /// Every room the generator may place, checked against each template when it builds.
 pub const POOL: &[PrototypeRoom] = &[
     AIRLOCK,
@@ -294,4 +344,6 @@ pub const POOL: &[PrototypeRoom] = &[
     CARGO_HOLD,
     SHUTTLE_BAY,
     BRIDGE,
+    CRAWLSPACE,
+    STORES,
 ];

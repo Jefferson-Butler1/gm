@@ -27,8 +27,8 @@ impl Stats {
 
     /// Reads slot 0's HP and gun, the run state, and the room and wave from `state`: the
     /// fight's room, else the one slot 0 stands in (the last one while it crosses a
-    /// hatch); and the hint, once the airlocks unlock. Publishes immediately (bumps `seq`)
-    /// when anything changed.
+    /// hatch); and the hint: in a room whose chest is open, or once the airlocks unlock.
+    /// Publishes immediately (bumps `seq`) when anything changed.
     pub fn set_status(&mut self, state: &SimState) {
         let id = match state.run {
             Run::Encounter { room, .. } => Some(room),
@@ -51,7 +51,9 @@ impl Stats {
         } else {
             0
         };
-        let hint = if state.airlocks_unlocked() {
+        let hint = if id.is_some_and(|id| state.chest_opened(id)) {
+            "Chest opened (items coming soon)"
+        } else if state.airlocks_unlocked() {
             "Bridge clear: escape through any airlock"
         } else {
             ""
