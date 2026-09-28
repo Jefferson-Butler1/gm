@@ -32,6 +32,11 @@ pub enum Zone {
     Mid,
     /// Stern: engineering.
     Aft,
+    /// Behind an access panel off a compartment: a maintenance crawlspace, the secret
+    /// room. Its hatches start as panels.
+    Crawlspace,
+    /// The ship's stores: the reward room.
+    Stores,
 }
 
 impl Zone {
@@ -44,6 +49,8 @@ impl Zone {
             Theme::Bridge => Some(Self::Fore),
             Theme::Cargo | Theme::Crew => Some(Self::Mid),
             Theme::Engineering => Some(Self::Aft),
+            Theme::Crawlspace => Some(Self::Crawlspace),
+            Theme::Stores => Some(Self::Stores),
         }
     }
 }
@@ -79,6 +86,8 @@ impl Slot {
                 | (Some(Zone::Fore), Zone::Fore)
                 | (Some(Zone::Mid), Zone::Mid)
                 | (Some(Zone::Aft), Zone::Aft)
+                | (Some(Zone::Crawlspace), Zone::Crawlspace)
+                | (Some(Zone::Stores), Zone::Stores)
         );
         size && zone
     }
@@ -539,25 +548,27 @@ const fn airlock(slot: Slot, outer: Dir) -> Slot {
 /// Three airlocks on the hull, port `A`, starboard `Z` and aft `X`: you board through a
 /// random one. The midship hold `H` joins the port and starboard airlocks to the keel.
 /// Aft down the keel are two optional side compartments, port `P` and starboard `S`, and
-/// engineering `E` at the stern, with the aft airlock beyond it; fore through a bulkhead
-/// passage is the bridge `B`, whose captain guards the airlocks' locks.
+/// engineering `E` at the stern, with the aft airlock beyond it. Off engineering are the
+/// stores `R` (the reward room, with a chest) and, behind an access panel at the end of a
+/// short passage, the crawlspace `C` (with another). Fore through a bulkhead passage is
+/// the bridge `B`, whose captain guards the airlocks' locks.
 pub const CORVETTE: Template = Template {
     name: "corvette",
     rows: &[
         "                                                    AAAAAAAAAAAA                                  ",
         "                                                    AAAAAAAAAAAA                                  ",
-        "                                                    AAAAAAAAAAAA                                  ",
-        "                                                    AAAAAAAAAAAA                                  ",
-        "                                                    AAAAAAAAAAAA                                  ",
-        "                                                    AAAAAAAAAAAA                                  ",
-        "                                                    AAAAAAAAAAAA                                  ",
-        "                                                    AAAAAAAAAAAA                                  ",
-        "                                                    AAAAAAAAAAAA                                  ",
-        "                                 PPPPPPPPPPPP       AAAAAAAAAAAA                                  ",
-        "                                 PPPPPPPPPPPP           #==#                                      ",
-        "                                 PPPPPPPPPPPP           #==#                                      ",
-        "                                 PPPPPPPPPPPP           #==#                                      ",
-        "                                 PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                 CCCCCCCCCCCC                       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC                       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC                       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC                       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC                       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC                       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC                       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC    PPPPPPPPPPPP       AAAAAAAAAAAA                                  ",
+        "                 CCCCCCCCCCCC    PPPPPPPPPPPP           #==#                                      ",
+        "                 CCCCCCCCCCCC    PPPPPPPPPPPP           #==#                                      ",
+        "                     #==#        PPPPPPPPPPPP           #==#                                      ",
+        "                     #==#        PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
         "              EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
         "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
         "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE PPPPPPPPPPPP HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
@@ -570,18 +581,18 @@ pub const CORVETTE: Template = Template {
         "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
         "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
         "              EEEEEEEEEEEEEEEEEE SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "                                 SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
-        "                                 SSSSSSSSSSSS           #==#                                      ",
-        "                                 SSSSSSSSSSSS           #==#                                      ",
-        "                                 SSSSSSSSSSSS           #==#                                      ",
-        "                                 SSSSSSSSSSSS       ZZZZZZZZZZZZ                                  ",
-        "                                                    ZZZZZZZZZZZZ                                  ",
-        "                                                    ZZZZZZZZZZZZ                                  ",
-        "                                                    ZZZZZZZZZZZZ                                  ",
-        "                                                    ZZZZZZZZZZZZ                                  ",
-        "                                                    ZZZZZZZZZZZZ                                  ",
-        "                                                    ZZZZZZZZZZZZ                                  ",
-        "                                                    ZZZZZZZZZZZZ                                  ",
+        "                     #==#        SSSSSSSSSSSS HHHHHHHHHHHHHHHHHHHHHHHH    BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                     #==#        SSSSSSSSSSSS           #==#                                      ",
+        "                 RRRRRRRRRRRR    SSSSSSSSSSSS           #==#                                      ",
+        "                 RRRRRRRRRRRR    SSSSSSSSSSSS           #==#                                      ",
+        "                 RRRRRRRRRRRR    SSSSSSSSSSSS       ZZZZZZZZZZZZ                                  ",
+        "                 RRRRRRRRRRRR                       ZZZZZZZZZZZZ                                  ",
+        "                 RRRRRRRRRRRR                       ZZZZZZZZZZZZ                                  ",
+        "                 RRRRRRRRRRRR                       ZZZZZZZZZZZZ                                  ",
+        "                 RRRRRRRRRRRR                       ZZZZZZZZZZZZ                                  ",
+        "                 RRRRRRRRRRRR                       ZZZZZZZZZZZZ                                  ",
+        "                 RRRRRRRRRRRR                       ZZZZZZZZZZZZ                                  ",
+        "                 RRRRRRRRRRRR                       ZZZZZZZZZZZZ                                  ",
         "                                                    ZZZZZZZZZZZZ                                  ",
         "                                                    ZZZZZZZZZZZZ                                  ",
     ],
@@ -589,7 +600,12 @@ pub const CORVETTE: Template = Template {
         airlock(slot(b'A', Size::S, Zone::Hull, &[Dir::South]), Dir::North),
         airlock(slot(b'Z', Size::S, Zone::Hull, &[Dir::North]), Dir::South),
         airlock(slot(b'X', Size::S, Zone::Hull, &[Dir::East]), Dir::West),
-        slot(b'E', Size::M, Zone::Aft, &[Dir::East, Dir::West]),
+        slot(
+            b'E',
+            Size::M,
+            Zone::Aft,
+            &[Dir::North, Dir::East, Dir::South, Dir::West],
+        ),
         slot(
             b'H',
             Size::L,
@@ -599,6 +615,8 @@ pub const CORVETTE: Template = Template {
         slot(b'B', Size::L, Zone::Fore, &[Dir::West]),
         optional(slot(b'P', Size::S, Zone::Mid, &[Dir::South])),
         optional(slot(b'S', Size::S, Zone::Mid, &[Dir::North])),
+        slot(b'C', Size::S, Zone::Crawlspace, &[Dir::South]),
+        slot(b'R', Size::S, Zone::Stores, &[Dir::North]),
     ],
 }
 .valid();

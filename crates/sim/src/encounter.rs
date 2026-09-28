@@ -1,7 +1,8 @@
 //! Rooms in play (ETG's lifecycle): players open hatches by stepping into them, a room's
 //! enemies spawn the first time a player is wholly inside it, room events seal and unseal
 //! its hatches, and waves come from object layers. Clearing the bridge (the boss room)
-//! unlocks every airlock's outer hatch, and stepping into an unlocked one wins.
+//! unlocks every airlock's outer hatch, and stepping into an unlocked one wins. Access
+//! panels hide crawlspaces until [`reveal`]ed, and reward and secret rooms hold a chest.
 //! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`. A hatch banging open or
 //! sealed is a noise that unaware enemies nearby come to investigate.
 
@@ -10,15 +11,31 @@ use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
     Category, EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
 };
-use crate::{Event, Fx, FxVec2, HatchId, HatchState, RoomId, Run, SimState, TickEvents, bit, trig};
+use crate::{
+    Event, Fx, FxVec2, HatchId, HatchKind, HatchState, RoomId, Run, SimState, TickEvents, bit, trig,
+};
+
+/// Reveals `hatch` if it's an access panel, turning it Closed. Returns whether it was one.
+///
+/// Revealed, it's an ordinary hatch a player opens by stepping into it. This is the one
+/// way panels open: a player's bullet hitting one calls it, and so will EMPs.
+pub fn reveal(state: &mut SimState, hatch: HatchId) -> bool {
+    match state.hatches.get_mut(usize::from(hatch.0)) {
+        Some(s) if *s == HatchState::Panel => {
+            *s = HatchState::Closed;
+            true
+        }
+        Some(_) | None => false,
+    }
+}
 
 /// `u16` turns.
 const EIGHTH_TURN: u16 = 8192;
 
 /// After combat: advance the fight's waves, then open the closed hatches living players
 /// step into, or win if one is an airlock's outer hatch (unlocked, so the bridge is
-/// clear). Then (no fight on) start the first uncleared room with enemies a living player
-/// is wholly inside.
+/// clear), and open the closed chests they touch. Then (no fight on) start the first
+/// uncleared room with enemies a living player is wholly inside.
 pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     if let Run::Encounter { room: id, wave } = state.run
         && state.enemies.is_empty()
@@ -42,7 +59,7 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
             if ship
                 .hatches()
                 .get(usize::from(hatch.0))
-                .is_some_and(|h| h.airlock)
+                .is_some_and(|h| h.kind == HatchKind::Airlock)
             {
                 state.run = Run::Won;
                 events.events.push(Event::Won);
@@ -51,6 +68,12 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
             open(state, hatch);
             events.events.push(Event::HatchOpened { hatch });
             bang(state, &[hatch], events);
+        }
+        if let Some(room) = ship.on_chest(pos, PLAYER_RADIUS)
+            && !state.chest_opened(room)
+        {
+            state.chests |= bit(room);
+            events.events.push(Event::ChestOpened { room });
         }
     }
 

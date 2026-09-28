@@ -108,6 +108,10 @@ pub enum Theme {
     Cargo,
     Crew,
     Engineering,
+    /// A maintenance crawlspace, behind an access panel: the secret room.
+    Crawlspace,
+    /// The ship's stores: the reward room.
+    Stores,
 }
 
 /// Room size classes (issue #28), in cells including the walls. Every room of a class
@@ -201,8 +205,11 @@ pub enum Category {
     Normal,
     Connector,
     Hub,
+    /// Holds a chest (see [`PrototypeRoom::chest`]).
     Reward,
+    /// The bridge: clearing it unlocks the airlocks.
     Boss,
+    /// Fills a crawlspace, behind an access panel (see [`crate::hull::Zone`]); holds a chest.
     Secret,
     Entrance,
     Exit,
@@ -364,6 +371,8 @@ pub enum RoomError {
     },
     /// A room that can seal must end its `OnEnemiesCleared` actions unsealed.
     SealsForever,
+    /// A room with a chest must have floor at its center, where the chest sits.
+    ChestOffFloor,
 }
 
 impl RoomError {
@@ -381,6 +390,7 @@ impl RoomError {
             Self::UnreachableFloor => "some floor is unreachable",
             Self::Unenclosed { .. } => "floor must be walled in except at exits",
             Self::SealsForever => "room seals but never unseals on OnEnemiesCleared",
+            Self::ChestOffFloor => "a reward or secret room needs floor at its center",
         }
     }
 }
@@ -479,6 +489,22 @@ impl PrototypeRoom {
         Some(size)
     }
 
+    /// The placeholder chest's cell, in reward and secret rooms: the room's center (the
+    /// cell right of and below its middle, where hatch points line up). A living player
+    /// touching it opens it, once; the items map will fill it.
+    #[must_use]
+    pub const fn chest(&self) -> Option<(usize, usize)> {
+        match self.category {
+            Category::Reward | Category::Secret => Some((self.width() / 2, self.height() / 2)),
+            Category::Normal
+            | Category::Connector
+            | Category::Hub
+            | Category::Boss
+            | Category::Entrance
+            | Category::Exit => None,
+        }
+    }
+
     /// Whether any wave has enemies.
     #[must_use]
     pub fn has_enemies(&self) -> bool {
@@ -534,6 +560,11 @@ impl PrototypeRoom {
         }
         if let Err(error) = self.check_unseals() {
             return Err(error);
+        }
+        if let Some((x, y)) = self.chest()
+            && !self.floor_at(x, y)
+        {
+            return Err(RoomError::ChestOffFloor);
         }
         self.check_connected()
     }
