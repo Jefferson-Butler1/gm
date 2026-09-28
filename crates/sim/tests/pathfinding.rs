@@ -1,8 +1,9 @@
 //! Enemy pathfinding: the flow field gets rushers out of pockets that local steering
 //! can't.
 
-use sim::room::{Category, PrototypeRoom, Tiles, cell_center};
-use sim::{ENEMY_RADIUS, FlowField, PLAYER_RADIUS, Tuning, chase, per_tick};
+use sim::room::{Category, Derelict, Placed, PrototypeRoom, cell_center};
+use sim::ship::Tiles;
+use sim::{ENEMY_RADIUS, FlowField, PLAYER_RADIUS, Ship, Tuning, chase, per_tick};
 
 /// A U of wall (cells 3..=7, 3..=5) opening up, away from the player below it.
 const POCKET: PrototypeRoom = PrototypeRoom {
@@ -30,10 +31,16 @@ const POCKET: PrototypeRoom = PrototypeRoom {
 
 #[test]
 fn a_rusher_climbs_out_of_a_pocket_to_reach_the_player() {
-    let tiles = Tiles {
-        room: &POCKET,
-        sealed: false,
-    };
+    let ship = Ship::new(&Derelict {
+        rooms: &[Placed {
+            room: POCKET,
+            at: (0, 0),
+        }],
+        connections: &[],
+        start_room: 0,
+        start_cell: (1, 1),
+    });
+    let tiles = Tiles::new(&ship, &[]);
     // Straight below the rusher, through the pocket's base: steering alone pushes into
     // the base and dithers between the arms.
     let player = cell_center(5, 8);

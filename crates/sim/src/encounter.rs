@@ -1,147 +1,144 @@
-//! Rooms in play: walking through exits, room events (seal/unseal), waves from object
-//! layers, and extraction. Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
+//! Rooms in play (ETG's lifecycle): players open hatches by stepping into them, a room's
+//! enemies spawn the first time a player is wholly inside it, room events seal and unseal
+//! its hatches, waves come from object layers, and a clear room's extraction pad wins.
+//! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
 use crate::combat::{Awareness, Enemy, Pattern, SHOOTER_STAGGER};
-use crate::derelict::DERELICT;
 use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
-    EnemyKind, LayerTrigger, Placement, PrototypeRoom, RoomAction, RoomTrigger, cell_center,
-    cell_of,
+    EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
 };
-use crate::{Event, FxVec2, RoomId, Run, SimState, TickEvents};
+use crate::{Event, HatchId, HatchState, RoomId, Run, SimState, TickEvents, bit};
 
-/// Moves the whole party to `at` in room `id` and starts that room: an Encounter (base
-/// layer spawned, entry events fired) if it still has enemies, else Boarding. Bullets
-/// and enemies belong to the room being left, so they are dropped.
-pub fn enter(state: &mut SimState, id: RoomId, at: FxVec2, events: &mut TickEvents) {
-    state.enemies.retain(|_, _| false);
-    state.bullets.retain(|_, _| false);
-    state.enemy_bullets.retain(|_, _| false);
-    for player in state.players.iter_mut().flatten() {
-        player.pos = at;
-        player.solid = at;
-    }
-    events.events.push(Event::RoomEntered { room: id });
-    let Some(room) = DERELICT.room(id) else {
-        state.run = Run::Boarding { room: id };
-        return;
-    };
-    state.run = if state.cleared(id) || !room.has_enemies() {
-        Run::Boarding { room: id }
-    } else {
-        spawn(state, room.base, false);
-        Run::Encounter {
-            room: id,
-            wave: 0,
-            doors_locked: react(room, RoomTrigger::OnEnterWithEnemies, false),
-        }
-    };
-}
-
-/// After combat: advance waves or finish the room, then win if a living player touches
-/// a clear room's extraction pad, else take any open exit a living player stands in.
+/// After combat: advance the fight's waves, open the closed hatches living players step
+/// into, then (no fight on) start the first uncleared room with enemies a living player
+/// is wholly inside, or win if one touches a clear room's extraction pad.
 pub fn tick(state: &mut SimState, events: &mut TickEvents) {
-    if let Run::Encounter {
-        room: id,
-        wave,
-        doors_locked,
-    } = state.run
+    if let Run::Encounter { room: id, wave } = state.run
         && state.enemies.is_empty()
-        && let Some(room) = DERELICT.room(id)
     {
-        next_wave(state, room, id, wave, doors_locked, events);
+        next_wave(state, id, wave, events);
     }
 
-    let Some(tiles) = state.tiles() else {
-        return;
-    };
-    if tiles.sealed {
-        return;
-    }
-    let mut living = state.players.iter().flatten().filter(|p| p.alive());
-    if let Run::Boarding { room } = state.run
-        && state.extraction_live()
-        && living.any(|p| tiles.room.on_extraction(p.pos, PLAYER_RADIUS))
-    {
-        state.run = Run::Won { room };
-        events.events.push(Event::Won);
-        return;
-    }
-    let exit = state
+    let ship = std::sync::Arc::clone(&state.ship);
+    let living: Vec<_> = state
         .players
         .iter()
         .flatten()
         .filter(|p| p.alive())
-        .find_map(|p| tiles.room.exit_at(cell_of(p.pos.x), cell_of(p.pos.y)));
-    let from = state.run.room();
-    if let Some(exit) = exit
-        && let Some((to, to_exit)) = DERELICT.link(from, exit)
-        && let Some(arrival) = DERELICT
-            .room(to)
-            .and_then(|r| r.exits.get(to_exit))
-            .map(crate::room::Exit::arrival)
-    {
-        enter(state, to, arrival, events);
+        .map(|p| p.pos)
+        .collect();
+    for &pos in &living {
+        for hatch in ship.hatches_under(pos, PLAYER_RADIUS) {
+            if state.hatches.get(usize::from(hatch.0)) == Some(&HatchState::Closed) {
+                open(state, hatch);
+                events.events.push(Event::HatchOpened { hatch });
+            }
+        }
+    }
+
+    if state.run != Run::Boarding {
+        return;
+    }
+    let entered = living.iter().find_map(|&pos| {
+        let id = ship.inside(pos, PLAYER_RADIUS)?;
+        let room = ship.room(id)?;
+        (!state.cleared(id) && room.room.has_enemies()).then_some((id, *room))
+    });
+    if let Some((id, room)) = entered {
+        spawn(state, &room, room.room.base, false);
+        state.run = Run::Encounter { room: id, wave: 0 };
+        react(state, id, &room, RoomTrigger::OnEnterWithEnemies);
+        return;
+    }
+    let won = (0..).map(RoomId).take(ship.rooms().len()).any(|id| {
+        state.extraction_live(id)
+            && living
+                .iter()
+                .any(|&p| ship.on_extraction(id, p, PLAYER_RADIUS))
+    });
+    if won {
+        state.run = Run::Won;
+        events.events.push(Event::Won);
     }
 }
 
-/// The current wave is dead: spawn the next reinforcement layer, or fire the cleared
-/// events. The encounter ends once the last wave is dead and the doors are unlocked.
-fn next_wave(
-    state: &mut SimState,
-    room: &PrototypeRoom,
-    id: RoomId,
-    wave: u8,
-    doors_locked: bool,
-    events: &mut TickEvents,
-) {
+/// The current wave of room `id` is dead: spawn the next reinforcement layer, or fire
+/// the cleared events and end the encounter.
+fn next_wave(state: &mut SimState, id: RoomId, wave: u8, events: &mut TickEvents) {
+    let Some(room) = state.ship.room(id).copied() else {
+        return;
+    };
     // Reinforcement `i` is wave `i + 1`.
-    if let Some(layer) = room.reinforcements.get(usize::from(wave)) {
+    if let Some(layer) = room.room.reinforcements.get(usize::from(wave)) {
         match layer.trigger {
             LayerTrigger::OnEnemiesCleared => {
                 let wave = wave.saturating_add(1);
-                spawn(state, layer.placements, true);
-                state.run = Run::Encounter {
-                    room: id,
-                    wave,
-                    doors_locked,
-                };
+                spawn(state, &room, layer.placements, true);
+                state.run = Run::Encounter { room: id, wave };
                 events.events.push(Event::WaveStarted { wave });
             }
         }
         return;
     }
-    let doors_locked = react(room, RoomTrigger::OnEnemiesCleared, doors_locked);
-    state.set_cleared(id);
+    react(state, id, &room, RoomTrigger::OnEnemiesCleared);
+    state.cleared |= bit(id);
     events.events.push(Event::RoomCleared { room: id });
-    state.run = if doors_locked {
-        // Unreachable for valid rooms (validation requires Seal to pair with an Unseal).
-        Run::Encounter {
-            room: id,
-            wave,
-            doors_locked,
+    state.run = Run::Boarding;
+}
+
+/// Applies `room`'s actions for `trigger`, in order, to the hatches in its walls: seal
+/// them all, or open them all (revealing what's behind).
+fn react(state: &mut SimState, id: RoomId, room: &Placed, trigger: RoomTrigger) {
+    let ship = std::sync::Arc::clone(&state.ship);
+    for &(_, action) in room.room.events.iter().filter(|&&(t, _)| t == trigger) {
+        for hatch in ship.hatches_of(id) {
+            match action {
+                RoomAction::Seal => {
+                    if let Some(s) = state.hatches.get_mut(usize::from(hatch.0)) {
+                        *s = HatchState::Sealed;
+                    }
+                }
+                RoomAction::Unseal => unseal(state, hatch),
+            }
         }
-    } else {
-        Run::Boarding { room: id }
+    }
+}
+
+/// Opens `hatch` for good and reveals the rooms on both sides.
+fn open(state: &mut SimState, hatch: HatchId) {
+    if let Some(s) = state.hatches.get_mut(usize::from(hatch.0)) {
+        *s = HatchState::Open;
+    }
+    if let Some(h) = state.ship.hatches().get(usize::from(hatch.0)) {
+        state.visited |= h.rooms.iter().fold(0, |bits, &r| bits | bit(r));
+    }
+}
+
+/// Lifts `hatch`'s seal: Open if both sides are already revealed, else Closed, so the
+/// room behind stays fogged until a player touches the hatch (ETG).
+fn unseal(state: &mut SimState, hatch: HatchId) {
+    let Some(h) = state.ship.hatches().get(usize::from(hatch.0)) else {
+        return;
     };
+    let revealed = h.rooms.iter().all(|&r| state.visited(r));
+    if let Some(s) = state.hatches.get_mut(usize::from(hatch.0)) {
+        *s = if revealed {
+            HatchState::Open
+        } else {
+            HatchState::Closed
+        };
+    }
 }
 
-/// Applies `room`'s actions for `trigger`, in order, to the doors' locked state.
-fn react(room: &PrototypeRoom, trigger: RoomTrigger, doors_locked: bool) -> bool {
-    room.events
-        .iter()
-        .filter(|&&(t, _)| t == trigger)
-        .fold(doors_locked, |_, &(_, action)| match action {
-            RoomAction::Seal => true,
-            RoomAction::Unseal => false,
-        })
-}
-
-/// Spawns `placements`, unaware unless `hunting`: then each already knows where the
-/// nearest living player is (reinforcements join a fight in progress).
-fn spawn(state: &mut SimState, placements: &[Placement], hunting: bool) {
+/// Spawns `placements` (cells of `room`), unaware unless `hunting`: then each already
+/// knows where the nearest living player is (reinforcements join a fight in progress).
+fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting: bool) {
     for placement in placements {
-        let pos = cell_center(placement.x, placement.y);
+        let pos = cell_center(
+            placement.x.saturating_add(room.at.0),
+            placement.y.saturating_add(room.at.1),
+        );
         let nearest = state
             .players
             .iter()

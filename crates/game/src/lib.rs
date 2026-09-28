@@ -76,14 +76,14 @@ pub enum RunState {
 impl RunState {
     const fn of(run: Run) -> Self {
         match run {
-            Run::Boarding { .. } | Run::Encounter { .. } => Self::Playing,
+            Run::Boarding | Run::Encounter { .. } => Self::Playing,
             Run::Dead {
                 ticks_until_restart,
                 ..
             } => Self::Dead {
                 can_restart: ticks_until_restart == 0,
             },
-            Run::Won { .. } => Self::Won,
+            Run::Won => Self::Won,
         }
     }
 }

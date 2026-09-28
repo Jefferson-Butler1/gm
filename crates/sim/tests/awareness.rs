@@ -1,37 +1,43 @@
 //! Enemy awareness: room enemies stand unaware until they see (in plain view, at any
 //! range), hear or are hit by a player, then hunt it, and give up where they lost it.
 //! All in the cargo hold, 32 x 16 cells: an L (void top-right) with a pillar at cells
-//! (5..=6, 3..=4) and a pit strip at (10..=13, 10..=11).
+//! (5..=6, 3..=4) and a pit strip at (10..=13, 10..=11). Cells here are the hold's own.
 
 use sim::room::cell_center;
 use sim::{
-    Awareness, Buttons, Enemy, EnemyId, Event, Fx, FxVec2, PlayerInput, RoomId, Run, RunConfig,
+    Awareness, Buttons, Enemy, EnemyId, Event, Fx, FxVec2, PlayerInput, RoomId, RunConfig,
     SimState, TickInputs, Tuning, step,
 };
 
 const SEED: u64 = 5;
 const CARGO_HOLD: RoomId = RoomId(1);
 
-/// The party (slot 0) standing in the cargo hold at cell `at`, no enemies, doors open.
+/// The center of the hold's cell (`x`, `y`): its cell (0, 0) is floor cell (5, 9).
+fn at((x, y): (usize, usize)) -> FxVec2 {
+    cell_center(x.saturating_add(5), y.saturating_add(9))
+}
+
+/// The party (slot 0) standing in the cargo hold at cell `at`, no enemies. The hold
+/// counts as cleared, so no fight starts.
 fn hold(at: (usize, usize)) -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
-    state.run = Run::Boarding { room: CARGO_HOLD };
+    state.cleared = 1 << CARGO_HOLD.0;
     move_player(&mut state, at);
     state
 }
 
-fn move_player(state: &mut SimState, (x, y): (usize, usize)) {
+fn move_player(state: &mut SimState, cell: (usize, usize)) {
     if let Some(player) = &mut state.players[0] {
-        player.pos = cell_center(x, y);
+        player.pos = at(cell);
         player.solid = player.pos;
     }
 }
 
-/// An unaware rusher at cell (`x`, `y`), past its spawn telegraph.
-fn rusher(state: &mut SimState, (x, y): (usize, usize)) -> EnemyId {
+/// An unaware rusher at cell `cell`, past its spawn telegraph.
+fn rusher(state: &mut SimState, cell: (usize, usize)) -> EnemyId {
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
-        ..Enemy::rusher(cell_center(x, y))
+        ..Enemy::rusher(at(cell))
     })
 }
 
