@@ -188,7 +188,7 @@ struct ContentView: View {
                 case .dead(let canRestart):
                     EndOverlay(title: "You died", prompt: "Tap to restart", canRestart: canRestart) { model.restart() }
                 case .won:
-                    EndOverlay(title: "Derelict cleared", prompt: "Tap to start a new run", canRestart: true) { model.restart() }
+                    CreditsRoll { model.restart() }
                 case .playing:
                     EmptyView()
                 }

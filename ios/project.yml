@@ -13,6 +13,8 @@ targets:
     sources:
       - App
       - Generated/game.swift
+      - path: ../CREDITS.md
+        buildPhase: resources
     info:
       path: App/Info.plist
       properties:
