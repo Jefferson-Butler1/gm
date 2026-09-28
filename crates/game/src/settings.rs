@@ -56,6 +56,8 @@ pub struct RunSettings {
     pub sight_half_angle: f32,
     /// How fast an enemy turns, degrees per second.
     pub turn_rate: f32,
+    /// How fast an unaware enemy patrols, pt/s; 0 = it stands still.
+    pub patrol_speed: f32,
 }
 
 /// What a difficulty sets for the enemy tunables, for sliders without an override.
@@ -91,6 +93,7 @@ pub fn default_run_settings() -> RunSettings {
         forget_secs: secs(t.forget_ticks),
         sight_half_angle: f32::from(t.sight_half_angle),
         turn_rate: f32::from(t.turn_rate),
+        patrol_speed: f32::from(t.patrol_speed),
     }
 }
 
@@ -135,6 +138,7 @@ impl RunSettings {
                 forget_ticks: ticks(self.forget_secs),
                 sight_half_angle: whole(self.sight_half_angle),
                 turn_rate: whole(self.turn_rate),
+                patrol_speed: whole(self.patrol_speed),
                 ..Tuning::NORMAL
             },
         }

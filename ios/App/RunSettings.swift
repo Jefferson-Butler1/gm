@@ -25,6 +25,7 @@ enum RunSettingsStore {
         ("forgetSecs", \.forgetSecs),
         ("sightHalfAngle", \.sightHalfAngle),
         ("turnRate", \.turnRate),
+        ("patrolSpeed", \.patrolSpeed),
     ]
     /// Absent = the difficulty's value.
     private static let overrides: [(key: String, path: WritableKeyPath<RunSettings, Float?>)] = [
@@ -140,6 +141,9 @@ struct RunSettingsSections: View {
             }
             SliderRow(label: "Enemy turn rate", value: $model.runSettings.turnRate, range: 30...720, step: 10) {
                 "\(Int($0))°/s"
+            }
+            SliderRow(label: "Enemy patrol speed", value: $model.runSettings.patrolSpeed, range: 0...120, step: 5) {
+                $0 == 0 ? "stand still" : "\(Int($0)) pt/s"
             }
             Button("Reset to defaults") { model.resetTuning() }
         } header: {
