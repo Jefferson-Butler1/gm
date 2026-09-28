@@ -19,6 +19,13 @@ final class GameModel {
         (.fixedSticks, "B", "B · Fixed twin sticks"),
         (.autoAim, "C", "C · Move + auto-aim (flick to dodge)"),
         (.aimAssist, "D", "D · Twin sticks + aim assist"),
+        (.fixedAutoAim, "E", "E · Fixed move stick + auto-aim (flick to dodge)"),
+    ]
+    /// Camera look options, with stable keys for persistence.
+    static let looks: [(look: LookMode, key: String, label: String)] = [
+        (.centered, "centered", "Centered"),
+        (.aim, "aim", "Aim look · leads the aim while aiming (ETG)"),
+        (.facing, "facing", "Facing look · always leads where you face"),
     ]
     /// Fire mode options, with stable keys for persistence.
     static let fireModes: [(mode: FireMode, key: String, label: String)] = [
@@ -29,6 +36,7 @@ final class GameModel {
     private static let schemeKey = "controls.scheme"
     private static let fireModeKey = "controls.fireMode"
     private static let assistKey = "controls.assist"
+    private static let cameraKey = "camera"
 
     var hud: HudData?
     var scheme: Scheme = GameModel.loadScheme() {
@@ -50,7 +58,18 @@ final class GameModel {
             game?.setAssistStrength(strength: assist)
         }
     }
-    /// Difficulty and tuning for the next run; the game picks them up on restart.
+    /// Camera look; applies live.
+    var camera: CameraSettings = GameModel.loadCamera() {
+        didSet {
+            UserDefaults.standard.set([
+                "look": Self.looks.first { $0.look == camera.look }?.key ?? "aim",
+                "lead": Double(camera.lead),
+                "smoothingSecs": Double(camera.smoothingSecs),
+            ], forKey: Self.cameraKey)
+            game?.setCamera(settings: camera)
+        }
+    }
+    /// Difficulty and tuning; the game applies them live.
     var runSettings: RunSettings = RunSettingsStore.load() {
         didSet {
             RunSettingsStore.save(runSettings)
@@ -69,6 +88,7 @@ final class GameModel {
         game.setScheme(scheme: scheme)
         game.setFireMode(mode: fireMode)
         game.setAssistStrength(strength: assist)
+        game.setCamera(settings: camera)
         if paused { game.pause() }
     }
 
@@ -99,7 +119,18 @@ final class GameModel {
 
     private static func loadScheme() -> Scheme {
         let key = UserDefaults.standard.string(forKey: schemeKey)
-        return schemes.first { $0.key == key }?.scheme ?? .fixedSticks
+        return schemes.first { $0.key == key }?.scheme ?? .fixedAutoAim
+    }
+
+    private static func loadCamera() -> CameraSettings {
+        var camera = defaultCameraSettings()
+        guard let saved = UserDefaults.standard.dictionary(forKey: cameraKey) else { return camera }
+        if let key = saved["look"] as? String, let found = looks.first(where: { $0.key == key }) {
+            camera.look = found.look
+        }
+        if let value = saved["lead"] as? Double { camera.lead = Float(value) }
+        if let value = saved["smoothingSecs"] as? Double { camera.smoothingSecs = Float(value) }
+        return camera
     }
 }
 
@@ -226,6 +257,23 @@ struct ControlsSettings: View {
                             Slider(value: $model.assist, in: 0...1)
                             Text(String(format: "%.2f", model.assist))
                                 .font(.system(.body, design: .monospaced))
+                        }
+                    }
+                }
+                Section("Camera") {
+                    Picker("Camera look", selection: $model.camera.look) {
+                        ForEach(GameModel.looks, id: \.key) { option in
+                            Text(option.label).tag(option.look)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    if model.camera.look != .centered {
+                        SliderRow(label: "Lead", value: $model.camera.lead, range: 0...200, step: 5) {
+                            "\(Int($0)) pt"
+                        }
+                        SliderRow(label: "Smoothing", value: $model.camera.smoothingSecs, range: 0...1, step: 0.05) {
+                            String(format: "%.2f s", $0)
                         }
                     }
                 }

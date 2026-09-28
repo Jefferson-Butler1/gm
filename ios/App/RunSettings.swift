@@ -63,8 +63,7 @@ enum RunSettingsStore {
     }
 }
 
-/// Difficulty picker and the debug Tuning sliders. Everything applies when the next run
-/// starts (death, win, or Restart run).
+/// Difficulty picker and the debug Tuning sliders. Everything applies live, mid-run.
 struct RunSettingsSections: View {
     @Bindable var model: GameModel
 
@@ -79,7 +78,7 @@ struct RunSettingsSections: View {
         } header: {
             Text("Difficulty")
         } footer: {
-            Text("Enemy bullets and fire rate. Applies to the next run.")
+            Text("Enemy bullets and fire rate.")
         }
 
         let enemy = enemyDefaults(difficulty: model.runSettings.difficulty)
@@ -137,7 +136,7 @@ struct RunSettingsSections: View {
         } header: {
             Text("Tuning")
         } footer: {
-            Text("Applies on restart. Enemy values follow the difficulty until moved.")
+            Text("Enemy values follow the difficulty until moved.")
         }
     }
 

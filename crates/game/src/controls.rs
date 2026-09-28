@@ -38,13 +38,31 @@ pub enum Scheme {
     /// A: floating twin sticks (left half moves, right half aims and fires); dodge button.
     FloatingSticks,
     /// B: stick bases anchored near the bottom corners; dodge button.
-    #[default]
     FixedSticks,
     /// C: floating move stick; holding the right half fires at the nearest target and a
     /// flick there dodges.
     AutoAim,
     /// D: like A, with aim bent toward targets by the assist strength.
     AimAssist,
+    /// E: C with B's anchored move stick.
+    #[default]
+    FixedAutoAim,
+}
+
+impl Scheme {
+    /// The right half fires at the nearest target and flicks dodge (C, E).
+    const fn auto_aim(self) -> bool {
+        matches!(self, Self::AutoAim | Self::FixedAutoAim)
+    }
+
+    /// Whether `side`'s stick (0 move, 1 aim) is anchored at its base.
+    const fn fixed(self, side: usize) -> bool {
+        match self {
+            Self::FixedSticks => true,
+            Self::FixedAutoAim => side == 0,
+            Self::FloatingSticks | Self::AutoAim | Self::AimAssist => false,
+        }
+    }
 }
 
 /// How the aim side's touches fire, chosen in settings.
@@ -242,7 +260,7 @@ impl Controls {
                         stick.drag(p);
                     }
                 }
-                if self.scheme == Scheme::AutoAim
+                if self.scheme.auto_aim()
                     && let [_, Some(right)] = &mut self.sticks
                     && right.id == id
                     && !right.flicked
@@ -277,7 +295,7 @@ impl Controls {
             self.vent = true;
             return;
         }
-        if self.scheme != Scheme::AutoAim && dist(p, self.layout.dodge) < DODGE_HIT_RADIUS {
+        if !self.scheme.auto_aim() && dist(p, self.layout.dodge) < DODGE_HIT_RADIUS {
             self.dodge = Some(Dodge::Button);
             return;
         }
@@ -289,7 +307,7 @@ impl Controls {
         if slot.is_some() {
             return;
         }
-        if self.scheme == Scheme::FixedSticks {
+        if self.scheme.fixed(side) {
             if dist(p, base) < FIXED_GRAB_RADIUS {
                 let mut stick = Stick::new(id, base, p, true);
                 stick.drag(p);
@@ -315,11 +333,25 @@ impl Controls {
     /// A single shot along `stick`'s aim: auto-aimed in scheme C, else only past the aim
     /// deadzone.
     fn aimed_shot(&self, stick: &Stick) -> Option<Shot> {
-        if self.scheme == Scheme::AutoAim {
+        if self.scheme.auto_aim() {
             return Some(Shot::Auto);
         }
         let (t, mag) = stick.polar();
         (mag > AIM_DEADZONE).then_some(Shot::At(t))
+    }
+
+    /// How far the aim is pushed, `0..=1`, for the camera's aim look: the aim stick's
+    /// deflection past its deadzone, or full while scheme C's fire side is held.
+    pub fn aim_push(&self) -> f32 {
+        let [_, right] = &self.sticks;
+        match (self.scheme, right) {
+            (_, None) => 0.0,
+            (Scheme::AutoAim | Scheme::FixedAutoAim, Some(_)) => 1.0,
+            (_, Some(stick)) => {
+                let (_, mag) = stick.polar();
+                ((mag - AIM_DEADZONE) / (1.0 - AIM_DEADZONE)).clamp(0.0, 1.0)
+            }
+        }
     }
 
     /// Input for the next sim tick. A pending dodge, vent or restart goes out once, on the
@@ -346,7 +378,7 @@ impl Controls {
         // A deflected aim stick turns the player even when it doesn't fire (tap and
         // release); a shot below overrides the aim with its own.
         if let Some((t, _)) = aim
-            && self.scheme != Scheme::AutoAim
+            && !self.scheme.auto_aim()
         {
             input.aim = aim_angle(t);
             input.buttons |= Buttons::AIM;
@@ -357,7 +389,9 @@ impl Controls {
             Scheme::FloatingSticks | Scheme::FixedSticks | Scheme::AimAssist => {
                 aim.filter(|_| held).map(|(t, _)| Shot::At(t))
             }
-            Scheme::AutoAim => (held && right.is_some()).then_some(Shot::Auto),
+            Scheme::AutoAim | Scheme::FixedAutoAim => {
+                (held && right.is_some()).then_some(Shot::Auto)
+            }
         };
         match self.shot.take().or(shot) {
             Some(Shot::At(t)) => {
@@ -384,11 +418,12 @@ impl Controls {
 
     pub fn overlay(&self, roll_ready: bool, vent_ready: bool) -> Overlay {
         let mut overlay = Overlay::default();
-        for ((view, stick), &base) in overlay
+        for (side, ((view, stick), &base)) in overlay
             .sticks
             .iter_mut()
             .zip(&self.sticks)
             .zip(&self.layout.bases)
+            .enumerate()
         {
             *view = match stick {
                 Some(s) => Some(StickView {
@@ -397,7 +432,7 @@ impl Controls {
                     knob: s.knob(),
                     active: true,
                 }),
-                None if self.scheme == Scheme::FixedSticks => Some(StickView {
+                None if self.scheme.fixed(side) => Some(StickView {
                     base,
                     radius: STICK_RADIUS,
                     knob: base,
@@ -406,7 +441,7 @@ impl Controls {
                 None => None,
             };
         }
-        overlay.dodge = (self.scheme != Scheme::AutoAim).then_some(ButtonView {
+        overlay.dodge = (!self.scheme.auto_aim()).then_some(ButtonView {
             center: self.layout.dodge,
             radius: DODGE_RADIUS,
             ready: roll_ready,
@@ -607,15 +642,30 @@ mod tests {
 
     #[test]
     fn flick_dodges_along_the_flick() {
-        let mut c = controls(Scheme::AutoAim);
-        c.touch(1, TouchPhase::Began, 600.0, 200.0);
-        c.touch(1, TouchPhase::Moved, 600.0, 150.0); // 50 pt straight up
+        for scheme in [Scheme::AutoAim, Scheme::FixedAutoAim] {
+            let mut c = controls(scheme);
+            c.touch(1, TouchPhase::Began, 600.0, 200.0);
+            c.touch(1, TouchPhase::Moved, 600.0, 150.0); // 50 pt straight up
+            let input = c.next_input();
+            assert!(
+                input
+                    .buttons
+                    .contains(Buttons::DODGE | Buttons::FIRE | Buttons::AUTO_AIM),
+                "{scheme:?}"
+            );
+            assert_eq!((input.move_dir, input.move_mag), (24, 255), "{scheme:?}");
+        }
+    }
+
+    #[test]
+    fn scheme_e_anchors_only_the_move_stick() {
+        let mut c = controls(Scheme::FixedAutoAim);
+        let [x, y] = c.layout.bases[0];
+        c.touch(1, TouchPhase::Began, x, 20.0); // far above the left base: ignored
+        c.touch(2, TouchPhase::Began, x + STICK_RADIUS, y); // full right from the base
         let input = c.next_input();
-        assert!(
-            input
-                .buttons
-                .contains(Buttons::DODGE | Buttons::FIRE | Buttons::AUTO_AIM)
-        );
-        assert_eq!((input.move_dir, input.move_mag), (24, 255));
+        assert_eq!((input.move_dir, input.move_mag), (0, 255));
+        let overlay = c.overlay(true, true);
+        assert!(overlay.sticks[1].is_none(), "the fire side floats");
     }
 }

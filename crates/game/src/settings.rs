@@ -1,6 +1,6 @@
 //! The run config as the settings screen sees it (issue #15): difficulty plus the key
 //! tunables in human units (pt/s, seconds, shots/s). Converted to the sim's integer
-//! [`sim::RunConfig`] when a run starts; tunables without a slider keep Normal's values.
+//! [`sim::RunConfig`], applied live; tunables without a slider keep Normal's values.
 
 use sim::{RunConfig, TICK_HZ, Tuning};
 
