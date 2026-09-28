@@ -22,6 +22,7 @@ fn first_shot(config: RunConfig) -> Option<(u64, i64)> {
     let at = state.players[0].map(|p| p.pos).unwrap_or_default();
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
+        facing: 32768, // left, at the player
         ..Enemy::shooter(
             FxVec2 {
                 x: at.x.saturating_add(Fx::from_num(160)),
