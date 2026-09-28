@@ -622,7 +622,7 @@ impl Renderer {
     fn push_telegraph(&mut self, e: &Enemy, radius: f32, alpha: f32) {
         // Telegraph left, 1 -> 0, interpolated like positions (`spawn_ticks` drops 1/tick).
         let left = ((f32::from(e.spawn_ticks) + 1.0 - alpha)
-            / f32::from(sim::SPAWN_TELEGRAPH_TICKS))
+            / f32::from(e.arrival.telegraph_ticks().max(1)))
         .clamp(0.0, 1.0);
         let pos = [e.pos.x.to_num(), e.pos.y.to_num()];
         let ring = radius * left.mul_add(TELEGRAPH_RING_GROWTH, 1.0);

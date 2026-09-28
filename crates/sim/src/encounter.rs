@@ -3,7 +3,7 @@
 //! its hatches, waves come from object layers, and a clear room's extraction pad wins.
 //! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`.
 
-use crate::combat::{Awareness, Enemy, Pattern, SHOOTER_STAGGER};
+use crate::combat::{Arrival, Awareness, Enemy, Pattern, SHOOTER_STAGGER};
 use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
     EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
@@ -46,7 +46,7 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
         (!state.cleared(id) && room.room.has_enemies()).then_some((id, *room))
     });
     if let Some((id, room)) = entered {
-        spawn(state, &room, room.room.base, false);
+        spawn(state, &room, room.room.base, Arrival::Prespawn);
         state.run = Run::Encounter { room: id, wave: 0 };
         react(state, id, &room, RoomTrigger::OnEnterWithEnemies);
         return;
@@ -74,7 +74,7 @@ fn next_wave(state: &mut SimState, id: RoomId, wave: u8, events: &mut TickEvents
         match layer.trigger {
             LayerTrigger::OnEnemiesCleared => {
                 let wave = wave.saturating_add(1);
-                spawn(state, &room, layer.placements, true);
+                spawn(state, &room, layer.placements, Arrival::Reinforcement);
                 state.run = Run::Encounter { room: id, wave };
                 events.events.push(Event::WaveStarted { wave });
             }
@@ -131,9 +131,10 @@ fn unseal(state: &mut SimState, hatch: HatchId) {
     }
 }
 
-/// Spawns `placements` (cells of `room`), unaware unless `hunting`: then each already
-/// knows where the nearest living player is (reinforcements join a fight in progress).
-fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting: bool) {
+/// Spawns `placements` (cells of `room`) with `arrival`'s telegraph. Prespawns start
+/// unaware; reinforcements join a fight in progress, already knowing where the nearest
+/// living player is.
+fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], arrival: Arrival) {
     for placement in placements {
         let pos = cell_center(
             placement.x.saturating_add(room.at.0),
@@ -147,7 +148,7 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting:
             .map(|p| p.pos)
             .min_by_key(|&p| dist_sq(p, pos));
         let awareness = match nearest {
-            Some(last_seen) if hunting => Awareness::Alert {
+            Some(last_seen) if arrival == Arrival::Reinforcement => Awareness::Alert {
                 last_seen,
                 searching: 0,
             },
@@ -169,6 +170,11 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], hunting:
                 Enemy::shooter(pos, pattern, &state.config, delay)
             }
         };
-        state.enemies.insert(Enemy { awareness, ..enemy });
+        state.enemies.insert(Enemy {
+            awareness,
+            arrival,
+            spawn_ticks: arrival.telegraph_ticks(),
+            ..enemy
+        });
     }
 }
