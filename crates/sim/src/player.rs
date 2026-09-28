@@ -12,7 +12,8 @@
 use crate::config::{Tuning, per_tick};
 use crate::gun::PhasePistol;
 use crate::input::{Buttons, MOVE_BUCKETS, PlayerInput};
-use crate::room::{Body, CELL, Tiles};
+use crate::room::CELL;
+use crate::ship::{Body, Tiles};
 use crate::{Fx, FxVec2, trig};
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +48,7 @@ pub struct Player {
     /// [`Self::solid`].
     pub fall_ticks: u16,
     /// Where the player last stood grounded (not mid-roll) at least [`PIT_CLEARANCE`]
-    /// from any pit; entering a room resets it to the arrival spot.
+    /// from any pit; a new run sets it to the start.
     pub solid: FxVec2,
     pub gun: PhasePistol,
 }
@@ -130,7 +131,7 @@ impl Player {
         &mut self,
         input: PlayerInput,
         targets: &[FxVec2],
-        tiles: Tiles,
+        tiles: Tiles<'_>,
         tuning: &Tuning,
     ) -> Option<u16> {
         if self.falling() {
@@ -297,7 +298,9 @@ pub const fn scale(v: FxVec2, k: Fx) -> FxVec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::room::{CELL, Category, PrototypeRoom, cell_center, cell_of};
+    use crate::room::{CELL, Category, Derelict, Placed, PrototypeRoom, cell_center, cell_of};
+    use crate::ship::Ship;
+    use std::sync::LazyLock;
 
     const ROLL_TICKS: u16 = Tuning::NORMAL.roll_ticks;
 
@@ -368,11 +371,20 @@ mod tests {
     }
     .valid();
 
-    fn tiles() -> Tiles {
-        Tiles {
-            room: &HALL,
-            sealed: false,
-        }
+    static SHIP: LazyLock<Ship> = LazyLock::new(|| {
+        Ship::new(&Derelict {
+            rooms: &[Placed {
+                room: HALL,
+                at: (0, 0),
+            }],
+            connections: &[],
+            start_room: 0,
+            start_cell: (1, 1),
+        })
+    });
+
+    fn tiles() -> Tiles<'static> {
+        Tiles::new(&SHIP, &[])
     }
 
     /// Mid-hall, at the pit strip's height.
@@ -384,7 +396,7 @@ mod tests {
         player_at(start())
     }
 
-    /// A player placed at `pos`, as entering a room places it.
+    /// A player placed at `pos`, as a new run places it.
     fn player_at(pos: FxVec2) -> Player {
         Player {
             pos,

@@ -2,10 +2,11 @@
 //! checksum that CI verifies on both `x86_64` and `aarch64`.
 
 use sim::{
-    Buttons, Event, PlayerInput, Rng, RoomId, Run, RunConfig, SimState, TickEvents, TickInputs,
+    Buttons, Event, HatchState, PlayerInput, Rng, Run, RunConfig, SimState, TickEvents, TickInputs,
     Tuning, step,
 };
 use std::ops::Range;
+use std::sync::Arc;
 
 const SEED: u64 = 0x5EED;
 const TICKS: u64 = 2700;
@@ -13,14 +14,15 @@ const TICKS: u64 = 2700;
 /// RESTART also abandons a live run, so each window presses it on its last tick only:
 /// once the death pause is over, not every tick after the run has restarted.
 const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
-/// Ticks when the party walks from the start cell out of the airlock's east exit and into
-/// the cargo hold's encounter: [`WALK_NORTH`] ticks up, then east.
+/// Ticks when the party walks from the start cell through the airlock's hatch down into
+/// the cargo hold's encounter: [`WALK_EAST`] ticks right, lining up with the hatch, then
+/// down.
 const WALK_IN: [Range<u64>; 2] = [40..125, 1250..1335];
-const WALK_NORTH: u64 = 13;
+const WALK_EAST: u64 = 16;
 /// Both players stand idle from just after entering the cargo hold, so its shooter lives
-/// long enough to fire and the rushers kill them; they only roll east every
-/// [`STAND_STILL_ROLL`] ticks, so some hits land on a roll's vulnerable landing and a roll
-/// lands in the hold's pit strip.
+/// long enough to fire and the rushers kill them; they only roll every
+/// [`STAND_STILL_ROLL`] ticks, alternately down and right, so some rolls land in the hold's
+/// pit strip and some hits land on a roll's vulnerable landing.
 const STAND_STILL: Range<u64> = 130..1200;
 const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
@@ -28,7 +30,7 @@ const AUTO_FIGHT: Range<u64> = 1335..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xaccc_ba01_e2e8_69b2;
+const GOLDEN_TRACE: u64 = 0x3a2b_d988_d5e1_efa8;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -63,8 +65,14 @@ fn script() -> Vec<TickInputs> {
             }
             let scripted = if STAND_STILL.contains(&tick) {
                 Some(if tick % STAND_STILL_ROLL == 0 {
-                    // Bucket 0 = straight right; only the roll moves.
+                    // Only the roll moves: alternately straight down (bucket 8 of 32) and
+                    // straight right (bucket 0).
                     PlayerInput {
+                        move_dir: if (tick / STAND_STILL_ROLL).is_multiple_of(2) {
+                            8
+                        } else {
+                            0
+                        },
                         move_mag: u8::MAX,
                         buttons: Buttons::DODGE,
                         ..PlayerInput::default()
@@ -86,11 +94,11 @@ fn script() -> Vec<TickInputs> {
                     .iter()
                     .find(|r| r.contains(&tick))
                     .map(|r| PlayerInput {
-                        // Buckets: 24 of 32 = straight up, 0 = straight right.
-                        move_dir: if tick.saturating_sub(r.start) < WALK_NORTH {
-                            24
-                        } else {
+                        // Buckets: 0 of 32 = straight right, 8 = straight down.
+                        move_dir: if tick.saturating_sub(r.start) < WALK_EAST {
                             0
+                        } else {
+                            8
                         },
                         move_mag: u8::MAX,
                         ..PlayerInput::default()
@@ -114,7 +122,6 @@ fn start() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     state.players[1] = state.players[0];
     state.run = Run::Dead {
-        room: RoomId(0),
         ticks_until_restart: 30,
     };
     state
@@ -167,11 +174,23 @@ fn golden_trace_matches_committed_value() {
     assert_eq!(trace, GOLDEN_TRACE, "got {trace:#018x}");
 }
 
+/// A snapshot shares the static ship and copies only live state, which the checksum
+/// covers: the ship itself counts once, as its build-time checksum.
+#[test]
+fn snapshots_share_the_ship_and_checksum_the_live_hatches() {
+    let state = SimState::new(SEED, RunConfig::default());
+    let snapshot = state.clone();
+    assert!(Arc::ptr_eq(&state.ship, &snapshot.ship));
+    let mut opened = snapshot.clone();
+    opened.hatches[0] = HatchState::Open;
+    assert_ne!(opened.checksum(), state.checksum());
+    assert_eq!(snapshot.checksum(), state.checksum());
+}
+
 /// Guards the script's purpose: the golden trace must cover walking, rolling (dropped
-/// mid-roll dodges, a hit on a vulnerable landing), falling into a pit, shooting, venting (auto and manual,
-/// and the refills),
-/// kills, a room transition into a sealed encounter with a second wave, shooters firing,
-/// player deaths and restarts.
+/// mid-roll dodges, a hit on a vulnerable landing), falling into a pit, shooting, venting
+/// (auto and manual, and the refills), kills, opening a hatch into a sealed encounter
+/// with a second wave, shooters firing, player deaths and restarts.
 #[test]
 fn script_exercises_movement_dodge_combat_and_rooms() {
     let mut state = start();
@@ -212,7 +231,7 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
             })
             .count();
         events.extend(stepped);
-        sealed |= state.run.doors_locked();
+        sealed |= state.hatches.contains(&HatchState::Sealed);
         enemy_shots += usize::from(state.enemy_bullets.len() > enemy_bullets);
         enemy_bullets = state.enemy_bullets.len();
     }
@@ -222,7 +241,7 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     let deaths = count(|e| matches!(e, Event::PlayerDied { .. }));
     let falls = count(|e| matches!(e, Event::PlayerFell { .. }));
     let restarts = count(|e| matches!(e, Event::Restarted));
-    let entries = count(|e| matches!(e, Event::RoomEntered { .. }));
+    let entries = count(|e| matches!(e, Event::HatchOpened { .. }));
     let waves = count(|e| matches!(e, Event::WaveStarted { .. }));
     let cleared = count(|e| matches!(e, Event::RoomCleared { .. }));
     println!(

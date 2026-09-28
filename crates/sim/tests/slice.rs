@@ -1,7 +1,8 @@
 //! The whole slice: extraction -> `Run::Won`, restart from Won, and a scripted player that
-//! fights through every room of the derelict to the win.
+//! walks the whole ship, fighting through every room of the derelict to the win.
 
-use sim::room::{Body, Category, Tiles, cell_center, cell_of};
+use sim::room::{CELL, Category, Cell, cell_center, cell_of};
+use sim::ship::{Body, Tiles};
 use sim::{
     Buttons, DERELICT, Difficulty, Event, FxVec2, MAX_HP, MOVE_BUCKETS, PlayerInput, Rng, RoomId,
     Run, RunConfig, SimState, TickInputs, step, trig,
@@ -14,19 +15,24 @@ fn exit_room() -> RoomId {
     let index = DERELICT
         .rooms
         .iter()
-        .position(|r| r.category == Category::Exit)
+        .position(|r| r.room.category == Category::Exit)
         .unwrap_or_default();
     RoomId(u16::try_from(index).unwrap_or_default())
 }
 
-/// A fresh run moved to the exit room, slot 0 standing on its extraction pad.
+/// The exit room's extraction pad, in floor cells.
+fn pad() -> (usize, usize) {
+    let placed = DERELICT.rooms.get(usize::from(exit_room().0));
+    let (x, y) = placed.and_then(|p| p.room.extraction).unwrap_or_default();
+    let (ox, oy) = placed.map(|p| p.at).unwrap_or_default();
+    (x.saturating_add(ox), y.saturating_add(oy))
+}
+
+/// A fresh run, slot 0 standing on the exit room's extraction pad.
 fn on_the_pad(run: Run) -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     state.run = run;
-    let (x, y) = DERELICT
-        .room(exit_room())
-        .and_then(|r| r.extraction)
-        .unwrap_or_default();
+    let (x, y) = pad();
     if let Some(player) = &mut state.players[0] {
         player.pos = cell_center(x, y);
     }
@@ -37,11 +43,7 @@ fn on_the_pad(run: Run) -> SimState {
 fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
     let room = exit_room();
     // Mid-fight (a wave still telegraphing in), the pad does nothing.
-    let mut fighting = on_the_pad(Run::Encounter {
-        room,
-        wave: 1,
-        doors_locked: true,
-    });
+    let mut fighting = on_the_pad(Run::Encounter { room, wave: 1 });
     fighting
         .enemies
         .insert(sim::Enemy::rusher(cell_center(2, 2)));
@@ -49,11 +51,11 @@ fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
     assert!(!events.contains(&Event::Won), "{events:?}");
     assert!(matches!(fighting.run, Run::Encounter { .. }));
 
-    let mut clear = on_the_pad(Run::Boarding { room });
+    let mut clear = on_the_pad(Run::Boarding);
     clear.cleared = 1 << room.0;
     let events = step(&mut clear, &TickInputs::default()).events;
     assert_eq!(events, [Event::Won]);
-    assert_eq!(clear.run, Run::Won { room });
+    assert_eq!(clear.run, Run::Won);
 
     // The world freezes until restart.
     let frozen = clear.clone();
@@ -63,22 +65,22 @@ fn the_extraction_pad_wins_only_once_the_exit_room_is_clear() {
     assert_eq!(clear.players, frozen.players);
 }
 
-/// Walks the party east out of a cleared bridge into the exit room's encounter.
+/// Walks the party east from the hangar passage (every other room cleared) through its
+/// hatch into the exit room's encounter.
 fn enter_the_exit_room() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     state.cleared = 0b1110;
-    state.run = Run::Boarding { room: RoomId(3) };
     if let Some(player) = &mut state.players[0] {
-        // Centered on the bridge's 2-cell east gap (rows 5 and 6).
+        // In the passage's floor cells (44..=45, 30..=31), centered on its rows.
         player.pos = FxVec2 {
-            x: cell_center(14, 5).x,
-            y: sim::room::CELL.saturating_mul_int(6),
+            x: cell_center(44, 30).x,
+            y: CELL.saturating_mul_int(31),
         };
         player.solid = player.pos;
     }
     let mut east = TickInputs::default();
     east.players[0].move_mag = u8::MAX;
-    for _ in 0..20 {
+    for _ in 0..40 {
         step(&mut state, &east);
     }
     state
@@ -98,10 +100,7 @@ fn the_pad_stays_dead_while_the_exit_rooms_last_wave_lives() {
     );
 
     // Stand on the pad through the whole telegraph and beyond, unhurt.
-    let (x, y) = DERELICT
-        .room(room)
-        .and_then(|r| r.extraction)
-        .unwrap_or_default();
+    let (x, y) = pad();
     for _ in 0..120 {
         if let Some(player) = &mut state.players[0] {
             player.pos = cell_center(x, y);
@@ -115,13 +114,13 @@ fn the_pad_stays_dead_while_the_exit_rooms_last_wave_lives() {
             "{:?}",
             state.run
         );
-        assert!(!state.extraction_live());
+        assert!(!state.extraction_live(room));
     }
 }
 
 #[test]
 fn restart_from_won_starts_a_fresh_run() {
-    let mut state = on_the_pad(Run::Won { room: exit_room() });
+    let mut state = on_the_pad(Run::Won);
     state.cleared = 0b11110;
     let mut restart = TickInputs::default();
     restart.players[0].buttons = Buttons::RESTART;
@@ -133,10 +132,10 @@ fn restart_from_won_starts_a_fresh_run() {
 
 // --- scripted end-to-end run --------------------------------------------------------
 
-/// Walkable cell (`x`, `y`) of `tiles`, as a grid index.
-fn index(tiles: Tiles, (x, y): (i32, i32)) -> Option<usize> {
+/// Cell (`x`, `y`) of the floor, as a grid index.
+fn index(tiles: Tiles<'_>, (x, y): (i32, i32)) -> Option<usize> {
     let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
-    let (w, h) = (tiles.room.width(), tiles.room.height());
+    let (w, h) = tiles.ship.size();
     (x < w && y < h).then(|| y.saturating_mul(w).saturating_add(x))
 }
 
@@ -149,16 +148,22 @@ const fn neighbors((x, y): (i32, i32)) -> [(i32, i32); 4] {
     ]
 }
 
-/// The first step of a shortest 4-connected walk from `from` to `to` through `tiles`
+/// Where the scripted player may step: anywhere a player can go (through closed and open
+/// hatches) except pits.
+fn passable(tiles: Tiles<'_>, (x, y): (i32, i32)) -> bool {
+    !tiles.blocks(x, y, Body::Player) && tiles.ship.cell(x, y) != Cell::Pit
+}
+
+/// The first step of a shortest 4-connected walk from `from` to `to` across the floor
 /// (`to` itself once there). A breadth-first fill out from `to`, then downhill.
-fn next_cell(tiles: Tiles, from: (i32, i32), to: (i32, i32)) -> Option<(i32, i32)> {
-    let size = tiles.room.width().saturating_mul(tiles.room.height());
-    let mut dist: Vec<Option<u32>> = vec![None; size];
+fn next_cell(tiles: Tiles<'_>, from: (i32, i32), to: (i32, i32)) -> Option<(i32, i32)> {
+    let (w, h) = tiles.ship.size();
+    let mut dist: Vec<Option<u32>> = vec![None; w.saturating_mul(h)];
     *dist.get_mut(index(tiles, to)?)? = Some(0);
     let mut queue = VecDeque::from([(to, 0_u32)]);
     while let Some((cell, d)) = queue.pop_front() {
         for n in neighbors(cell) {
-            if tiles.blocks(n.0, n.1, Body::Walker) {
+            if !passable(tiles, n) {
                 continue;
             }
             if let Some(slot) = index(tiles, n).and_then(|i| dist.get_mut(i))
@@ -181,7 +186,7 @@ fn next_cell(tiles: Tiles, from: (i32, i32), to: (i32, i32)) -> Option<(i32, i32
 }
 
 /// Whether a shot from `from` to `to` clears every wall (sampled every 4 pt).
-fn clear_shot(tiles: Tiles, from: FxVec2, to: FxVec2) -> bool {
+fn clear_shot(tiles: Tiles<'_>, from: FxVec2, to: FxVec2) -> bool {
     let steps = 64;
     (1..steps).all(|i| {
         let at = |a: sim::Fx, b: sim::Fx| {
@@ -254,12 +259,33 @@ fn waypoint(pos: FxVec2, here: (i32, i32), next: (i32, i32)) -> Option<FxVec2> {
     })
 }
 
+/// Where the scripted player heads between fights: into the first uncleared room with
+/// enemies (its first placement), else to the extraction pad.
+fn next_goal(state: &SimState) -> Option<(i32, i32)> {
+    let next = DERELICT
+        .rooms
+        .iter()
+        .enumerate()
+        .find(|&(i, r)| {
+            r.room.has_enemies() && !state.cleared(RoomId(u16::try_from(i).unwrap_or(0)))
+        })
+        .and_then(|(_, r)| {
+            let first = r.room.base.first()?;
+            Some((
+                first.x.saturating_add(r.at.0),
+                first.y.saturating_add(r.at.1),
+            ))
+        });
+    let (x, y) = next.unwrap_or_else(pad);
+    Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?))
+}
+
 /// One tick of the scripted player: in a fight, walk toward the nearest active enemy
-/// until within ~3 cells with a clear shot, auto-firing throughout; once the room is clear, walk to the
-/// extraction pad, else to the exit into the next room.
+/// until within ~3 cells with a clear shot, auto-firing throughout; between fights, walk
+/// to the next room to clear (see [`next_goal`]).
 fn scripted_input(state: &SimState) -> Option<PlayerInput> {
     let player = state.players[0]?;
-    let tiles = state.tiles()?;
+    let tiles = state.tiles();
     let here = cell(player.pos);
     let goal = match state.run {
         Run::Encounter { .. } => {
@@ -274,17 +300,8 @@ fn scripted_input(state: &SimState) -> Option<PlayerInput> {
                 .filter(|&e| cells_apart(cell(e), here) > 3 || !clear_shot(tiles, player.pos, e))
                 .map(cell)
         }
-        Run::Boarding { room } => tiles.room.extraction.map_or_else(
-            || {
-                let next = RoomId(room.0.saturating_add(1));
-                let exit = (0..tiles.room.exits.len())
-                    .find(|&e| DERELICT.link(room, e).is_some_and(|(to, _)| to == next))?;
-                let gap = tiles.room.exits.get(exit)?;
-                Some((i32::try_from(gap.x).ok()?, i32::try_from(gap.y).ok()?))
-            },
-            |(x, y)| Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?)),
-        ),
-        Run::Dead { .. } | Run::Won { .. } => return None,
+        Run::Boarding => next_goal(state),
+        Run::Dead { .. } | Run::Won => return None,
     };
     let mut input = goal
         .and_then(|goal| next_cell(tiles, here, goal))
@@ -359,14 +376,17 @@ fn a_scripted_player_clears_every_room_and_extracts() {
         auto_vents >= 5 && manual_vents >= 1,
         "{auto_vents} {manual_vents}"
     );
-    assert_eq!(state.run, Run::Won { room: exit_room() }, "{cleared:?}");
+    assert_eq!(state.run, Run::Won, "{cleared:?}");
     assert_eq!(cleared, [RoomId(1), RoomId(2), RoomId(3), RoomId(4)]);
     let placed: usize = DERELICT
         .rooms
         .iter()
+        .map(|r| r.room)
         .flat_map(|r| std::iter::once(r.base).chain(r.reinforcements.iter().map(|l| l.placements)))
         .map(<[_]>::len)
         .sum();
+    // Every room was revealed on the way.
+    assert!((0..DERELICT.rooms.len()).all(|i| state.visited(RoomId(u16::try_from(i).unwrap()))));
     assert_eq!(kills, placed, "every placed enemy died");
     assert_eq!(events.last(), Some(&Event::Won));
 }

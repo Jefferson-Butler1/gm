@@ -1,16 +1,17 @@
 //! Gun, bullets, and the enemies (melee rusher, ranged shooter in two patterns), colliding
-//! with the
-//! room's tiles. Systems run in a fixed order over arenas iterated in slot order, so every
-//! tie resolves the same way on every machine. Speeds and timings come from the run's
-//! [`RunConfig`](crate::RunConfig) (issue #15).
+//! with the floor's tiles; each enemy is kept in the room it stands in. Systems run in a
+//! fixed order over arenas iterated in slot order, so every tie resolves the same way on
+//! every machine. Speeds and timings come from the run's [`RunConfig`](crate::RunConfig)
+//! (issue #15).
 
 use crate::arena::{Arena, Id};
 use crate::config::{RunConfig, Tuning, per_tick};
 use crate::path::{FlowField, FlowFields, walk_clear};
 use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
-use crate::room::{Body, Tiles};
+use crate::ship::{Body, Tiles};
 use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub type EnemyId = Id<Enemy>;
 
@@ -234,9 +235,9 @@ impl Enemy {
 /// (notice, move, fire, separate, contact, telegraph countdown), enemy bullets, the death
 /// check, then the room (waves, exits, extraction).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
-    let Some(tiles) = state.tiles() else {
-        return;
-    };
+    // Hatches only change in `encounter::tick`, after everything that moves.
+    let (ship, hatches) = (Arc::clone(&state.ship), state.hatches.clone());
+    let tiles = Tiles::new(&ship, &hatches);
     // Who alerts allies this tick is decided by last tick's states, so an alert spreads
     // one hop per tick whatever order enemies update in.
     let hunters: Vec<(FxVec2, FxVec2)> = state
@@ -264,7 +265,6 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
     enemy_bullets(state, tiles, events);
     if !state.players.iter().flatten().any(Player::alive) {
         state.run = Run::Dead {
-            room: state.run.room(),
             ticks_until_restart: DEATH_TICKS,
         };
         return;
@@ -276,7 +276,7 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
 fn players(
     state: &mut SimState,
     inputs: &TickInputs,
-    tiles: Tiles,
+    tiles: Tiles<'_>,
     events: &mut TickEvents,
 ) -> Vec<FxVec2> {
     let tuning = state.config.tuning;
@@ -319,11 +319,13 @@ fn players(
 
 /// Pushes every active enemy within [`RESPAWN_CLEARANCE`] of a pit respawn at `at`
 /// straight out to that distance, sliding through `tiles` in quarter steps (each under a
-/// cell, as `slide` needs), so one pinned against a wall or pit stays short of it. The
-/// post-hit invulnerability the respawn grants covers whatever is left close.
-fn clear_respawn(enemies: &mut Arena<Enemy>, at: FxVec2, tiles: Tiles) {
+/// cell, as `slide` needs), so one pinned against a wall, pit or its room's edge stays
+/// short of it. The post-hit invulnerability the respawn grants covers whatever is left
+/// close.
+fn clear_respawn(enemies: &mut Arena<Enemy>, at: FxVec2, tiles: Tiles<'_>) {
     const QUARTER: Fx = Fx::from_bits(1 << 30);
     for (_, enemy) in enemies.iter_mut().filter(|(_, e)| e.active()) {
+        let tiles = tiles.walker_at(enemy.pos);
         let step = scale(push_out(at, enemy.pos, RESPAWN_CLEARANCE), QUARTER);
         for _ in 0..4 {
             enemy.pos = tiles.slide(enemy.pos, ENEMY_RADIUS, step, Body::Walker);
@@ -332,14 +334,14 @@ fn clear_respawn(enemies: &mut Arena<Enemy>, at: FxVec2, tiles: Tiles) {
 }
 
 /// Moves a bullet one tick. Returns whether it is still flying: lifetime left, and not
-/// in a wall, void or sealed door (it flies over pits).
-fn fly(bullet: &mut Bullet, tiles: Tiles) -> bool {
+/// in a wall, void or shut hatch (it flies over pits).
+fn fly(bullet: &mut Bullet, tiles: Tiles<'_>) -> bool {
     bullet.pos = add(bullet.pos, bullet.vel);
     bullet.ticks_left = bullet.ticks_left.saturating_sub(1);
     bullet.ticks_left > 0 && !tiles.blocks_point(bullet.pos, Body::Shot)
 }
 
-fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
+fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) {
     // Each bullet hits at most the first live enemy it overlaps, in slot order. A hit
     // alerts it to the nearest living player (bullets don't record who fired them).
     let damage = state.config.tuning.damage;
@@ -376,7 +378,7 @@ fn bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
 
 /// Enemy bullets hurt the first player (in slot order) they overlap who can take the hit.
 /// Invulnerable players (rolling, or just hurt) don't stop them: dodged bullets fly on.
-fn enemy_bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
+fn enemy_bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) {
     let hurt_ticks = state.config.tuning.hurt_ticks;
     let players = &mut state.players;
     state.enemy_bullets.retain(|_, bullet| {
@@ -401,8 +403,8 @@ fn enemy_bullets(state: &mut SimState, tiles: Tiles, events: &mut TickEvents) {
 }
 
 /// What enemies can perceive this tick (see [`notice`]).
-struct Senses {
-    tiles: Tiles,
+struct Senses<'a> {
+    tiles: Tiles<'a>,
     tuning: Tuning,
     /// Targetable players' positions.
     players: Vec<FxVec2>,
@@ -425,11 +427,12 @@ fn targetable(state: &SimState) -> Vec<FxVec2> {
 
 /// Updates `enemy`'s awareness from what it perceives, and returns the player it sees:
 /// the nearest in plain view, at any range.
-/// Failing that, a shot it hears or an ally hunting in plain view alerts it.
+/// Failing that, a shot it hears (fired in its own room: hatches stop sound) or an ally
+/// hunting in plain view alerts it.
 fn notice(
     enemy: &mut Enemy,
     id: EnemyId,
-    senses: &Senses,
+    senses: &Senses<'_>,
     events: &mut TickEvents,
 ) -> Option<FxVec2> {
     let tuning = &senses.tuning;
@@ -443,12 +446,13 @@ fn notice(
         .copied()
         .filter(|&p| line_of_fire(senses.tiles, pos, p))
         .min_by_key(nearest);
+    let ship = senses.tiles.ship;
     let heard = || {
         senses
             .shots
             .iter()
             .copied()
-            .filter(|&p| within(p, tuning.hearing_radius))
+            .filter(|&p| within(p, tuning.hearing_radius) && ship.room_at(p) == ship.room_at(pos))
             .min_by_key(nearest)
     };
     let told = || {
@@ -493,11 +497,11 @@ fn hunt(enemy: &mut Enemy, seen: Option<FxVec2>, forget_ticks: u16) -> Option<Fx
     Some(*last_seen)
 }
 
-fn enemies(state: &mut SimState, senses: &Senses, events: &mut TickEvents) {
-    let (config, tiles) = (state.config, senses.tiles);
+fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
+    let config = state.config;
     let telegraph = config.tuning.shooter_telegraph;
     let rusher_speed = per_tick(config.tuning.rusher_speed);
-    let mut fields = FlowFields::new(tiles);
+    let mut fields = FlowFields::new();
     for (id, enemy) in state.enemies.iter_mut().filter(|(_, e)| e.active()) {
         // With no targetable player (all falling or dead), enemies hold still, timers
         // paused.
@@ -512,7 +516,8 @@ fn enemies(state: &mut SimState, senses: &Senses, events: &mut TickEvents) {
         let Some(angle) = trig::angle_of(sub(target, enemy.pos)) else {
             continue;
         };
-        let field = fields.toward(target);
+        let tiles = senses.tiles.walker_at(enemy.pos);
+        let field = fields.toward(tiles, target);
         let pursue = |pos, speed, side: &mut i8| chase(tiles, field, pos, target, speed, side);
         match &mut enemy.behavior {
             Behavior::Rusher { contact_cooldown } => {
@@ -568,7 +573,7 @@ fn enemies(state: &mut SimState, senses: &Senses, events: &mut TickEvents) {
         }
     }
 
-    separate(state, tiles);
+    separate(state, senses.tiles);
 
     let reach = PLAYER_RADIUS.saturating_add(ENEMY_RADIUS);
     for (_, enemy) in state.enemies.iter_mut() {
@@ -627,7 +632,7 @@ fn fire(
 }
 
 /// One enemy step through the tiles toward `angle`.
-fn walk(tiles: Tiles, pos: FxVec2, angle: u16, speed: Fx) -> FxVec2 {
+fn walk(tiles: Tiles<'_>, pos: FxVec2, angle: u16, speed: Fx) -> FxVec2 {
     tiles.slide(
         pos,
         ENEMY_RADIUS,
@@ -650,7 +655,7 @@ fn progressed(from: FxVec2, to: FxVec2, speed: Fx) -> bool {
 /// `side` is [`Enemy::steer`].
 #[must_use]
 pub fn chase(
-    tiles: Tiles,
+    tiles: Tiles<'_>,
     field: &FlowField,
     pos: FxVec2,
     target: FxVec2,
@@ -675,7 +680,7 @@ pub fn chase(
 /// that works is kept in `side` while the direct way stays blocked, so a body follows a
 /// pillar's face around its corner instead of dithering. The first side tried is the one
 /// the blocked step drifted toward.
-fn steer(tiles: Tiles, pos: FxVec2, angle: u16, speed: Fx, side: &mut i8) -> FxVec2 {
+fn steer(tiles: Tiles<'_>, pos: FxVec2, angle: u16, speed: Fx, side: &mut i8) -> FxVec2 {
     let direct = walk(tiles, pos, angle, speed);
     if progressed(pos, direct, speed) {
         *side = 0;
@@ -707,9 +712,9 @@ fn steer(tiles: Tiles, pos: FxVec2, angle: u16, speed: Fx, side: &mut i8) -> FxV
     direct
 }
 
-/// Whether a shot from `from` to `to` would clear every wall, void and sealed door on
-/// the way (pits don't block shots).
-fn line_of_fire(tiles: Tiles, from: FxVec2, to: FxVec2) -> bool {
+/// Whether a shot from `from` to `to` would clear every wall, void and shut hatch on the
+/// way (pits don't block shots).
+fn line_of_fire(tiles: Tiles<'_>, from: FxVec2, to: FxVec2) -> bool {
     let offset = sub(to, from);
     let steps = dist(from, to)
         .checked_div(LINE_STEP)
@@ -730,41 +735,45 @@ fn line_of_fire(tiles: Tiles, from: FxVec2, to: FxVec2) -> bool {
 /// Resolves overlaps among active enemies: pushes them apart and out of targetable
 /// players.
 /// Every push slides through `tiles` like a walk, so nobody is shoved into a wall, pit,
-/// void or sealed door; a body pinned against one leaves the rest of the correction to
-/// later passes and to its neighbors. Pairs resolve in slot order, each pass building on
-/// the last, so the result is deterministic, and a crowd pressing on a player settles
-/// into a still ring around it instead of stacking.
-fn separate(state: &mut SimState, tiles: Tiles) {
+/// void, hatch or another room; a body pinned against one leaves the rest of the
+/// correction to later passes and to its neighbors. Pairs resolve in slot order, each
+/// pass building on the last, so the result is deterministic, and a crowd pressing on a
+/// player settles into a still ring around it instead of stacking.
+fn separate(state: &mut SimState, tiles: Tiles<'_>) {
     let players = targetable(state);
-    let mut bodies: Vec<FxVec2> = state
+    // Each body with the view that keeps it in its room.
+    let mut bodies: Vec<(FxVec2, Tiles<'_>)> = state
         .enemies
         .iter()
         .filter(|(_, e)| e.active())
-        .map(|(_, e)| e.pos)
+        .map(|(_, e)| (e.pos, tiles.walker_at(e.pos)))
         .collect();
     // Pushes stay under a cell, as `slide` needs: a pair's half is at most
     // ENEMY_SPACING / 2 and a player's push at most PLAYER_SPACING.
-    let slide = |pos: FxVec2, push: FxVec2| tiles.slide(pos, ENEMY_RADIUS, push, Body::Walker);
+    let slide = |(pos, tiles): &mut (FxVec2, Tiles<'_>), push: FxVec2| {
+        *pos = tiles.slide(*pos, ENEMY_RADIUS, push, Body::Walker);
+    };
     for _ in 0..SEPARATION_PASSES {
         let mut rest = bodies.as_mut_slice();
         while let Some((a, tail)) = rest.split_first_mut() {
             for b in tail.iter_mut() {
                 // Each side of the pair takes half the correction.
-                let push = scale(push_out(*a, *b, ENEMY_SPACING), HALF);
-                *a = slide(*a, sub(FxVec2::default(), push));
-                *b = slide(*b, push);
+                let push = scale(push_out(a.0, b.0, ENEMY_SPACING), HALF);
+                slide(a, sub(FxVec2::default(), push));
+                slide(b, push);
             }
             rest = tail;
         }
         for body in &mut bodies {
             // Players don't budge.
             for &player in &players {
-                *body = slide(*body, push_out(player, *body, PLAYER_SPACING));
+                let push = push_out(player, body.0, PLAYER_SPACING);
+                slide(body, push);
             }
         }
     }
     let active = state.enemies.iter_mut().filter(|(_, e)| e.active());
-    for ((_, enemy), body) in active.zip(bodies) {
+    for ((_, enemy), (body, _)) in active.zip(bodies) {
         enemy.pos = body;
     }
 }

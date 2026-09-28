@@ -8,7 +8,7 @@ publish.workspace = true
 # Headless and deterministic: deps limited to fixed-point and serde (issue #5).
 [dependencies]
 fixed = { version = "1.31", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 
 [lints]
 workspace = true

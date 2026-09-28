@@ -3,7 +3,8 @@
 //! Rollback-ready by construction: all state lives in one [`SimState`] that is `Clone`,
 //! serializable and checksummable; math is fixed-point ([`Fx`]); time is counted in ticks
 //! at [`TICK_HZ`]; and [`step`] is a pure function of the state and the tick's inputs.
-//! Pause, menus and wall-clock time live outside the sim.
+//! The static floor ([`Ship`]) is shared behind an `Arc`, so a snapshot copies only live
+//! state. Pause, menus and wall-clock time live outside the sim.
 
 #![forbid(unsafe_code)]
 #![deny(
@@ -24,6 +25,7 @@ mod path;
 mod player;
 mod rng;
 pub mod room;
+pub mod ship;
 pub mod trig;
 
 pub use arena::{Arena, Id};
@@ -39,8 +41,10 @@ pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use path::FlowField;
 pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
 pub use rng::Rng;
+pub use ship::{HatchId, HatchState, Ship};
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Fixed simulation rate. Speeds and timers derive from this; render interpolates up to
 /// the display rate.
@@ -52,62 +56,35 @@ pub const MAX_PLAYERS: usize = 4;
 /// The sim's only numeric type for world math: ±2^31 range, 2^-32 resolution.
 pub type Fx = fixed::types::I32F32;
 
-/// World-space vector in room-local points: the origin is the room grid's top-left
-/// corner and +y points down (see [`room`]).
+/// World-space vector in floor points: the origin is the floor grid's top-left corner and
+/// +y points down (see [`room`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FxVec2 {
     pub x: Fx,
     pub y: Fx,
 }
 
-/// Index into [`DERELICT`]'s rooms.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Index into the ship's rooms: a region of the floor.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct RoomId(pub u16);
 
 /// The run's state machine. Each variant owns its data; transitions happen only in [`step`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Run {
-    Boarding {
-        room: RoomId,
-    },
+    /// Exploring: no fight on.
+    Boarding,
+    /// Fighting `room`'s waves; its hatches are sealed until the last one dies.
     Encounter {
         room: RoomId,
         wave: u8,
-        doors_locked: bool,
     },
     Dead {
-        /// Where the party fell; presentation keeps drawing it.
-        room: RoomId,
         ticks_until_restart: u32,
     },
-    /// Extracted from `room` (the exit room), which presentation keeps drawing.
-    Won {
-        room: RoomId,
-    },
-}
-
-impl Run {
-    /// The room the party is in (or ended the run in).
-    #[must_use]
-    pub const fn room(self) -> RoomId {
-        match self {
-            Self::Boarding { room }
-            | Self::Encounter { room, .. }
-            | Self::Dead { room, .. }
-            | Self::Won { room } => room,
-        }
-    }
-
-    #[must_use]
-    pub const fn doors_locked(self) -> bool {
-        matches!(
-            self,
-            Self::Encounter {
-                doors_locked: true,
-                ..
-            }
-        )
-    }
+    /// Extracted: the world stays frozen as it was.
+    Won,
 }
 
 /// Everything that affects simulation results. Nothing outside this struct may.
@@ -119,13 +96,21 @@ pub struct SimState {
     pub seed: u64,
     pub rng: Rng,
     pub run: Run,
+    /// The static floor, shared: cloning the state copies the pointer. It hashes as its
+    /// own build-time checksum.
+    pub ship: Arc<Ship>,
+    /// Live state of each of the ship's hatches, by [`HatchId`].
+    pub hatches: Vec<HatchState>,
     /// `None` = empty slot. An occupied slot with 0 HP is a dead player.
     pub players: [Option<Player>; MAX_PLAYERS],
-    /// Enemies and bullets in the party's current room; leaving a room drops them.
+    /// The fighting room's enemies: they spawn on entry and never leave it.
     pub enemies: Arena<Enemy>,
     /// The players' bullets.
     pub bullets: Arena<Bullet>,
     pub enemy_bullets: Arena<Bullet>,
+    /// Bit `i` set = room `i` is revealed (ETG fog): a player started in it or opened a
+    /// hatch into it. The future minimap's explored set.
+    pub visited: u64,
     /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
     pub cleared: u64,
     /// Difficulty and tunables, fixed for the run.
@@ -136,27 +121,34 @@ pub struct SimState {
 }
 
 impl SimState {
-    /// A fresh single-player run, standing in the derelict's start room. `config` is
-    /// clamped to what the sim handles (see [`RunConfig::sanitized`]).
+    /// A fresh single-player run, standing in the derelict's start room with every hatch
+    /// closed. `config` is clamped to what the sim handles (see [`RunConfig::sanitized`]).
     #[must_use]
     pub fn new(seed: u64, config: RunConfig) -> Self {
         let config = config.sanitized();
-        let (room, at) = DERELICT.start();
-        let mut state = Self {
+        let ship = Ship::new(&DERELICT);
+        let (room, at) = ship.start();
+        let player = Player {
+            pos: at,
+            solid: at,
+            ..Player::new(&config.tuning)
+        };
+        Self {
             tick: 0,
             seed,
             rng: Rng::from_seed(seed),
-            run: Run::Boarding { room },
-            players: [Some(Player::new(&config.tuning)), None, None, None],
+            run: Run::Boarding,
+            hatches: vec![HatchState::Closed; ship.hatches().len()],
+            ship: Arc::new(ship),
+            players: [Some(player), None, None, None],
             enemies: Arena::default(),
             bullets: Arena::default(),
             enemy_bullets: Arena::default(),
+            visited: bit(room),
             cleared: 0,
             config,
             next_config: None,
-        };
-        encounter::enter(&mut state, room, at, &mut TickEvents::default());
-        state
+        }
     }
 
     /// A fresh run from the next run seed, with the same occupied slots, under
@@ -174,34 +166,28 @@ impl SimState {
         fresh
     }
 
-    /// Collision for the party's current room.
+    /// The floor's collision view this tick.
     #[must_use]
-    pub fn tiles(&self) -> Option<room::Tiles> {
-        let room = DERELICT.room(self.run.room())?;
-        Some(room::Tiles {
-            room,
-            sealed: self.run.doors_locked(),
-        })
+    pub fn tiles(&self) -> ship::Tiles<'_> {
+        ship::Tiles::new(&self.ship, &self.hatches)
+    }
+
+    #[must_use]
+    pub fn visited(&self, room: RoomId) -> bool {
+        self.visited & bit(room) != 0
     }
 
     #[must_use]
     pub fn cleared(&self, room: RoomId) -> bool {
-        self.cleared
-            .checked_shr(u32::from(room.0))
-            .is_some_and(|bits| bits & 1 == 1)
+        self.cleared & bit(room) != 0
     }
 
-    /// Whether the party's room has nothing left to fight: every wave cleared, or none
-    /// to begin with. Its extraction pad, if any, wins only then; presentation lights it
-    /// from this too.
+    /// Whether `room` has nothing left to fight: every wave cleared, or none to begin
+    /// with. Its extraction pad, if any, wins only then; presentation lights it from this
+    /// too.
     #[must_use]
-    pub fn extraction_live(&self) -> bool {
-        let room = self.run.room();
-        self.cleared(room) || DERELICT.room(room).is_some_and(|r| !r.has_enemies())
-    }
-
-    fn set_cleared(&mut self, room: RoomId) {
-        self.cleared |= 1_u64.checked_shl(u32::from(room.0)).unwrap_or(0);
+    pub fn extraction_live(&self, room: RoomId) -> bool {
+        self.cleared(room) || self.ship.room(room).is_some_and(|r| !r.room.has_enemies())
     }
 
     /// Endianness-pinned hash of the whole state, comparable across machines.
@@ -209,6 +195,11 @@ impl SimState {
     pub fn checksum(&self) -> u64 {
         checksum::of(self)
     }
+}
+
+/// Room `room`'s bit in the visited and cleared sets; none past [`room::MAX_ROOMS`].
+fn bit(room: RoomId) -> u64 {
+    1_u64.checked_shl(u32::from(room.0)).unwrap_or(0)
 }
 
 /// One-way sim -> presentation notifications. Presentation may see a tick re-run on
@@ -243,9 +234,9 @@ pub enum Event {
         slot: usize,
     },
     Restarted,
-    /// The party walked through an exit into `room`.
-    RoomEntered {
-        room: RoomId,
+    /// A player stepped into a closed hatch, opening it.
+    HatchOpened {
+        hatch: HatchId,
     },
     /// A reinforcement layer spawned; the base layer is wave 0.
     WaveStarted {
@@ -276,22 +267,21 @@ pub fn step(state: &mut SimState, inputs: &TickInputs) -> TickEvents {
     // abandons a live run at once (the settings sheet's Restart button); after a death it
     // waits out the death pause.
     match &mut state.run {
-        Run::Boarding { .. } | Run::Encounter { .. } if restart_pressed => {
+        Run::Boarding | Run::Encounter { .. } if restart_pressed => {
             *state = state.restarted();
             events.events.push(Event::Restarted);
         }
-        Run::Boarding { .. } | Run::Encounter { .. } => combat::tick(state, inputs, &mut events),
+        Run::Boarding | Run::Encounter { .. } => combat::tick(state, inputs, &mut events),
         Run::Dead {
             ticks_until_restart,
-            ..
         } if *ticks_until_restart > 0 => {
             *ticks_until_restart = ticks_until_restart.saturating_sub(1);
         }
-        Run::Dead { .. } | Run::Won { .. } if restart_pressed => {
+        Run::Dead { .. } | Run::Won if restart_pressed => {
             *state = state.restarted();
             events.events.push(Event::Restarted);
         }
-        Run::Dead { .. } | Run::Won { .. } => {}
+        Run::Dead { .. } | Run::Won => {}
     }
 
     state.tick = state.tick.wrapping_add(1);

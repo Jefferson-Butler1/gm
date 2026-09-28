@@ -5,10 +5,12 @@
 //! derelict constants are wrapped in `.valid()`, so a malformed room fails the build and
 //! the sim only ever sees validated data.
 //!
-//! Coordinates are integer cells in the data. In the sim, a room's world space is
-//! room-local points: the origin is cell (0, 0)'s top-left corner and +y points down.
+//! Coordinates are integer cells in the data, room-local: (0, 0) is the room's top-left
+//! cell. A [`Derelict`] places each room in one floor-wide grid (see [`crate::ship`]); in
+//! the sim, world space is floor points: the origin is floor cell (0, 0)'s top-left
+//! corner and +y points down.
 
-use crate::{Fx, FxVec2, RoomId};
+use crate::{Fx, FxVec2};
 
 /// Side of one cell in world units (points).
 pub const CELL: Fx = Fx::from_bits(32 << 32);
@@ -18,11 +20,11 @@ const CELL_SHIFT: u32 = 37;
 /// Grid size cap per side; bounds the const flood fill's scratch arrays.
 pub const MAX_SIDE: usize = 64;
 const MAX_CELLS: usize = MAX_SIDE * MAX_SIDE;
-/// Rooms per derelict: the sim keeps the cleared set as a `u64` bitmask.
+/// Rooms per derelict: the sim keeps the visited and cleared sets as `u64` bitmasks.
 pub const MAX_ROOMS: usize = 64;
 
 /// One grid cell. Text: `.` floor, `#` wall, `o` pit, space = void (outside the room).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cell {
     Floor,
     Wall,
@@ -44,7 +46,7 @@ impl Cell {
 }
 
 /// Which room edge an exit sits on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dir {
     North,
     East,
@@ -53,6 +55,17 @@ pub enum Dir {
 }
 
 impl Dir {
+    /// `==` for const fns.
+    const fn is(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::North, Self::North)
+                | (Self::East, Self::East)
+                | (Self::South, Self::South)
+                | (Self::West, Self::West)
+        )
+    }
+
     /// Whether exits on these edges can link: they must face each other.
     const fn faces(self, other: Self) -> bool {
         matches!(
@@ -67,7 +80,7 @@ impl Dir {
 
 /// Which end of a [`Connection`] an exit may be. Constrains the layout graph, not which
 /// way players may walk through it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExitKind {
     Entrance,
     Exit,
@@ -84,7 +97,7 @@ impl ExitKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
     Normal,
     Connector,
@@ -96,9 +109,9 @@ pub enum Category {
     Exit,
 }
 
-/// A door gap in the room's edge: `width` floor cells starting at (`x`, `y`) and running
+/// A hatch's gap in the room's edge: `width` floor cells starting at (`x`, `y`) and running
 /// along the edge (rightward on north/south edges, downward on east/west ones).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Exit {
     pub dir: Dir,
     pub x: usize,
@@ -108,8 +121,9 @@ pub struct Exit {
 }
 
 impl Exit {
-    /// The `i`th edge cell.
-    const fn cell(&self, i: usize) -> (usize, usize) {
+    /// The `i`th gap cell.
+    #[must_use]
+    pub const fn cell(&self, i: usize) -> (usize, usize) {
         match self.dir {
             Dir::North | Dir::South => (self.x.saturating_add(i), self.y),
             Dir::East | Dir::West => (self.x, self.y.saturating_add(i)),
@@ -140,27 +154,18 @@ impl Exit {
         across == line && along >= start && along < start.saturating_add(self.width)
     }
 
-    /// Where a party arriving through this exit stands: centered on the gap, one cell in.
+    /// The same gap `dx`, `dy` cells over: a room's exit in floor cells.
     #[must_use]
-    pub fn arrival(&self) -> FxVec2 {
-        let (x, y) = self.inward(self.cell(0)).unwrap_or((self.x, self.y));
-        let first = cell_center(x, y);
-        // From the first cell's center to the gap's center: (width - 1) half-cells.
-        let shift = HALF_CELL.saturating_mul(Fx::from_num(self.width.saturating_sub(1)));
-        match self.dir {
-            Dir::North | Dir::South => FxVec2 {
-                x: first.x.saturating_add(shift),
-                y: first.y,
-            },
-            Dir::East | Dir::West => FxVec2 {
-                x: first.x,
-                y: first.y.saturating_add(shift),
-            },
+    pub const fn shifted(self, (dx, dy): (usize, usize)) -> Self {
+        Self {
+            x: self.x.saturating_add(dx),
+            y: self.y.saturating_add(dy),
+            ..self
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EnemyKind {
     Rusher,
     Shooter,
@@ -169,7 +174,7 @@ pub enum EnemyKind {
 }
 
 /// An enemy spawned at the center of cell (`x`, `y`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Placement {
     pub kind: EnemyKind,
     pub x: usize,
@@ -177,19 +182,19 @@ pub struct Placement {
 }
 
 /// When a reinforcement layer spawns.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LayerTrigger {
     /// Every enemy of the previous wave is dead.
     OnEnemiesCleared,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Reinforcement {
     pub trigger: LayerTrigger,
     pub placements: &'static [Placement],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoomTrigger {
     /// The party enters a room that still has enemies to fight.
     OnEnterWithEnemies,
@@ -197,13 +202,13 @@ pub enum RoomTrigger {
     OnEnemiesCleared,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoomAction {
     Seal,
     Unseal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PrototypeRoom {
     pub name: &'static str,
     pub category: Category,
@@ -237,11 +242,11 @@ pub enum RoomError {
     ExitOffEdge {
         exit: usize,
     },
-    /// Exit cells are the door gap, so they must be floor.
+    /// Exit cells are the hatch's gap, so they must be floor.
     ExitNotFloor {
         exit: usize,
     },
-    /// The cell just inside each exit cell must be floor: arrivals land there.
+    /// The cell just inside each exit cell must be floor: the way in from the hatch.
     ExitBlocked {
         exit: usize,
     },
@@ -252,6 +257,12 @@ pub enum RoomError {
     /// Floor must be one 4-connected region without crossing pits: enemies can't cross
     /// them, and players only by falling in or rolling over.
     UnreachableFloor,
+    /// Floor and pits must be walled in: only an exit cell may border void or the grid's
+    /// edge, and only on its exit's side. Placed rooms then meet only through hatches.
+    Unenclosed {
+        x: usize,
+        y: usize,
+    },
     /// A room that can seal must end its `OnEnemiesCleared` actions unsealed.
     SealsForever,
     /// Exit rooms, and only exit rooms, have an extraction pad.
@@ -272,6 +283,7 @@ impl RoomError {
             Self::ExitBlocked { .. } => "the cells just inside an exit must be floor",
             Self::PlacementOffFloor { .. } => "placement is not on a floor cell",
             Self::UnreachableFloor => "some floor is unreachable",
+            Self::Unenclosed { .. } => "floor must be walled in except at exits",
             Self::SealsForever => "room seals but never unseals on OnEnemiesCleared",
             Self::ExtractionMismatch => "exit rooms, and only exit rooms, need an extraction pad",
             Self::ExtractionOffFloor => "extraction pad is not on a floor cell",
@@ -336,24 +348,15 @@ impl PrototypeRoom {
     }
 
     /// Index of the exit whose gap includes cell (`x`, `y`).
-    #[must_use]
-    pub fn exit_at(&self, x: i32, y: i32) -> Option<usize> {
-        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
-        self.exits.iter().position(|e| e.covers(x, y))
-    }
-
-    /// Whether a box of half-size `half` centered at `p` overlaps the extraction pad.
-    #[must_use]
-    pub fn on_extraction(&self, p: FxVec2, half: Fx) -> bool {
-        let Some((x, y)) = self.extraction else {
-            return false;
-        };
-        let spans = |c: Fx, cell: usize| {
-            let cell = i32::try_from(cell).unwrap_or(i32::MAX);
-            let (lo, hi) = (c.saturating_sub(half), c.saturating_add(half));
-            (cell_of(lo)..=cell_of(hi.saturating_sub(Fx::DELTA))).contains(&cell)
-        };
-        spans(p.x, x) && spans(p.y, y)
+    const fn exit_at(&self, x: usize, y: usize) -> Option<usize> {
+        let mut i = 0;
+        while let Some(exit) = nth(self.exits, i) {
+            if exit.covers(x, y) {
+                return Some(i);
+            }
+            i = i.saturating_add(1);
+        }
+        None
     }
 
     /// Whether any wave has enemies.
@@ -405,6 +408,9 @@ impl PrototypeRoom {
                 return Err(error);
             }
             index = index.saturating_add(1);
+        }
+        if let Err(error) = self.check_enclosed() {
+            return Err(error);
         }
         if let Err(error) = self.check_unseals() {
             return Err(error);
@@ -466,6 +472,48 @@ impl PrototypeRoom {
                 _ => return Err(RoomError::ExitBlocked { exit: index }),
             }
             i = i.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    const fn check_enclosed(&self) -> Result<(), RoomError> {
+        let mut y = 0;
+        while y < self.height() {
+            let mut x = 0;
+            while x < self.width() {
+                if matches!(self.cell_at(x, y), Cell::Floor | Cell::Pit) {
+                    let outward = match self.exit_at(x, y) {
+                        Some(i) => match nth(self.exits, i) {
+                            Some(exit) => Some(exit.dir),
+                            None => None,
+                        },
+                        None => None,
+                    };
+                    let sides = [
+                        (Dir::North, Some(x), y.checked_sub(1)),
+                        (Dir::South, Some(x), y.checked_add(1)),
+                        (Dir::West, x.checked_sub(1), Some(y)),
+                        (Dir::East, x.checked_add(1), Some(y)),
+                    ];
+                    let mut s = 0;
+                    while let Some(&(dir, nx, ny)) = nth(&sides, s) {
+                        let open = match (nx, ny) {
+                            (Some(nx), Some(ny)) => matches!(self.cell_at(nx, ny), Cell::Void),
+                            _ => true,
+                        };
+                        let exit_side = match outward {
+                            Some(out) => out.is(dir),
+                            None => false,
+                        };
+                        if open && !exit_side {
+                            return Err(RoomError::Unenclosed { x, y });
+                        }
+                        s = s.saturating_add(1);
+                    }
+                }
+                x = x.saturating_add(1);
+            }
+            y = y.saturating_add(1);
         }
         Ok(())
     }
@@ -561,6 +609,14 @@ impl PrototypeRoom {
     }
 }
 
+const fn max(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+
+const fn min(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
+}
+
 /// Whether cell (`x`, `y`) is marked in a [`MAX_SIDE`]-strided grid; off-grid is not.
 const fn seen_at(seen: &[bool; MAX_CELLS], x: usize, y: usize) -> bool {
     x < MAX_SIDE
@@ -571,31 +627,71 @@ const fn seen_at(seen: &[bool; MAX_CELLS], x: usize, y: usize) -> bool {
 }
 
 /// One end of a [`Connection`]: exit `exit` of room `room` (indices).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExitRef {
     pub room: usize,
     pub exit: usize,
 }
 
-/// A hand-written door between two rooms. Walkable both ways; `from`/`to` only give the
-/// layout a direction for [`ExitKind`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl ExitRef {
+    /// `==` for const fns.
+    const fn is(self, other: Self) -> bool {
+        self.room == other.room && self.exit == other.exit
+    }
+}
+
+/// A hatch between two rooms: their linked exits, which must be the same floor cells.
+/// Walkable both ways; `from`/`to` only give the layout a direction for [`ExitKind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Connection {
     pub from: ExitRef,
     pub to: ExitRef,
 }
 
-/// A whole boarding target: rooms, how their exits link, and where the party starts.
+/// A room placed in the floor grid: its cell (0, 0) is floor cell `at`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Placed {
+    pub room: PrototypeRoom,
+    pub at: (usize, usize),
+}
+
+impl Placed {
+    /// One past the room's last floor column.
+    const fn right(&self) -> usize {
+        self.at.0.saturating_add(self.room.width())
+    }
+
+    /// One past the room's last floor row.
+    const fn bottom(&self) -> usize {
+        self.at.1.saturating_add(self.room.height())
+    }
+
+    /// The room's cell at floor cell (`x`, `y`) and its room-local coordinates; void
+    /// outside the room.
+    const fn floor_cell(&self, x: usize, y: usize) -> (Cell, usize, usize) {
+        match (x.checked_sub(self.at.0), y.checked_sub(self.at.1)) {
+            (Some(x), Some(y)) => (self.room.cell_at(x, y), x, y),
+            _ => (Cell::Void, 0, 0),
+        }
+    }
+}
+
+/// A whole boarding target: rooms placed in one floor grid, the hatches joining them, and
+/// where the party starts.
+///
+/// Rooms may share wall cells; floor cells only meet where two linked exits coincide,
+/// which is the hatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Derelict {
-    pub rooms: &'static [PrototypeRoom],
+    pub rooms: &'static [Placed],
     pub connections: &'static [Connection],
     pub start_room: usize,
-    /// The party starts at this cell's center.
+    /// The party starts at this cell's center, in the start room's cells.
     pub start_cell: (usize, usize),
 }
 
-/// Why a derelict failed validation. `room`, `exit` and `connection` are indices.
+/// Why a derelict failed validation. `room`, `exit` and `connection` are indices; `x`
+/// and `y` are floor cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DerelictError {
     Room {
@@ -610,7 +706,7 @@ pub enum DerelictError {
     BadExitRef {
         connection: usize,
     },
-    /// Linked exits must face each other and be equally wide.
+    /// Linked exits must face each other, be equally wide, and sit on the same cells.
     MismatchedExits {
         connection: usize,
     },
@@ -622,6 +718,15 @@ pub enum DerelictError {
     ExitLinks {
         room: usize,
         exit: usize,
+    },
+    /// Two rooms overlap other than wall on wall or at a hatch.
+    Overlap {
+        x: usize,
+        y: usize,
+    },
+    /// No chain of hatches leads to this room from the start room.
+    UnreachableRoom {
+        room: usize,
     },
 }
 
@@ -635,15 +740,20 @@ impl DerelictError {
             Self::StartOffFloor => "start cell is not floor in the start room",
             Self::NoExitRoom => "derelict has no exit room",
             Self::BadExitRef { .. } => "connection names a missing room or exit",
-            Self::MismatchedExits { .. } => "linked exits must face each other, equally wide",
+            Self::MismatchedExits { .. } => {
+                "linked exits must face each other, equally wide, on the same cells"
+            }
             Self::WrongExitKind { .. } => "connection runs from an Entrance or into an Exit",
             Self::ExitLinks { .. } => "every exit must be linked exactly once",
+            Self::Overlap { .. } => "rooms overlap other than wall on wall or at a hatch",
+            Self::UnreachableRoom { .. } => "a room is unreachable from the start room",
         }
     }
 }
 
 impl Derelict {
-    /// Validates every room, the start, and the connections.
+    /// Validates every room, the start, the connections, how the rooms overlap, and that
+    /// every room is reachable.
     ///
     /// # Errors
     /// The first problem found.
@@ -655,22 +765,23 @@ impl Derelict {
             return Err(DerelictError::TooManyRooms);
         }
         let mut r = 0;
-        while let Some(room) = nth(self.rooms, r) {
-            if let Err(error) = room.validate() {
+        while let Some(placed) = nth(self.rooms, r) {
+            if let Err(error) = placed.room.validate() {
                 return Err(DerelictError::Room { room: r, error });
             }
             r = r.saturating_add(1);
         }
         match nth(self.rooms, self.start_room) {
-            Some(room) if room.floor_at(self.start_cell.0, self.start_cell.1) => {}
+            Some(placed) if placed.room.floor_at(self.start_cell.0, self.start_cell.1) => {}
             _ => return Err(DerelictError::StartOffFloor),
         }
         let mut c = 0;
         while let Some(link) = nth(self.connections, c) {
-            let (Some(from), Some(to)) = (self.exit(link.from), self.exit(link.to)) else {
+            let (Some(from), Some(to)) = (self.gap(link.from), self.gap(link.to)) else {
                 return Err(DerelictError::BadExitRef { connection: c });
             };
-            if !from.dir.faces(to.dir) || from.width != to.width {
+            let (a, b) = (from.cell(0), to.cell(0));
+            if !from.dir.faces(to.dir) || from.width != to.width || a.0 != b.0 || a.1 != b.1 {
                 return Err(DerelictError::MismatchedExits { connection: c });
             }
             if !from.kind.can_be_from() || !to.kind.can_be_to() {
@@ -680,10 +791,10 @@ impl Derelict {
         }
         let mut has_exit_room = false;
         let mut r = 0;
-        while let Some(room) = nth(self.rooms, r) {
-            has_exit_room |= matches!(room.category, Category::Exit);
+        while let Some(placed) = nth(self.rooms, r) {
+            has_exit_room |= matches!(placed.room.category, Category::Exit);
             let mut e = 0;
-            while e < room.exits.len() {
+            while e < placed.room.exits.len() {
                 if self.links_of(ExitRef { room: r, exit: e }) != 1 {
                     return Err(DerelictError::ExitLinks { room: r, exit: e });
                 }
@@ -691,11 +802,13 @@ impl Derelict {
             }
             r = r.saturating_add(1);
         }
-        if has_exit_room {
-            Ok(())
-        } else {
-            Err(DerelictError::NoExitRoom)
+        if !has_exit_room {
+            return Err(DerelictError::NoExitRoom);
         }
+        if let Err(error) = self.check_overlaps() {
+            return Err(error);
+        }
+        self.check_reachable()
     }
 
     /// Compile-time validation: use in `const` items only.
@@ -712,9 +825,14 @@ impl Derelict {
         }
     }
 
-    const fn exit(&self, at: ExitRef) -> Option<&Exit> {
+    /// The exit `at` names, in floor cells.
+    #[must_use]
+    pub const fn gap(&self, at: ExitRef) -> Option<Exit> {
         match nth(self.rooms, at.room) {
-            Some(room) => nth(room.exits, at.exit),
+            Some(placed) => match nth(placed.room.exits, at.exit) {
+                Some(exit) => Some(exit.shifted(placed.at)),
+                None => None,
+            },
             None => None,
         }
     }
@@ -726,7 +844,7 @@ impl Derelict {
             let ends = [link.from, link.to];
             let mut i = 0;
             while let Some(end) = nth(&ends, i) {
-                if end.room == at.room && end.exit == at.exit {
+                if end.is(at) {
                     count = count.saturating_add(1);
                 }
                 i = i.saturating_add(1);
@@ -736,137 +854,94 @@ impl Derelict {
         count
     }
 
-    #[must_use]
-    pub fn room(&self, id: RoomId) -> Option<&'static PrototypeRoom> {
-        self.rooms.get(usize::from(id.0))
-    }
-
-    /// Where the party starts: the start room and a point in it.
-    #[must_use]
-    pub fn start(&self) -> (RoomId, FxVec2) {
-        let room = RoomId(u16::try_from(self.start_room).unwrap_or(0));
-        (room, cell_center(self.start_cell.0, self.start_cell.1))
-    }
-
-    /// The far side of `room`'s exit `exit`: the linked room and its exit index.
-    #[must_use]
-    pub fn link(&self, room: RoomId, exit: usize) -> Option<(RoomId, usize)> {
-        let here = ExitRef {
-            room: usize::from(room.0),
-            exit,
-        };
-        let there = self.connections.iter().find_map(|c| {
-            if c.from == here {
-                Some(c.to)
-            } else if c.to == here {
-                Some(c.from)
-            } else {
-                None
+    /// Whether a connection joins these two exits, either way round.
+    const fn linked(&self, one: ExitRef, other: ExitRef) -> bool {
+        let mut c = 0;
+        while let Some(link) = nth(self.connections, c) {
+            let (from, to) = (link.from, link.to);
+            if (from.is(one) && to.is(other)) || (to.is(one) && from.is(other)) {
+                return true;
             }
-        })?;
-        Some((RoomId(u16::try_from(there.room).ok()?), there.exit))
-    }
-}
-
-/// What is moving through the tiles. Walls, void and sealed doors stop everything; pits
-/// differ by body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Body {
-    /// Enemies: pits stop them.
-    Walker,
-    /// Players walk onto pits, and fall in (see `Player`).
-    Player,
-    /// Flies over pits.
-    Shot,
-}
-
-/// A room's collision view: its cells, with the exit gaps shut while `sealed`.
-#[derive(Clone, Copy, Debug)]
-pub struct Tiles {
-    pub room: &'static PrototypeRoom,
-    pub sealed: bool,
-}
-
-impl Tiles {
-    #[must_use]
-    pub fn blocks(self, x: i32, y: i32, body: Body) -> bool {
-        if self.sealed && self.room.exit_at(x, y).is_some() {
-            return true;
+            c = c.saturating_add(1);
         }
-        match (self.room.cell(x, y), body) {
-            (Cell::Floor, _) | (Cell::Pit, Body::Player | Body::Shot) => false,
-            (Cell::Wall | Cell::Void, _) | (Cell::Pit, Body::Walker) => true,
+        false
+    }
+
+    /// Where two rooms both have a cell, it must be wall in both, or a hatch: floor in
+    /// both, under exits linked to each other.
+    const fn check_overlaps(&self) -> Result<(), DerelictError> {
+        let mut a = 0;
+        while let Some(first) = nth(self.rooms, a) {
+            let mut b = a.saturating_add(1);
+            while let Some(second) = nth(self.rooms, b) {
+                // Only where their rectangles meet, in floor cells.
+                let (left, top) = (max(first.at.0, second.at.0), max(first.at.1, second.at.1));
+                let right = min(first.right(), second.right());
+                let bottom = min(first.bottom(), second.bottom());
+                let mut fy = top;
+                while fy < bottom {
+                    let mut fx = left;
+                    while fx < right {
+                        let (mine, x, y) = first.floor_cell(fx, fy);
+                        let (theirs, sx, sy) = second.floor_cell(fx, fy);
+                        let ok = match (mine, theirs) {
+                            (Cell::Void, _) | (_, Cell::Void) | (Cell::Wall, Cell::Wall) => true,
+                            (Cell::Floor, Cell::Floor) => {
+                                match (first.room.exit_at(x, y), second.room.exit_at(sx, sy)) {
+                                    (Some(ea), Some(eb)) => self.linked(
+                                        ExitRef { room: a, exit: ea },
+                                        ExitRef { room: b, exit: eb },
+                                    ),
+                                    _ => false,
+                                }
+                            }
+                            _ => false,
+                        };
+                        if !ok {
+                            return Err(DerelictError::Overlap { x: fx, y: fy });
+                        }
+                        fx = fx.saturating_add(1);
+                    }
+                    fy = fy.saturating_add(1);
+                }
+                b = b.saturating_add(1);
+            }
+            a = a.saturating_add(1);
         }
+        Ok(())
     }
 
-    /// Whether `p` is over a pit.
-    #[must_use]
-    pub fn pit_at(self, p: FxVec2) -> bool {
-        self.room.cell(cell_of(p.x), cell_of(p.y)) == Cell::Pit
-    }
-
-    /// Whether any pit cell overlaps the square of half-size `reach` around `p`: some pit
-    /// lies closer than `reach` to `p` along both axes.
-    #[must_use]
-    pub fn pit_within(self, p: FxVec2, reach: Fx) -> bool {
-        let span = |v: Fx| {
-            cell_of(v.saturating_sub(reach))
-                ..=cell_of(v.saturating_add(reach).saturating_sub(Fx::DELTA))
-        };
-        span(p.y).any(|y| span(p.x).any(|x| self.room.cell(x, y) == Cell::Pit))
-    }
-
-    /// Whether the cell containing `p` blocks `body`.
-    #[must_use]
-    pub fn blocks_point(self, p: FxVec2, body: Body) -> bool {
-        self.blocks(cell_of(p.x), cell_of(p.y), body)
-    }
-
-    /// Moves a box of half-size `half` by `delta`, x then y, stopping flush against
-    /// blocking cells. Steps must be shorter than a cell, which all speeds are.
-    #[must_use]
-    pub fn slide(self, pos: FxVec2, half: Fx, delta: FxVec2, body: Body) -> FxVec2 {
-        let x = self.sweep(pos.x, pos.y, half, delta.x, body, |along, across| {
-            (along, across)
-        });
-        let y = self.sweep(pos.y, x, half, delta.y, body, |along, across| {
-            (across, along)
-        });
-        FxVec2 { x, y }
-    }
-
-    /// One axis of [`Self::slide`]: `to_xy` maps (along, across) cell indices to (x, y).
-    fn sweep(
-        self,
-        along: Fx,
-        across: Fx,
-        half: Fx,
-        delta: Fx,
-        body: Body,
-        to_xy: impl Fn(i32, i32) -> (i32, i32),
-    ) -> Fx {
-        if delta == Fx::ZERO {
-            return along;
+    /// Every room joins the start room through some chain of connections.
+    const fn check_reachable(&self) -> Result<(), DerelictError> {
+        let mut reached = [false; MAX_ROOMS];
+        if let Some(start) = nth_mut(&mut reached, self.start_room) {
+            *start = true;
         }
-        let moved = along.saturating_add(delta);
-        let forward = delta > Fx::ZERO;
-        // The box spans [c - half, c + half): its far edge's cell is one bit short of it.
-        let lead = if forward {
-            cell_of(moved.saturating_add(half).saturating_sub(Fx::DELTA))
-        } else {
-            cell_of(moved.saturating_sub(half))
-        };
-        let first = cell_of(across.saturating_sub(half));
-        let last = cell_of(across.saturating_add(half).saturating_sub(Fx::DELTA));
-        let hit = (first..=last).any(|c| {
-            let (x, y) = to_xy(lead, c);
-            self.blocks(x, y, body)
-        });
-        match (hit, forward) {
-            (false, _) => moved,
-            (true, true) => cell_start(lead).saturating_sub(half),
-            (true, false) => cell_start(lead.saturating_add(1)).saturating_add(half),
+        let mut grew = true;
+        while grew {
+            grew = false;
+            let mut c = 0;
+            while let Some(link) = nth(self.connections, c) {
+                let from = matches!(nth(&reached, link.from.room), Some(true));
+                let to = matches!(nth(&reached, link.to.room), Some(true));
+                if from != to {
+                    let other = if from { link.to.room } else { link.from.room };
+                    if let Some(slot) = nth_mut(&mut reached, other) {
+                        *slot = true;
+                        grew = true;
+                    }
+                }
+                c = c.saturating_add(1);
+            }
         }
+        let mut r = 0;
+        while r < self.rooms.len() {
+            if !matches!(nth(&reached, r), Some(true)) {
+                return Err(DerelictError::UnreachableRoom { room: r });
+            }
+            r = r.saturating_add(1);
+        }
+        Ok(())
     }
 }
 
@@ -877,7 +952,9 @@ pub fn cell_of(v: Fx) -> i32 {
     i32::try_from(v.to_bits() >> CELL_SHIFT).unwrap_or(i32::MIN)
 }
 
-fn cell_start(c: i32) -> Fx {
+/// Where cell `c` starts along an axis.
+#[must_use]
+pub fn cell_start(c: i32) -> Fx {
     CELL.saturating_mul_int(i64::from(c))
 }
 

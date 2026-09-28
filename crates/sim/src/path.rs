@@ -1,16 +1,18 @@
-//! Enemy pathfinding: flow fields over the room's cells toward where enemies are headed.
+//! Enemy pathfinding: flow fields over an enemy's room toward where enemies are headed.
 //!
 //! Dijkstra from every goal cell at once over the cells a walker may enter, 8-way, with
 //! diagonal steps only where both orthogonal cells are open too (no cutting a wall's
 //! corner). Each cell then holds its path cost to the nearest goal, and an enemy walks
-//! to whichever neighbor is cheapest. Rooms are at most `MAX_SIDE` squared cells, so
-//! fields are rebuilt every tick (one per goal, when some enemy needs it) rather than
-//! cached: they are derived state, never stored.
+//! to whichever neighbor is cheapest. A field only spans its walker's room (enemies never
+//! leave it), at most `MAX_SIDE` squared cells, so fields are rebuilt every tick (one per
+//! room and goal, when some enemy needs it) rather than cached: they are derived state,
+//! never stored.
 //! Costs, heap order and neighbor order are all integer and fixed, so every machine
 //! builds the same field and picks the same steps.
 
-use crate::room::{Body, Tiles, cell_center, cell_of};
-use crate::{Fx, FxVec2};
+use crate::room::{cell_center, cell_of};
+use crate::ship::{Body, Tiles};
+use crate::{Fx, FxVec2, RoomId};
 use std::cell::OnceCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -37,18 +39,19 @@ const NEIGHBORS: [(i32, i32); 8] = [
 /// The field toward a set of goals, built on first use: most ticks every enemy has a
 /// clear line to its target and never asks.
 #[derive(Clone, Debug)]
-pub struct FlowField {
-    tiles: Tiles,
+pub struct FlowField<'a> {
+    tiles: Tiles<'a>,
     goals: Vec<FxVec2>,
     grid: OnceCell<Grid>,
 }
 
-impl FlowField {
-    /// The field toward whichever of `goals` is nearest by path. A goal's own cell is
-    /// seeded even if walkers can't enter it (a player rolling over a pit), so enemies
-    /// still close in on its edge.
+impl<'a> FlowField<'a> {
+    /// The field toward whichever of `goals` is nearest by path, over the cells of
+    /// `tiles`' room (the whole floor if it has none). A goal's own cell is seeded even if
+    /// walkers can't enter it (a player rolling over a pit), so enemies still close in on
+    /// its edge.
     #[must_use]
-    pub fn toward(tiles: Tiles, goals: &[FxVec2]) -> Self {
+    pub fn toward(tiles: Tiles<'a>, goals: &[FxVec2]) -> Self {
         Self {
             tiles,
             goals: goals.to_vec(),
@@ -67,36 +70,36 @@ impl FlowField {
     }
 }
 
-/// One [`FlowField`] per goal cell, made the first time an enemy heads there: each
-/// enemy chases its own target (a player it sees, or where it last saw one). Keyed by
-/// cell in a `BTreeMap`, so nothing depends on the order enemies ask.
-#[derive(Clone, Debug)]
-pub struct FlowFields {
-    tiles: Tiles,
-    fields: BTreeMap<(i32, i32), FlowField>,
+/// One [`FlowField`] per room and goal cell, made the first time an enemy there heads
+/// there: each enemy chases its own target (a player it sees, or where it last saw one).
+/// Keyed in a `BTreeMap`, so nothing depends on the order enemies ask.
+#[derive(Clone, Debug, Default)]
+pub struct FlowFields<'a> {
+    fields: BTreeMap<(Option<RoomId>, (i32, i32)), FlowField<'a>>,
 }
 
-impl FlowFields {
+impl<'a> FlowFields<'a> {
     #[must_use]
-    pub const fn new(tiles: Tiles) -> Self {
+    pub const fn new() -> Self {
         Self {
-            tiles,
             fields: BTreeMap::new(),
         }
     }
 
-    /// The field toward `goal`'s cell.
-    pub fn toward(&mut self, goal: FxVec2) -> &FlowField {
-        let tiles = self.tiles;
+    /// The field toward `goal`'s cell over `tiles`' room.
+    pub fn toward(&mut self, tiles: Tiles<'a>, goal: FxVec2) -> &FlowField<'a> {
         self.fields
-            .entry((cell_of(goal.x), cell_of(goal.y)))
+            .entry((tiles.room, (cell_of(goal.x), cell_of(goal.y))))
             .or_insert_with(|| FlowField::toward(tiles, &[goal]))
     }
 }
 
-/// Per-cell grids, row-major.
+/// Per-cell grids over a rectangle of the floor, row-major.
 #[derive(Clone, Debug)]
 struct Grid {
+    /// The rectangle's top-left floor cell.
+    left: usize,
+    top: usize,
     width: usize,
     /// Whether a walker may enter the cell.
     open: Vec<bool>,
@@ -105,9 +108,10 @@ struct Grid {
 }
 
 impl Grid {
-    fn build(tiles: Tiles, goals: &[FxVec2]) -> Self {
-        let (width, height) = (tiles.room.width(), tiles.room.height());
-        let cells = (0..height).flat_map(|y| (0..width).map(move |x| (x, y)));
+    fn build(tiles: Tiles<'_>, goals: &[FxVec2]) -> Self {
+        let (left, top, width, height) = tiles.bounds();
+        let cells = (top..top.saturating_add(height))
+            .flat_map(|y| (left..left.saturating_add(width)).map(move |x| (x, y)));
         let open = cells
             .map(|(x, y)| match (i32::try_from(x), i32::try_from(y)) {
                 (Ok(x), Ok(y)) => !tiles.blocks(x, y, Body::Walker),
@@ -115,6 +119,8 @@ impl Grid {
             })
             .collect();
         let mut field = Self {
+            left,
+            top,
             width,
             open,
             cost: vec![None; width.saturating_mul(height)],
@@ -163,9 +169,10 @@ impl Grid {
         self.cost.get(self.index(cell)?).copied().flatten()
     }
 
-    /// Row-major index of an on-grid cell.
+    /// Row-major index of a cell in the rectangle.
     fn index(&self, (x, y): (i32, i32)) -> Option<usize> {
-        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
+        let x = usize::try_from(x).ok()?.checked_sub(self.left)?;
+        let y = usize::try_from(y).ok()?.checked_sub(self.top)?;
         if x >= self.width {
             return None;
         }
@@ -197,7 +204,7 @@ impl Grid {
 /// Whether a walker's box of half-size `half` can travel straight from `from` to `to`
 /// without touching a cell that blocks it. Samples the line every [`SAMPLE`] or less.
 #[must_use]
-pub fn walk_clear(tiles: Tiles, from: FxVec2, to: FxVec2, half: Fx) -> bool {
+pub fn walk_clear(tiles: Tiles<'_>, from: FxVec2, to: FxVec2, half: Fx) -> bool {
     let (dx, dy) = (to.x.saturating_sub(from.x), to.y.saturating_sub(from.y));
     let span = dx.abs().max(dy.abs());
     let steps = span
@@ -218,7 +225,7 @@ pub fn walk_clear(tiles: Tiles, from: FxVec2, to: FxVec2, half: Fx) -> bool {
 }
 
 /// Whether no cell under the box of half-size `half` around `p` blocks a walker.
-fn box_clear(tiles: Tiles, p: FxVec2, half: Fx) -> bool {
+fn box_clear(tiles: Tiles<'_>, p: FxVec2, half: Fx) -> bool {
     let span = |v: Fx| {
         cell_of(v.saturating_sub(half))..=cell_of(v.saturating_add(half).saturating_sub(Fx::DELTA))
     };

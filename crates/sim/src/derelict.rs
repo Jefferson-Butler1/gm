@@ -1,19 +1,30 @@
-//! The slice's handmade derelict, five rooms in a line:
+//! The handmade derelict: a corvette, bow east, its rooms placed in one floor grid and
+//! joined by hatches, walked in a line:
 //!
-//! 1. airlock (entrance): empty, to get your hands on the controls.
+//! 1. airlock (entrance): empty, to get your hands on the controls. On the dorsal hull.
 //! 2. cargo hold: rushers with a shooter in each wave; a pillar and a pit strip.
-//! 3. engine room: shooter-heavy, with six pillars to hide behind.
-//! 4. bridge: four pillars; the mix gets thicker, and its second wave brings a spread
-//!    shooter.
-//! 5. shuttle bay (exit): a pit trench the shooters fire across, two last waves (the
-//!    second led by a spread shooter), then the extraction pad wins the run.
+//! 3. engine room: aft; shooter-heavy, with six pillars to hide behind.
+//! 4. bridge: fore, down the service passage; four pillars, a thicker mix, and a second
+//!    wave that brings a spread shooter.
+//! 5. shuttle bay (exit): at the bow, through the hangar passage. A pit trench the
+//!    shooters fire across, two last waves (the second led by a spread shooter), then
+//!    the extraction pad wins the run.
+//!
+//! ```text
+//!         +-airlock-+
+//!    +----=-cargo hold-------+
+//!    |                  +----+
+//! +--=-engine-+   +-bridge-+   +--shuttle bay--+
+//! |           =---=        =---=               |
+//! +-----------+   +--------+   +---------------+
+//! ```
 //!
 //! Spread shooters are the pattern experiment (issue #15); with it off they're shooters.
 //!
 //! Every room and the derelict are validated when the crate builds.
 
 use crate::room::{
-    Category, Connection, Derelict, Dir, EnemyKind, Exit, ExitKind, ExitRef, LayerTrigger,
+    Category, Connection, Derelict, Dir, EnemyKind, Exit, ExitKind, ExitRef, LayerTrigger, Placed,
     Placement, PrototypeRoom, Reinforcement, RoomAction, RoomTrigger,
 };
 
@@ -74,14 +85,14 @@ const AIRLOCK: PrototypeRoom = PrototypeRoom {
         "#............#",
         "#............#",
         "#..oo........#",
-        "#.............",
-        "#.............",
         "#............#",
         "#............#",
         "#............#",
-        "##############",
+        "#............#",
+        "#............#",
+        "######..######",
     ],
-    exits: &[exit(Dir::East, 13, 4, ExitKind::Exit)],
+    exits: &[exit(Dir::South, 6, 9, ExitKind::Exit)],
     base: &[],
     reinforcements: &[],
     events: &[],
@@ -103,17 +114,17 @@ const CARGO_HOLD: PrototypeRoom = PrototypeRoom {
         "#..................#            ",
         "#..................#############",
         "#..............................#",
-        "...............................#",
-        "..........oooo.................#",
+        "#..............................#",
+        "#.........oooo.................#",
         "#.........oooo.................#",
         "#..............................#",
         "#..............................#",
         "#..............................#",
-        "################################",
+        "####..##########################",
     ],
     exits: &[
-        exit(Dir::West, 0, 9, ExitKind::Entrance),
-        exit(Dir::North, 9, 0, ExitKind::Exit),
+        exit(Dir::North, 9, 0, ExitKind::Entrance),
+        exit(Dir::South, 4, 15, ExitKind::Exit),
     ],
     base: &[rusher(27, 9), rusher(27, 13), shooter(16, 2)],
     reinforcements: &[then(&[
@@ -127,36 +138,37 @@ const CARGO_HOLD: PrototypeRoom = PrototypeRoom {
 }
 .valid();
 
-/// Six pillars: cover from the shooters, and something for rushers to steer around.
+/// Six pillars: cover from the shooters, and something for rushers to steer around. The
+/// shooters wait at the far (south) end from the hatch in.
 const ENGINE_ROOM: PrototypeRoom = PrototypeRoom {
     name: "engine room",
     category: Category::Normal,
     cells: &[
-        "##########..##########",
-        "#....................#",
-        "#....................#",
-        "#....................#",
-        "#...##....##....##...#",
-        "#...##....##....##...#",
-        "#....................#",
-        "#....................#",
-        "#...##..........##...#",
-        "#...##..........##...#",
-        "#....................#",
-        "#....................#",
-        "#....................#",
         "#########..###########",
+        "#....................#",
+        "#....................#",
+        "#....................#",
+        "#...##..........##...#",
+        "#...##..........##...#",
+        "#.....................",
+        "#.....................",
+        "#...##....##....##...#",
+        "#...##....##....##...#",
+        "#....................#",
+        "#....................#",
+        "#....................#",
+        "######################",
     ],
     exits: &[
-        exit(Dir::South, 9, 13, ExitKind::Entrance),
-        exit(Dir::North, 10, 0, ExitKind::Exit),
+        exit(Dir::North, 9, 0, ExitKind::Entrance),
+        exit(Dir::East, 21, 6, ExitKind::Exit),
     ],
-    base: &[shooter(2, 2), shooter(19, 2), rusher(10, 7)],
+    base: &[shooter(2, 11), shooter(19, 11), rusher(10, 6)],
     reinforcements: &[then(&[
-        shooter(7, 1),
-        shooter(14, 1),
-        rusher(1, 7),
-        rusher(20, 7),
+        shooter(7, 12),
+        shooter(14, 12),
+        rusher(1, 6),
+        rusher(20, 6),
     ])],
     events: LOCKDOWN,
     extraction: None,
@@ -172,16 +184,16 @@ const BRIDGE: PrototypeRoom = PrototypeRoom {
         "#..............#",
         "#...##....##...#",
         "#...##....##...#",
-        "#...............",
-        "#...............",
+        "................",
+        "................",
         "#...##....##...#",
         "#...##....##...#",
         "#..............#",
         "#..............#",
-        "#######..#######",
+        "################",
     ],
     exits: &[
-        exit(Dir::South, 7, 11, ExitKind::Entrance),
+        exit(Dir::West, 0, 5, ExitKind::Entrance),
         exit(Dir::East, 15, 5, ExitKind::Exit),
     ],
     base: &[rusher(2, 1), rusher(13, 1), shooter(7, 1), shooter(13, 9)],
@@ -237,7 +249,35 @@ const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
 }
 .valid();
 
-/// A door from (room, exit) to (room, exit), as indices.
+/// Engine room to bridge, under the cargo hold.
+const SERVICE_PASSAGE: PrototypeRoom = PrototypeRoom {
+    name: "service passage",
+    category: Category::Connector,
+    cells: &["########", "........", "........", "########"],
+    exits: &[
+        exit(Dir::West, 0, 1, ExitKind::Entrance),
+        exit(Dir::East, 7, 1, ExitKind::Exit),
+    ],
+    base: &[],
+    reinforcements: &[],
+    events: &[],
+    extraction: None,
+}
+.valid();
+
+/// Bridge to shuttle bay.
+const HANGAR_PASSAGE: PrototypeRoom = PrototypeRoom {
+    name: "hangar passage",
+    cells: &["####", "....", "....", "####"],
+    exits: &[
+        exit(Dir::West, 0, 1, ExitKind::Entrance),
+        exit(Dir::East, 3, 1, ExitKind::Exit),
+    ],
+    ..SERVICE_PASSAGE
+}
+.valid();
+
+/// A hatch from (room, exit) to (room, exit), as indices.
 const fn link(from: (usize, usize), to: (usize, usize)) -> Connection {
     Connection {
         from: ExitRef {
@@ -251,13 +291,28 @@ const fn link(from: (usize, usize), to: (usize, usize)) -> Connection {
     }
 }
 
+const fn at(room: PrototypeRoom, x: usize, y: usize) -> Placed {
+    Placed { room, at: (x, y) }
+}
+
+/// Rooms keep their slice order (0-4), so the passages come last.
 pub const DERELICT: Derelict = Derelict {
-    rooms: &[AIRLOCK, CARGO_HOLD, ENGINE_ROOM, BRIDGE, SHUTTLE_BAY],
+    rooms: &[
+        at(AIRLOCK, 8, 0),
+        at(CARGO_HOLD, 5, 9),
+        at(ENGINE_ROOM, 0, 24),
+        at(BRIDGE, 28, 25),
+        at(SHUTTLE_BAY, 46, 25),
+        at(SERVICE_PASSAGE, 21, 29),
+        at(HANGAR_PASSAGE, 43, 29),
+    ],
     connections: &[
         link((0, 0), (1, 0)),
         link((1, 1), (2, 0)),
-        link((2, 1), (3, 0)),
-        link((3, 1), (4, 0)),
+        link((2, 1), (5, 0)),
+        link((5, 1), (3, 0)),
+        link((3, 1), (6, 0)),
+        link((6, 1), (4, 0)),
     ],
     start_room: 0,
     start_cell: (5, 6),
