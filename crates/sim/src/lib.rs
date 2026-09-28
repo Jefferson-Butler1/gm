@@ -32,7 +32,7 @@ pub mod trig;
 pub use arena::{Arena, Id};
 pub use combat::{
     Arrival, Awareness, BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS,
-    ENEMY_RADIUS, Enemy, EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPREAD_SHOOTER_HP, chase,
+    ENEMY_RADIUS, Enemy, EnemyId, Patrol, Pattern, RUSHER_HP, SHOOTER_HP, SPREAD_SHOOTER_HP, chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use gun::PhasePistol;
@@ -220,6 +220,10 @@ pub enum Event {
     },
     /// An unaware enemy noticed the party (see [`Awareness`]).
     EnemyAlerted {
+        enemy: EnemyId,
+    },
+    /// An unaware enemy heard a hatch and went to look (see [`Awareness`]).
+    EnemyInvestigating {
         enemy: EnemyId,
     },
     /// Also preceded by the killing `EnemyHit`. `pos` is where it died; the ID is stale.

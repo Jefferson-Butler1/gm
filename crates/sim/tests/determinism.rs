@@ -29,7 +29,7 @@ const AUTO_FIGHT: Range<u64> = 1355..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xeab4_8531_9aae_bca8;
+const GOLDEN_TRACE: u64 = 0x2959_f95e_92c7_92cb;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist

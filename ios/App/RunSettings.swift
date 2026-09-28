@@ -21,8 +21,12 @@ enum RunSettingsStore {
         ("regenChargeSecs", \.regenChargeSecs),
         ("fallSecs", \.fallSecs),
         ("hearingRadius", \.hearingRadius),
+        ("hatchHearingRadius", \.hatchHearingRadius),
         ("alertRadius", \.alertRadius),
         ("forgetSecs", \.forgetSecs),
+        ("sightHalfAngle", \.sightHalfAngle),
+        ("turnRate", \.turnRate),
+        ("patrolSpeed", \.patrolSpeed),
     ]
     /// Absent = the difficulty's value.
     private static let overrides: [(key: String, path: WritableKeyPath<RunSettings, Float?>)] = [
@@ -134,11 +138,23 @@ struct RunSettingsSections: View {
             SliderRow(label: "Enemy hearing", value: $model.runSettings.hearingRadius, range: 0...480, step: 16) {
                 cells($0)
             }
+            SliderRow(label: "Enemy hatch hearing", value: $model.runSettings.hatchHearingRadius, range: 0...960, step: 32) {
+                cells($0)
+            }
             SliderRow(label: "Enemy alert range", value: $model.runSettings.alertRadius, range: 0...480, step: 16) {
                 cells($0)
             }
             SliderRow(label: "Enemy search time", value: $model.runSettings.forgetSecs, range: 0.5...10, step: 0.5) {
                 String(format: "%.1f s", $0)
+            }
+            SliderRow(label: "Enemy sight cone", value: $model.runSettings.sightHalfAngle, range: 15...180, step: 5) {
+                $0 >= 180 ? "all around" : "\(Int($0 * 2))°"
+            }
+            SliderRow(label: "Enemy turn rate", value: $model.runSettings.turnRate, range: 30...720, step: 10) {
+                "\(Int($0))°/s"
+            }
+            SliderRow(label: "Enemy patrol speed", value: $model.runSettings.patrolSpeed, range: 0...120, step: 5) {
+                $0 == 0 ? "stand still" : "\(Int($0)) pt/s"
             }
             Button("Reset to defaults") { model.resetTuning() }
         } header: {
