@@ -7,12 +7,16 @@
 mod audio;
 mod camera;
 mod controls;
+mod gyro;
+mod haptics;
 mod settings;
 mod stats;
 
 use audio::{Audio, Mood, Sound};
 use camera::{CameraLook, CameraSettings};
-use controls::{Controls, FireMode, Scheme, Viewport};
+use controls::{Controls, FireMode, GamepadState, Scheme, Viewport};
+use gyro::GyroAim;
+use haptics::{Haptic, Haptics};
 use render::Renderer;
 use settings::RunSettings;
 use sim::{Run, SimState, TICK_HZ, TickInputs};
@@ -69,6 +73,9 @@ pub struct HudData {
     pub sounds: Vec<Sound>,
     /// The music to play. Per frame, like `sounds`.
     pub mood: Mood,
+    /// This frame's haptics, strongest first. Per frame: play them whether or not `seq`
+    /// changed.
+    pub haptics: Vec<Haptic>,
 }
 
 /// The run as the HUD needs it.
@@ -127,6 +134,8 @@ struct Inner {
     paused: bool,
     stats: Stats,
     audio: Audio,
+    haptics: Haptics,
+    gyro: GyroAim,
 }
 
 #[derive(uniffi::Object)]
@@ -185,6 +194,8 @@ impl Game {
                 paused: false,
                 stats: Stats::default(),
                 audio: Audio::default(),
+                haptics: Haptics::default(),
+                gyro: GyroAim::default(),
             }),
         }))
     }
@@ -214,6 +225,24 @@ impl Game {
     pub fn set_scheme(&self, scheme: Scheme) {
         eprintln!("[gm] scheme={scheme:?}");
         self.lock().controls.set_scheme(scheme);
+    }
+
+    /// The connected game controller, polled by Swift every frame; `None` without one.
+    /// While connected it replaces touch.
+    pub fn set_gamepad(&self, pad: Option<GamepadState>) {
+        self.lock().controls.set_gamepad(pad);
+    }
+
+    /// Gyro aim: the phone's turn rate about the vertical, in radians per second,
+    /// clockwise on screen. Swift sends 0 with gyro aim off.
+    pub fn set_gyro_rate(&self, radians_per_sec: f32) {
+        self.lock().gyro.set_rate(radians_per_sec);
+    }
+
+    /// Gyro aim turn per phone turn.
+    pub fn set_gyro_sensitivity(&self, sensitivity: f32) {
+        eprintln!("[gm] gyro sensitivity={sensitivity}");
+        self.lock().gyro.set_sensitivity(sensitivity);
     }
 
     /// Aim assist strength for [`Scheme::AimAssist`], `0..=1`.
@@ -286,11 +315,14 @@ impl Game {
             #[allow(clippy::while_float)]
             while clock + dt <= target_timestamp {
                 let mut inputs = TickInputs::default();
-                inputs.players[0] = g.controls.next_input();
+                let mut input = g.controls.next_input();
+                g.gyro.apply(&mut input);
+                inputs.players[0] = input;
                 g.prev.clone_from(&g.current);
                 let events = sim::step(&mut g.current, &inputs);
                 g.renderer.note_events(g.current.tick, &events.events);
                 g.audio.note(&g.prev, &g.current, &events.events);
+                g.haptics.note(&g.prev, &g.current, &events.events);
                 clock += dt;
             }
             g.sim_clock = Some(clock);
@@ -319,6 +351,7 @@ impl Game {
                 })
                 .min_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
         });
+        g.gyro.set_target(enemy);
         let look = g.look.update(
             target_timestamp,
             player.map(|p| p.facing),
@@ -338,6 +371,7 @@ impl Game {
         HudData {
             sounds: g.audio.take(),
             mood: Mood::of(g.current.run),
+            haptics: g.haptics.take(timestamp),
             ..g.stats.record(
                 timestamp,
                 started.elapsed().as_secs_f64(),
