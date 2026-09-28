@@ -680,6 +680,7 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
                             *pattern,
                             &config,
                         );
+                        events.events.push(Event::EnemyFired { enemy: id });
                         *shot_timer = pattern.interval(&config);
                         *strafe = strafe.saturating_neg();
                     }
@@ -713,7 +714,12 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
     }
 
     separate(state, senses.tiles);
+    telegraphs_and_contact(state, events);
+}
 
+/// After enemies move: spawn telegraphs count down, and rushers touching a player hurt it.
+fn telegraphs_and_contact(state: &mut SimState, events: &mut TickEvents) {
+    let config = state.config;
     let reach = PLAYER_RADIUS.saturating_add(ENEMY_RADIUS);
     for (id, enemy) in state.enemies.iter_mut() {
         if !enemy.active() {

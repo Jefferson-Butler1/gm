@@ -222,6 +222,10 @@ pub enum Event {
     EnemyAlerted {
         enemy: EnemyId,
     },
+    /// A shooter fired (one event per volley, however many pellets).
+    EnemyFired {
+        enemy: EnemyId,
+    },
     /// An unaware enemy heard a hatch and went to look (see [`Awareness`]).
     EnemyInvestigating {
         enemy: EnemyId,

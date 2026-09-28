@@ -365,6 +365,7 @@ impl Renderer {
                 Event::EnemyAlerted { enemy } => Flash::Alert(enemy),
                 Event::EnemyInvestigating { enemy } => Flash::Query(enemy),
                 Event::PlayerDied { .. }
+                | Event::EnemyFired { .. }
                 | Event::Restarted
                 | Event::HatchOpened { .. }
                 | Event::WaveStarted { .. }
