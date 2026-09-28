@@ -13,36 +13,40 @@ struct GMApp: App {
 
 @Observable
 final class GameModel {
-    /// Controls setting options, with stable keys for persistence.
-    static let schemes: [(scheme: Scheme, key: String, label: String)] = [
-        (.floatingSticks, "A", "A · Floating twin sticks"),
-        (.fixedSticks, "B", "B · Fixed twin sticks"),
-        (.autoAim, "C", "C · Move + auto-aim (flick to dodge)"),
-        (.aimAssist, "D", "D · Twin sticks + aim assist"),
+    /// The Controls options: each a touch scheme with the fire mode it plays best with,
+    /// with a stable key for persistence. The first is the default.
+    static let controls: [(key: String, label: String, scheme: Scheme, fireMode: FireMode)] = [
+        ("F-hold", "Fire button · hold to auto-fire, drag to aim, push out to fire", .fireButton, .hold),
+        ("E-tap", "Auto-aim · tap to fire", .fixedAutoAim, .tap),
+        ("E-hold", "Auto-aim · hold to fire, flick to dodge", .fixedAutoAim, .hold),
+        ("C-hold", "Auto-aim, floating stick · hold to fire, flick to dodge", .autoAim, .hold),
+        ("B-hold", "Fixed twin sticks · aim fires", .fixedSticks, .hold),
+        ("B-release", "Fixed twin sticks · drag to aim, lift to fire", .fixedSticks, .release),
+        ("A-hold", "Floating twin sticks · aim fires", .floatingSticks, .hold),
+        ("D-hold", "Twin sticks + aim assist · aim fires", .aimAssist, .hold),
     ]
-    /// Fire mode options, with stable keys for persistence.
-    static let fireModes: [(mode: FireMode, key: String, label: String)] = [
-        (.hold, "hold", "Hold · auto-fire while aiming"),
-        (.tap, "tap", "Tap · one shot per touch"),
-        (.release, "release", "Release · drag to aim, lift to fire"),
+    /// Camera look options, with stable keys for persistence.
+    static let looks: [(look: LookMode, key: String, label: String)] = [
+        (.centered, "centered", "Centered"),
+        (.aim, "aim", "Aim look · leads the aim while aiming (ETG)"),
+        (.facing, "facing", "Facing look · always leads where you face"),
+        (.enemy, "enemy", "Enemy look · leans toward the nearest enemy (auto-aim)"),
     ]
-    private static let schemeKey = "controls.scheme"
-    private static let fireModeKey = "controls.fireMode"
+    private static let controlsKey = "controls"
     private static let assistKey = "controls.assist"
+    private static let cameraKey = "camera"
 
     var hud: HudData?
-    var scheme: Scheme = GameModel.loadScheme() {
+    var controlsKey: String = UserDefaults.standard.string(forKey: GameModel.controlsKey)
+        .flatMap { key in GameModel.controls.first { $0.key == key }?.key } ?? GameModel.controls[0].key {
         didSet {
-            UserDefaults.standard.set(Self.schemes.first { $0.scheme == scheme }?.key, forKey: Self.schemeKey)
+            UserDefaults.standard.set(controlsKey, forKey: Self.controlsKey)
             game?.setScheme(scheme: scheme)
-        }
-    }
-    var fireMode: FireMode = GameModel.loadFireMode() {
-        didSet {
-            UserDefaults.standard.set(Self.fireModes.first { $0.mode == fireMode }?.key, forKey: Self.fireModeKey)
             game?.setFireMode(mode: fireMode)
         }
     }
+    var scheme: Scheme { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).scheme }
+    var fireMode: FireMode { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).fireMode }
     /// Only used by scheme D. The real default is a combat-tuning decision (issue #15).
     var assist: Float = UserDefaults.standard.object(forKey: GameModel.assistKey) as? Float ?? 0.5 {
         didSet {
@@ -50,7 +54,19 @@ final class GameModel {
             game?.setAssistStrength(strength: assist)
         }
     }
-    /// Difficulty and tuning for the next run; the game picks them up on restart.
+    /// Camera look; applies live.
+    var camera: CameraSettings = GameModel.loadCamera() {
+        didSet {
+            UserDefaults.standard.set([
+                "look": Self.looks.first { $0.look == camera.look }?.key ?? "aim",
+                "lead": Double(camera.lead),
+                "smoothingSecs": Double(camera.smoothingSecs),
+                "thumbClearance": Double(camera.thumbClearance),
+            ], forKey: Self.cameraKey)
+            game?.setCamera(settings: camera)
+        }
+    }
+    /// Difficulty and tuning; the game applies them live.
     var runSettings: RunSettings = RunSettingsStore.load() {
         didSet {
             RunSettingsStore.save(runSettings)
@@ -69,6 +85,7 @@ final class GameModel {
         game.setScheme(scheme: scheme)
         game.setFireMode(mode: fireMode)
         game.setAssistStrength(strength: assist)
+        game.setCamera(settings: camera)
         if paused { game.pause() }
     }
 
@@ -92,14 +109,16 @@ final class GameModel {
         game?.restart()
     }
 
-    private static func loadFireMode() -> FireMode {
-        let key = UserDefaults.standard.string(forKey: fireModeKey)
-        return fireModes.first { $0.key == key }?.mode ?? .hold
-    }
-
-    private static func loadScheme() -> Scheme {
-        let key = UserDefaults.standard.string(forKey: schemeKey)
-        return schemes.first { $0.key == key }?.scheme ?? .fixedSticks
+    private static func loadCamera() -> CameraSettings {
+        var camera = defaultCameraSettings()
+        guard let saved = UserDefaults.standard.dictionary(forKey: cameraKey) else { return camera }
+        if let key = saved["look"] as? String, let found = looks.first(where: { $0.key == key }) {
+            camera.look = found.look
+        }
+        if let value = saved["lead"] as? Double { camera.lead = Float(value) }
+        if let value = saved["smoothingSecs"] as? Double { camera.smoothingSecs = Float(value) }
+        if let value = saved["thumbClearance"] as? Double { camera.thumbClearance = Float(value) }
+        return camera
     }
 }
 
@@ -205,16 +224,10 @@ struct ControlsSettings: View {
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Scheme", selection: $model.scheme) {
-                    ForEach(GameModel.schemes, id: \.key) { option in
-                        Text(option.label).tag(option.scheme)
-                    }
-                }
-                .pickerStyle(.inline)
-                Section("Fire mode") {
-                    Picker("Fire mode", selection: $model.fireMode) {
-                        ForEach(GameModel.fireModes, id: \.key) { option in
-                            Text(option.label).tag(option.mode)
+                Section("Controls") {
+                    Picker("Controls", selection: $model.controlsKey) {
+                        ForEach(GameModel.controls, id: \.key) { option in
+                            Text(option.label).tag(option.key)
                         }
                     }
                     .pickerStyle(.inline)
@@ -227,6 +240,26 @@ struct ControlsSettings: View {
                             Text(String(format: "%.2f", model.assist))
                                 .font(.system(.body, design: .monospaced))
                         }
+                    }
+                }
+                Section("Camera") {
+                    Picker("Camera look", selection: $model.camera.look) {
+                        ForEach(GameModel.looks, id: \.key) { option in
+                            Text(option.label).tag(option.look)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    if model.camera.look != .centered {
+                        SliderRow(label: "Lead", value: $model.camera.lead, range: 0...200, step: 5) {
+                            "\(Int($0)) pt"
+                        }
+                        SliderRow(label: "Smoothing", value: $model.camera.smoothingSecs, range: 0...1, step: 0.05) {
+                            String(format: "%.2f s", $0)
+                        }
+                    }
+                    SliderRow(label: "Thumb clearance", value: $model.camera.thumbClearance, range: 0...120, step: 5) {
+                        "\(Int($0)) pt"
                     }
                 }
                 RunSettingsSections(model: model)

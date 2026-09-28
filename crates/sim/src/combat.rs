@@ -79,10 +79,28 @@ const LINE_STEP: Fx = Fx::from_bits(4 << 32);
 /// is within 2 cells of the spot; then it starts to give up (see [`Awareness::Alert`]).
 const ARRIVED: Fx = Fx::from_bits(64 << 32);
 
-/// Spawn telegraph: a new enemy spends 30 ticks = 0.5 s as a warning marker. Meanwhile
-/// it is inert: it doesn't move, hurt, push or get pushed, and it can't be targeted or
-/// hit (bullets pass through).
-pub const SPAWN_TELEGRAPH_TICKS: u8 = 30;
+/// How an enemy enters a fight, which sets its spawn telegraph.
+///
+/// The telegraph is a warning marker during which the enemy is inert (it doesn't move, hurt, push or get pushed,
+/// and it can't be targeted or hit; bullets pass through). Minibosses and bosses get
+/// their own arrivals when they exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Arrival {
+    /// Already in the room when the party walks in (the first wave): no telegraph.
+    Prespawn,
+    /// A later wave warping into a fight in progress: 60 ticks = 1 s of warning.
+    Reinforcement,
+}
+
+impl Arrival {
+    #[must_use]
+    pub const fn telegraph_ticks(self) -> u8 {
+        match self {
+            Self::Prespawn => 0,
+            Self::Reinforcement => 60,
+        }
+    }
+}
 
 /// Ticks from all players dying until restart is accepted: 0.75 s, so a panicked tap
 /// doesn't skip the death.
@@ -100,7 +118,8 @@ pub struct Bullet {
 pub struct Enemy {
     pub pos: FxVec2,
     pub hp: u8,
-    /// Spawn telegraph left; nonzero = inert (see [`SPAWN_TELEGRAPH_TICKS`]).
+    pub arrival: Arrival,
+    /// Spawn telegraph left, of `arrival`'s; nonzero = inert.
     pub spawn_ticks: u8,
     /// Which way it is detouring around something in its path: +1 turns clockwise
     /// (toward +y from +x), -1 counter-clockwise, 0 = heading straight.
@@ -164,14 +183,15 @@ pub enum Behavior {
 }
 
 impl Enemy {
-    /// An unaware rusher arriving at `pos`. Every spawn starts in the telegraph, so any
-    /// spawner just inserts this.
+    /// An unaware rusher arriving at `pos` as a reinforcement, in its telegraph; spawners
+    /// set another [`Arrival`] over it.
     #[must_use]
     pub const fn rusher(pos: FxVec2) -> Self {
         Self {
             pos,
             hp: RUSHER_HP,
-            spawn_ticks: SPAWN_TELEGRAPH_TICKS,
+            arrival: Arrival::Reinforcement,
+            spawn_ticks: Arrival::Reinforcement.telegraph_ticks(),
             steer: 0,
             awareness: Awareness::Unaware,
             behavior: Behavior::Rusher {
@@ -191,7 +211,8 @@ impl Enemy {
                 Pattern::Aimed => SHOOTER_HP,
                 Pattern::Spread => SPREAD_SHOOTER_HP,
             },
-            spawn_ticks: SPAWN_TELEGRAPH_TICKS,
+            arrival: Arrival::Reinforcement,
+            spawn_ticks: Arrival::Reinforcement.telegraph_ticks(),
             steer: 0,
             awareness: Awareness::Unaware,
             behavior: Behavior::Shooter {

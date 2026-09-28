@@ -31,9 +31,8 @@ pub mod trig;
 
 pub use arena::{Arena, Id};
 pub use combat::{
-    Awareness, BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS, ENEMY_RADIUS,
-    Enemy, EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPAWN_TELEGRAPH_TICKS, SPREAD_SHOOTER_HP,
-    chase,
+    Arrival, Awareness, BULLET_RADIUS, Behavior, Bullet, DEATH_TICKS, ENEMY_BULLET_RADIUS,
+    ENEMY_RADIUS, Enemy, EnemyId, Pattern, RUSHER_HP, SHOOTER_HP, SPREAD_SHOOTER_HP, chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use gun::PhasePistol;
@@ -115,11 +114,9 @@ pub struct SimState {
     pub visited: u64,
     /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
     pub cleared: u64,
-    /// Difficulty and tunables, fixed for the run.
+    /// Difficulty and tunables. The host may swap them mid-run ([`Self::set_config`]);
+    /// restarts keep them.
     pub config: RunConfig,
-    /// The config the next restart uses; `None` keeps [`Self::config`]. The host sets it
-    /// (settings changed mid-run); it takes effect only when a new run starts.
-    pub next_config: Option<RunConfig>,
 }
 
 impl SimState {
@@ -149,23 +146,30 @@ impl SimState {
             visited: bit(room),
             cleared: 0,
             config,
-            next_config: None,
         }
     }
 
-    /// A fresh run from the next run seed, with the same occupied slots, under
-    /// [`Self::next_config`] if one was supplied, else the same config. The tick keeps
-    /// counting: it is session time, and presentation keys effects by it.
+    /// A fresh run from the next run seed, with the same occupied slots and config. The
+    /// tick keeps counting: it is session time, and presentation keys effects by it.
     #[must_use]
     pub fn restarted(&self) -> Self {
-        let config = self.next_config.unwrap_or(self.config);
-        let mut fresh = Self::new(Rng::next_seed(self.seed), config);
+        let mut fresh = Self::new(Rng::next_seed(self.seed), self.config);
         fresh.tick = self.tick;
         let start = fresh.players[0];
         for (slot, old) in fresh.players.iter_mut().zip(&self.players) {
             *slot = old.and(start);
         }
         fresh
+    }
+
+    /// Swaps in `config` (sanitized) from the next tick: settings changed mid-run. Guns
+    /// holding more charges than the new cap drop to it.
+    pub fn set_config(&mut self, config: RunConfig) {
+        self.config = config.sanitized();
+        let cap = self.config.tuning.charges;
+        for player in self.players.iter_mut().flatten() {
+            player.gun.charges = player.gun.charges.min(cap);
+        }
     }
 
     /// The floor's collision view this tick.
