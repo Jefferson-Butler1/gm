@@ -580,12 +580,12 @@ fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
 }
 
 /// Angle of (`dx`, `dy`) in turns `0..1` from +x toward +y.
-fn turns(dx: f32, dy: f32) -> f32 {
+pub fn turns(dx: f32, dy: f32) -> f32 {
     (dy.atan2(dx) / TAU).rem_euclid(1.0)
 }
 
 /// `turns` as a sim angle: one full turn = 65536, wrapping.
-fn aim_angle(turns: f32) -> u16 {
+pub fn aim_angle(turns: f32) -> u16 {
     u16::try_from(quantize(turns, 1 << 16) & 0xFFFF).unwrap_or(0)
 }
 

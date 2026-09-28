@@ -18,6 +18,7 @@ final class GameUIView: UIView {
     private var lastSeq: UInt64 = 0
     private let haptics = HapticsPlayer()
     private let gamepad = GamepadInput()
+    private let gyro = GyroInput()
 
     init(model: GameModel) {
         self.model = model
@@ -89,6 +90,7 @@ final class GameUIView: UIView {
     @objc private func step(_ link: CADisplayLink) {
         guard let game else { return }
         game.setGamepad(pad: gamepad.poll())
+        game.setGyroRate(radiansPerSec: gyro.poll(enabled: model.gyroAim))
         let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         if model.haptics { haptics.play(hud.haptics) }
         // Only touch SwiftUI state when Rust publishes new numbers.

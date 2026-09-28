@@ -36,6 +36,8 @@ final class GameModel {
     private static let assistKey = "controls.assist"
     private static let cameraKey = "camera"
     private static let hapticsKey = "haptics"
+    private static let gyroAimKey = "controls.gyroAim"
+    private static let gyroSensitivityKey = "controls.gyroSensitivity"
 
     var hud: HudData?
     var controlsKey: String = UserDefaults.standard.string(forKey: GameModel.controlsKey)
@@ -71,6 +73,18 @@ final class GameModel {
     var haptics: Bool = UserDefaults.standard.object(forKey: GameModel.hapticsKey) as? Bool ?? true {
         didSet { UserDefaults.standard.set(haptics, forKey: Self.hapticsKey) }
     }
+    /// Prototype: turning the phone nudges the aim while aiming or firing. GameUIView feeds
+    /// the gyro only while on.
+    var gyroAim: Bool = UserDefaults.standard.object(forKey: GameModel.gyroAimKey) as? Bool ?? false {
+        didSet { UserDefaults.standard.set(gyroAim, forKey: Self.gyroAimKey) }
+    }
+    /// Aim turn per phone turn.
+    var gyroSensitivity: Float = UserDefaults.standard.object(forKey: GameModel.gyroSensitivityKey) as? Float ?? 1 {
+        didSet {
+            UserDefaults.standard.set(gyroSensitivity, forKey: Self.gyroSensitivityKey)
+            game?.setGyroSensitivity(sensitivity: gyroSensitivity)
+        }
+    }
     /// Difficulty and tuning; the game applies them live.
     var runSettings: RunSettings = RunSettingsStore.load() {
         didSet {
@@ -91,6 +105,7 @@ final class GameModel {
         game.setFireMode(mode: fireMode)
         game.setAssistStrength(strength: assist)
         game.setCamera(settings: camera)
+        game.setGyroSensitivity(sensitivity: gyroSensitivity)
         if paused { game.pause() }
     }
 
@@ -246,6 +261,16 @@ struct ControlsSettings: View {
                                 .font(.system(.body, design: .monospaced))
                         }
                     }
+                }
+                Section {
+                    Toggle("Gyro aim", isOn: $model.gyroAim)
+                    if model.gyroAim {
+                        SliderRow(label: "Sensitivity", value: $model.gyroSensitivity, range: 0.25...3, step: 0.25) {
+                            String(format: "%.2f×", $0)
+                        }
+                    }
+                } footer: {
+                    Text("Prototype. Turning the phone nudges the aim while aiming or firing, up to 45°; it recenters on release.")
                 }
                 Section("Feedback") {
                     Toggle("Haptics", isOn: $model.haptics)
