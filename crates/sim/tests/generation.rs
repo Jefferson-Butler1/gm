@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::de::value::{Error, SeqDeserializer};
 use sim::hull::{Slot, Template, TemplateError, Zone};
 use sim::room::{Category, Cell, Dir, MAX_ROOMS, Size, cell_of};
-use sim::ship::{Hatch, Spot};
+use sim::ship::{Hatch, HatchKind, Spot};
 use sim::{CORVETTE, POOL, RoomId, Ship};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -49,13 +49,16 @@ fn draw(ship: &Ship) -> String {
 
 /// The airlocks' outer hatches.
 fn outer_hatches(ship: &Ship) -> impl Iterator<Item = &Hatch> {
-    ship.hatches().iter().filter(|h| h.airlock)
+    ship.hatches()
+        .iter()
+        .filter(|h| h.kind == HatchKind::Airlock)
 }
 
 /// Everything wrong with `ship`, checked on its grid alone: it is walled in but for the
 /// airlocks' outer hatches, every room is walkable to from the start (hatches passable,
-/// pits too, as rolls cross them), the party starts on floor in an airlock, and there's a
-/// bridge (the boss room).
+/// shot-out panels too, and pits, as rolls cross them), the party starts on floor in an
+/// airlock, there's a bridge (the boss room), panels lead exactly into crawlspaces, and
+/// every chest sits on reachable floor.
 fn problems(ship: &Ship) -> Vec<String> {
     let mut problems = Vec::new();
     let open = |(x, y)| !matches!(ship.cell(x, y), Cell::Wall | Cell::Void);
@@ -63,7 +66,7 @@ fn problems(ship: &Ship) -> Vec<String> {
         Spot::Hatch(id) => ship
             .hatches()
             .get(usize::from(id.0))
-            .is_some_and(|h| h.airlock),
+            .is_some_and(|h| h.kind == HatchKind::Airlock),
         Spot::Void | Spot::Room { .. } => false,
     };
     if ship.rooms().len() > MAX_ROOMS {
@@ -132,8 +135,26 @@ fn problems(ship: &Ship) -> Vec<String> {
     }
     for (i, hatch) in ship.hatches().iter().enumerate() {
         let [a, b] = hatch.rooms;
-        if (a == b) != hatch.airlock || ship.room(a).is_none() || ship.room(b).is_none() {
+        if (a == b) != (hatch.kind == HatchKind::Airlock)
+            || ship.room(a).is_none()
+            || ship.room(b).is_none()
+        {
             problems.push(format!("hatch {i} joins {a:?} to {b:?}"));
+        }
+        // Panels (walkable in the flood above, as once shot) lead into crawlspaces.
+        let secret = ship.room(a).map(|r| r.room.category) == Some(Category::Secret);
+        if (hatch.kind == HatchKind::Panel) != secret {
+            problems.push(format!("hatch {i} is {:?} into {a:?}", hatch.kind));
+        }
+    }
+    for id in (0..).map(RoomId).take(ship.rooms().len()) {
+        let chest = ship
+            .chest(id)
+            .and_then(|(x, y)| Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?)));
+        if let Some(at) = chest
+            && (ship.cell(at.0, at.1) != Cell::Floor || !seen.contains(&at))
+        {
+            problems.push(format!("room {}'s chest at {at:?} is out of reach", id.0));
         }
     }
     problems
@@ -148,10 +169,11 @@ fn filling(ship: &Ship, slot: &Slot) -> Option<&'static str> {
         .map(|r| r.room.name)
 }
 
-/// 10,000 seeds: every ship is walled in and joins up, with its 3 airlocks and its
-/// bridge reachable, and the sweep sees every slot take every room that fits it, every
-/// optional slot both filled and left out, and the party board through each airlock. A
-/// ship's checksum covers all its static data, so each distinct one is checked once.
+/// 10,000 seeds: every ship is walled in and joins up, with its 3 airlocks, its bridge, its
+/// crawlspace (behind a panel) and stores reachable, and a chest in each of those last
+/// two; and the sweep sees every slot take every room that fits it, every optional slot
+/// both filled and left out, and the party board through each airlock. A ship's
+/// checksum covers all its static data, so each distinct one is checked once.
 /// About 6 s in debug, under 1 s in release.
 #[test]
 fn every_seed_yields_a_fully_connected_corvette_and_every_fill_turns_up() {
@@ -170,6 +192,14 @@ fn every_seed_yields_a_fully_connected_corvette_and_every_fill_turns_up() {
             draw(&ship)
         );
         assert_eq!(outer_hatches(&ship).count(), 3, "seed {seed}");
+        let panels = ship.hatches().iter().filter(|h| h.kind == HatchKind::Panel);
+        assert_eq!(panels.count(), 1, "seed {seed}: one crawlspace");
+        let chests = (0..).map(RoomId).take(ship.rooms().len());
+        assert_eq!(
+            chests.filter_map(|id| ship.chest(id)).count(),
+            2,
+            "seed {seed}"
+        );
         boarded.insert(ship.room(ship.start().0).map(|r| r.at));
         for slot in CORVETTE.slots {
             seen.entry(slot.letter)
