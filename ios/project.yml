@@ -4,7 +4,8 @@ options:
     iOS: "17.0"
 settings:
   base:
-    DEVELOPMENT_TEAM: 39GU9D2P3G
+    # Set by run.sh.
+    DEVELOPMENT_TEAM: ${GM_TEAM}
     CODE_SIGN_STYLE: Automatic
 targets:
   GM:
@@ -34,7 +35,7 @@ targets:
       - sdk: QuartzCore.framework
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jeffersonbutler.gm
+        PRODUCT_BUNDLE_IDENTIFIER: ${GM_BUNDLE_ID}
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
