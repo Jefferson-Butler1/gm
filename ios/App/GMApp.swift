@@ -106,6 +106,8 @@ final class GameModel {
     var settingsOpen = false { didSet { syncPause() } }
     var appActive = true { didSet { syncPause() } }
     @ObservationIgnored private var game: Game?
+    /// The current run's seed and ship class, for playtest reports.
+    var runLabel: String { game?.runLabel() ?? "" }
     @ObservationIgnored private var paused = false
 
     init() {
@@ -206,9 +208,20 @@ struct ContentView: View {
                         .foregroundStyle(.green)
                         .padding(6)
                         .background(.black.opacity(0.5))
+                    // HP is in half hearts: a heart per two, the last one half full on an
+                    // odd count.
                     HStack(spacing: 3) {
-                        ForEach(0..<Int(hud.maxHp), id: \.self) { i in
-                            Image(systemName: i < Int(hud.hp) ? "heart.fill" : "heart")
+                        ForEach(0..<Int(hud.maxHp) / 2, id: \.self) { i in
+                            let left = Int(hud.hp) - 2 * i
+                            Image(systemName: "heart")
+                                .overlay(alignment: .leading) {
+                                    GeometryReader { geo in
+                                        Image(systemName: "heart.fill")
+                                            .mask(alignment: .leading) {
+                                                Rectangle().frame(width: geo.size.width * min(max(CGFloat(left), 0), 2) / 2)
+                                            }
+                                    }
+                                }
                         }
                     }
                     .font(.system(size: 16))
@@ -342,6 +355,9 @@ struct ControlsSettings: View {
                 Section("Display") {
                     Toggle("Minimap", isOn: $model.minimap)
                 }
+                Section("This run") {
+                    Text(model.runLabel).textSelection(.enabled)
+                }
                 Section("Camera") {
                     Picker("Camera look", selection: $model.camera.look) {
                         ForEach(GameModel.looks, id: \.key) { option in
@@ -362,7 +378,7 @@ struct ControlsSettings: View {
                         "\(Int($0)) pt"
                     }
                     SliderRow(label: "Tilt peek (gyro)", value: $model.camera.tiltPeek, range: 0...800, step: 50) {
-                        $0 == 0 ? "off" : "\(Int($0)) pt/g"
+                        $0 == 0 ? "off" : "\(Int($0)) pt/rad"
                     }
                 }
                 Section("Sound") {

@@ -9,6 +9,7 @@
 //! [`PIT_CLEARANCE`] (one cell) of the center along either axis, so a respawn never
 //! lands on a pit's lip.
 
+use crate::combat::line_of_fire;
 use crate::config::{Tuning, per_tick};
 use crate::gun::PhasePistol;
 use crate::input::{Buttons, MOVE_BUCKETS, PlayerInput};
@@ -19,8 +20,14 @@ use serde::{Deserialize, Serialize};
 
 /// Aim assist only bends toward targets within this half-angle of the aim: ±20°.
 pub const ASSIST_CONE: i16 = 3641;
-/// Hits a fresh player can take.
-pub const MAX_HP: u8 = 5;
+/// A fresh player's HP, in half hearts: 5 hearts.
+pub const MAX_HP: u8 = 10;
+/// What a bullet, or a fall into a pit, costs: a heart.
+pub const HEART: u8 = 2;
+/// A rusher's contact hit costs half a heart, and shoves the player back (see
+/// [`Player::knock`]) this hard: pt per tick, halving every tick, about a cell in all.
+pub const RUSHER_DAMAGE: u8 = 1;
+pub const KNOCKBACK: Fx = Fx::from_bits(16 << 32);
 /// Hitbox radius of the placeholder player; also its half-extent against tiles.
 pub const PLAYER_RADIUS: Fx = Fx::from_bits(14 << 32);
 /// A respawn spot keeps every pit at least this far from the player's center: one cell,
@@ -51,6 +58,8 @@ pub struct Player {
     /// from any pit; a new run sets it to the start.
     pub solid: FxVec2,
     pub gun: PhasePistol,
+    /// A shove still moving the player, pt per tick; it halves every tick.
+    pub knock: FxVec2,
 }
 
 impl Player {
@@ -74,6 +83,10 @@ impl Player {
                 y: Fx::ZERO,
             },
             gun: PhasePistol::new(tuning),
+            knock: FxVec2 {
+                x: Fx::ZERO,
+                y: Fx::ZERO,
+            },
         }
     }
 
@@ -106,13 +119,13 @@ impl Player {
         self.roll_iframes > 0 || self.hurt_ticks > 0 || self.falling()
     }
 
-    /// Takes one hit unless invulnerable or already dead, then stays invulnerable for
-    /// `hurt_ticks`. Returns whether it landed.
-    pub const fn hurt(&mut self, hurt_ticks: u16) -> bool {
+    /// Takes a hit of `damage` half hearts unless invulnerable or already dead, then stays
+    /// invulnerable for `hurt_ticks`. Returns whether it landed.
+    pub const fn hurt(&mut self, hurt_ticks: u16, damage: u8) -> bool {
         if !self.alive() || self.invulnerable() {
             return false;
         }
-        self.hp = self.hp.saturating_sub(1);
+        self.hp = self.hp.saturating_sub(damage);
         self.hurt_ticks = hurt_ticks;
         true
     }
@@ -168,12 +181,21 @@ impl Player {
         } else {
             FxVec2::default()
         };
+        let velocity = FxVec2 {
+            x: velocity.x.saturating_add(self.knock.x),
+            y: velocity.y.saturating_add(self.knock.y),
+        };
+        let half = Fx::from_num(2);
+        self.knock = FxVec2 {
+            x: self.knock.x.saturating_div(half),
+            y: self.knock.y.saturating_div(half),
+        };
         self.pos = tiles.slide(self.pos, PLAYER_RADIUS, velocity, Body::Player);
 
         // The whole roll is airborne: it lands (grounded again) at the end of its last tick.
         if self.roll_ticks <= 1 {
             if tiles.pit_at(self.pos) {
-                self.hp = self.hp.saturating_sub(1);
+                self.hp = self.hp.saturating_sub(HEART);
                 self.fall_ticks = tuning.fall_ticks;
                 self.roll_ticks = 0;
                 self.roll_iframes = 0;
@@ -189,7 +211,7 @@ impl Player {
         // carries on through a roll.
         let trigger = !self.rolling() && input.buttons.contains(Buttons::FIRE);
         if trigger {
-            self.facing = self.resolve_aim(input, targets);
+            self.facing = self.resolve_aim(input, targets, tiles);
         } else if !self.rolling() && input.buttons.contains(Buttons::AIM) {
             self.facing = input.aim;
         }
@@ -202,7 +224,7 @@ impl Player {
 
     /// Where a shot fired this tick would go. Assist and auto-aim fall back to the raw aim
     /// (auto-aim: the current facing) when there is nothing to lock onto.
-    fn resolve_aim(&self, input: PlayerInput, targets: &[FxVec2]) -> u16 {
+    fn resolve_aim(&self, input: PlayerInput, targets: &[FxVec2], tiles: Tiles<'_>) -> u16 {
         let angle_to = |t: FxVec2| {
             trig::angle_of(FxVec2 {
                 x: t.x.saturating_sub(self.pos.x),
@@ -210,7 +232,14 @@ impl Player {
             })
         };
         if input.buttons.contains(Buttons::AUTO_AIM) {
-            let target = self.nearest(targets.iter().copied());
+            // In line of fire beats closer: an unseen target only with none in sight.
+            let seen = targets
+                .iter()
+                .copied()
+                .filter(|&t| line_of_fire(tiles, self.pos, t));
+            let target = self
+                .nearest(seen)
+                .or_else(|| self.nearest(targets.iter().copied()));
             return target.and_then(angle_to).unwrap_or(self.facing);
         }
         if input.assist == 0 {
@@ -487,7 +516,7 @@ mod tests {
         };
         let last = walk_into_the_strip(&mut p);
         assert!(p.falling());
-        assert_eq!((p.hp, p.fall_ticks), (MAX_HP - 1, FALL_TICKS));
+        assert_eq!((p.hp, p.fall_ticks), (MAX_HP - HEART, FALL_TICKS));
         // Judged by the center: it just crossed from floor into the pit.
         assert!(tiles().pit_at(p.pos) && !tiles().pit_at(last));
         // The respawn is the last spot a full cell clear of the pit, not its lip: the
@@ -504,8 +533,8 @@ mod tests {
         let pit = p.pos;
         assert_eq!(hold(&mut p, flail, FALL_TICKS - 1), 0);
         assert!(p.falling() && p.invulnerable() && !p.can_roll());
-        assert!(!p.hurt(Tuning::NORMAL.hurt_ticks));
-        assert_eq!((p.pos, p.hp), (pit, MAX_HP - 1));
+        assert!(!p.hurt(Tuning::NORMAL.hurt_ticks, HEART));
+        assert_eq!((p.pos, p.hp), (pit, MAX_HP - HEART));
 
         p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
         assert!(!p.falling());
@@ -578,7 +607,7 @@ mod tests {
         assert!(p.rolling() && !p.falling(), "airborne until it lands");
         p.update(PlayerInput::default(), &[], tiles(), &Tuning::NORMAL);
         assert_eq!(p.fall_ticks, FALL_TICKS, "falls as the roll lands");
-        assert_eq!((p.hp, cell(p.pos)), (MAX_HP - 1, (15, 4)));
+        assert_eq!((p.hp, cell(p.pos)), (MAX_HP - HEART, (15, 4)));
         hold(&mut p, PlayerInput::default(), FALL_TICKS);
         assert_eq!(p.pos, from, "respawns where the roll took off");
     }

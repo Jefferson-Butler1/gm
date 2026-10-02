@@ -1,7 +1,8 @@
-//! Where the minimap sits: centered along the top of the safe area, clear of both thumbs.
+//! Where the minimap sits: top right of the safe area, just left of the settings button,
+//! clear of both thumbs.
 //!
-//! No default control sits there: the sticks and buttons hug the bottom corners, and the
-//! claw's index-finger buttons, the HUD and the settings button take the top corners.
+//! No default control sits there: the sticks and buttons hug the bottom corners, the HUD
+//! takes the top left, and the claw's index-finger buttons sit below it.
 
 use crate::controls::Viewport;
 use render::minimap::Bounds;
@@ -11,14 +12,20 @@ const MAX_SIZE: [f32; 2] = [160.0, 64.0];
 /// Gap below the safe area's top edge, in points (the panel's border sits a few points
 /// outside the box).
 const TOP_INSET: f32 = 10.0;
+/// Kept free at the safe area's right edge for Swift's settings button (a 38 pt circle,
+/// 8 pt in), in points.
+const RIGHT_INSET: f32 = 54.0;
 
 /// The minimap's box on `v`.
 pub fn bounds(v: &Viewport) -> Bounds {
     let safe_width = (v.point_width - v.safe_left - v.safe_right).max(0.0);
-    let size = [MAX_SIZE[0].min(safe_width), MAX_SIZE[1]];
-    let center = v.safe_left + safe_width / 2.0;
+    let size = [
+        MAX_SIZE[0].min((safe_width - RIGHT_INSET).max(0.0)),
+        MAX_SIZE[1],
+    ];
+    let right = v.point_width - v.safe_right - RIGHT_INSET;
     Bounds {
-        at: [center - size[0] / 2.0, v.safe_top + TOP_INSET],
+        at: [right - size[0], v.safe_top + TOP_INSET],
         size,
     }
 }
@@ -65,7 +72,8 @@ mod tests {
                         c.y.clamp(at[1], at[1] + size[1]),
                     ];
                     let gap = (c.x - near[0]).hypot(c.y - near[1]);
-                    assert!(gap > c.hit_radius, "{scheme:?} {:?} at {v:?}", c.kind);
+                    // The minimap takes no touches, so only the drawn control must stay clear.
+                    assert!(gap > c.radius, "{scheme:?} {:?} at {v:?}", c.kind);
                 }
             }
         }

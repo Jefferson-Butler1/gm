@@ -16,7 +16,7 @@ use sim::{
 const SEED: u64 = 3229;
 const CARGO_HOLD: RoomId = RoomId(4);
 /// The hold's cell (0, 0) is this floor cell.
-const HOLD_AT: (usize, usize) = (46, 13);
+const HOLD_AT: (usize, usize) = (46, 12);
 /// Facings, `u16` turns.
 const RIGHT: u16 = 0;
 const DOWN: u16 = 16384;
