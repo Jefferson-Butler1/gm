@@ -110,7 +110,8 @@ const BUTTON_READY_ALPHA: f32 = 0.35;
 const BUTTON_UNREADY_ALPHA: f32 = 0.1;
 
 /// With no enemy on screen, a caret at the screen edge points to the nearest one (red),
-/// or with none left, to the nearest unlocked airlock (green): its half-size, and its
+/// or with none left and the minimap hidden, to the nearest unlocked airlock (green): its
+/// half-size, and its
 /// inset from the edge, in view points.
 const CARET_COLOR: [f32; 4] = [1.0, 0.2, 0.2, 0.9];
 const CARET_HALF: f32 = 9.0;
@@ -598,8 +599,11 @@ impl Renderer {
         }
         self.push_effects(&players, current.tick, alpha);
         if let Some((focus, _)) = players.iter().flatten().next() {
-            let (targets, color) = if enemies.is_empty() {
+            // The way out is the minimap's glow; the caret stands in only with it hidden.
+            let (targets, color) = if enemies.is_empty() && self.minimap.is_none() {
                 (unlocked_airlocks(current), AIRLOCK_OPEN_COLOR)
+            } else if enemies.is_empty() {
+                (Vec::new(), AIRLOCK_OPEN_COLOR)
             } else {
                 (enemies, CARET_COLOR)
             };
