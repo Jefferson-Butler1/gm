@@ -7,7 +7,9 @@
 //! squares, circles, rings, carets and sectors (enemy sight cones), converted to NDC on
 //! the CPU so there are no bind groups.
 //! On-screen controls arrive as an [`Overlay`] in view points, since their layout belongs
-//! to `game`.
+//! to `game`, as does where the [`minimap`] sits.
+
+pub mod minimap;
 
 use bytemuck::{Pod, Zeroable};
 use sim::room::{Cell, Dir};
@@ -262,6 +264,8 @@ pub struct Renderer {
     /// Where the camera leans off the player, in points (the host's aim look).
     look: [f32; 2],
     quads: Vec<Quad>,
+    /// Where the minimap goes; `None` hides it.
+    minimap: Option<minimap::Bounds>,
     /// Active event effects and the tick they started.
     flashes: Vec<(Flash, u64)>,
 }
@@ -369,6 +373,7 @@ impl Renderer {
             camera: [0.0, 0.0],
             look: [0.0, 0.0],
             quads: Vec::new(),
+            minimap: None,
             flashes: Vec::new(),
         })
     }
@@ -420,6 +425,11 @@ impl Renderer {
         self.look = offset;
     }
 
+    /// Places the minimap; `None` hides it.
+    pub const fn set_minimap(&mut self, bounds: Option<minimap::Bounds>) {
+        self.minimap = bounds;
+    }
+
     /// Draws `prev` -> `current` interpolated by `alpha` in `0..=1`. Returns seconds spent
     /// blocked acquiring the drawable, or `None` if nothing was presented.
     pub fn draw(
@@ -432,6 +442,7 @@ impl Renderer {
         self.flashes
             .retain(|&(flash, tick)| current.tick < tick.saturating_add(u64::from(flash.ticks())));
         self.push_scene(prev, current, alpha);
+        self.push_minimap(current, alpha);
         self.push_overlay(overlay);
 
         let t0 = Instant::now();
@@ -1035,7 +1046,7 @@ const fn enemy_color(e: &Enemy) -> [f32; 4] {
 }
 
 /// Where the unlocked airlocks' outer hatches are, in floor space: once the bridge falls,
-/// the way out. (How to find them is otherwise unspecified; the caret is the minimal aid.)
+/// the way out, which the caret and the minimap's glow point to.
 fn unlocked_airlocks(state: &SimState) -> Vec<[f32; 2]> {
     (state.ship.hatches().iter().zip(&state.hatches))
         .filter(|&(h, s)| h.kind == HatchKind::Airlock && *s == HatchState::Closed)

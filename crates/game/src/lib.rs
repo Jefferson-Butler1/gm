@@ -9,6 +9,7 @@ mod camera;
 mod controls;
 mod haptics;
 mod layout;
+mod minimap;
 mod settings;
 mod stats;
 
@@ -152,6 +153,8 @@ struct Inner {
     stats: Stats,
     audio: Audio,
     haptics: Haptics,
+    /// The minimap setting.
+    minimap: bool,
 }
 
 #[derive(uniffi::Object)]
@@ -211,6 +214,7 @@ impl Game {
                 stats: Stats::default(),
                 audio: Audio::default(),
                 haptics: Haptics::default(),
+                minimap: true,
             }),
         }))
     }
@@ -273,6 +277,12 @@ impl Game {
     pub fn set_tilt(&self, gravity: Option<Vec<f32>>) {
         let gravity = gravity.and_then(|g| Some([*g.first()?, *g.get(1)?]));
         self.lock().look.set_tilt(gravity);
+    }
+
+    /// Shows or hides the minimap (on by default).
+    pub fn set_minimap(&self, visible: bool) {
+        eprintln!("[gm] minimap={visible}");
+        self.lock().minimap = visible;
     }
 
     pub fn set_camera(&self, settings: CameraSettings) {
@@ -394,6 +404,8 @@ impl Game {
             enemy,
         );
         g.renderer.set_look(look);
+        let minimap = g.minimap.then(|| minimap::bounds(&g.viewport));
+        g.renderer.set_minimap(minimap);
         let presented = g
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)
