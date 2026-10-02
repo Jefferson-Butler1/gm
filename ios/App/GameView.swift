@@ -91,8 +91,7 @@ final class GameUIView: UIView {
         guard let game else { return }
         game.setGamepad(pad: gamepad.poll())
         let peek = model.camera.tiltPeek > 0
-        gyro.run(model.gyroAim || peek)
-        game.setGyroRate(radiansPerSec: model.gyroAim ? gyro.rate() : 0)
+        gyro.run(peek)
         let orientation = window?.windowScene?.interfaceOrientation ?? .landscapeRight
         game.setTilt(gravity: peek ? gyro.gravity(orientation) : nil)
         let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
