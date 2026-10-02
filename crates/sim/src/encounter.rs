@@ -1,22 +1,24 @@
 //! Rooms in play (ETG's lifecycle): players open hatches by stepping into them, a room's
 //! enemies spawn the first time a player is wholly inside it, room events seal and unseal
-//! its hatches, waves come from object layers, and a clear room's extraction pad wins.
+//! its hatches, and waves come from object layers. Clearing the bridge (the boss room)
+//! unlocks every airlock's outer hatch, and stepping into an unlocked one wins.
 //! Drives `Run::Boarding` <-> `Run::Encounter` -> `Run::Won`. A hatch banging open or
 //! sealed is a noise that unaware enemies nearby come to investigate.
 
 use crate::combat::{Arrival, Awareness, Enemy, Pattern, SHOOTER_STAGGER, stand_ticks};
 use crate::player::{PLAYER_RADIUS, dist_sq};
 use crate::room::{
-    EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
+    Category, EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
 };
 use crate::{Event, Fx, FxVec2, HatchId, HatchState, RoomId, Run, SimState, TickEvents, bit, trig};
 
 /// `u16` turns.
 const EIGHTH_TURN: u16 = 8192;
 
-/// After combat: advance the fight's waves, open the closed hatches living players step
-/// into, then (no fight on) start the first uncleared room with enemies a living player
-/// is wholly inside, or win if one touches a clear room's extraction pad.
+/// After combat: advance the fight's waves, then open the closed hatches living players
+/// step into, or win if one is an airlock's outer hatch (unlocked, so the bridge is
+/// clear). Then (no fight on) start the first uncleared room with enemies a living player
+/// is wholly inside.
 pub fn tick(state: &mut SimState, events: &mut TickEvents) {
     if let Run::Encounter { room: id, wave } = state.run
         && state.enemies.is_empty()
@@ -34,11 +36,21 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
         .collect();
     for &pos in &living {
         for hatch in ship.hatches_under(pos, PLAYER_RADIUS) {
-            if state.hatches.get(usize::from(hatch.0)) == Some(&HatchState::Closed) {
-                open(state, hatch);
-                events.events.push(Event::HatchOpened { hatch });
-                bang(state, &[hatch], events);
+            if state.hatches.get(usize::from(hatch.0)) != Some(&HatchState::Closed) {
+                continue;
             }
+            if ship
+                .hatches()
+                .get(usize::from(hatch.0))
+                .is_some_and(|h| h.airlock)
+            {
+                state.run = Run::Won;
+                events.events.push(Event::Won);
+                return;
+            }
+            open(state, hatch);
+            events.events.push(Event::HatchOpened { hatch });
+            bang(state, &[hatch], events);
         }
     }
 
@@ -54,17 +66,6 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
         spawn(state, &room, room.room.base, Arrival::Prespawn);
         state.run = Run::Encounter { room: id, wave: 0 };
         react(state, id, &room, RoomTrigger::OnEnterWithEnemies, events);
-        return;
-    }
-    let won = (0..).map(RoomId).take(ship.rooms().len()).any(|id| {
-        state.extraction_live(id)
-            && living
-                .iter()
-                .any(|&p| ship.on_extraction(id, p, PLAYER_RADIUS))
-    });
-    if won {
-        state.run = Run::Won;
-        events.events.push(Event::Won);
     }
 }
 
@@ -87,6 +88,13 @@ fn next_wave(state: &mut SimState, id: RoomId, wave: u8, events: &mut TickEvents
         return;
     }
     react(state, id, &room, RoomTrigger::OnEnemiesCleared, events);
+    if room.room.category == Category::Boss {
+        for s in &mut state.hatches {
+            if *s == HatchState::AirlockLocked {
+                *s = HatchState::Closed;
+            }
+        }
+    }
     state.cleared |= bit(id);
     events.events.push(Event::RoomCleared { room: id });
     state.run = Run::Boarding;
@@ -184,12 +192,18 @@ fn unseal(state: &mut SimState, hatch: HatchId) {
     }
 }
 
-/// Spawns `placements` (cells of `room`) with `arrival`'s telegraph. Prespawns start
-/// unaware, facing one of 8 directions at random, and stand a random while before their
-/// first patrol walk, so a room doesn't set off in step. Reinforcements join a fight in
-/// progress, already knowing where the nearest living player is and facing it.
+/// Spawns `placements` (cells of `room`) with `arrival`'s telegraph, except a captain,
+/// which gets its own. Prespawns start unaware, facing one of 8 directions at random, and
+/// stand a random while before their first patrol walk, so a room doesn't set off in
+/// step. Reinforcements and bosses join a fight in progress, already knowing where the
+/// nearest living player is and facing it.
 fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], arrival: Arrival) {
     for placement in placements {
+        let arrival = if placement.kind == EnemyKind::Captain {
+            Arrival::Boss
+        } else {
+            arrival
+        };
         let pos = cell_center(
             placement.x.saturating_add(room.at.0),
             placement.y.saturating_add(room.at.1),
@@ -204,7 +218,7 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], arrival:
         let idle = u16::try_from(state.rng.below(8)).unwrap_or(0);
         let idle = idle.saturating_mul(EIGHTH_TURN);
         let (awareness, facing) = match nearest {
-            Some(last_seen) if arrival == Arrival::Reinforcement => (
+            Some(last_seen) if arrival != Arrival::Prespawn => (
                 Awareness::Alert {
                     last_seen,
                     searching: 0,
@@ -219,14 +233,16 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], arrival:
         };
         let enemy = match placement.kind {
             EnemyKind::Rusher => Enemy::rusher(pos),
-            EnemyKind::Shooter | EnemyKind::SpreadShooter => {
+            EnemyKind::Shooter | EnemyKind::SpreadShooter | EnemyKind::Captain => {
                 // Spread placements field plain shooters unless the experiment is on.
-                let pattern = if placement.kind == EnemyKind::SpreadShooter
-                    && state.config.tuning.spread_shooter
-                {
-                    Pattern::Spread
-                } else {
-                    Pattern::Aimed
+                let pattern = match placement.kind {
+                    EnemyKind::Captain => Pattern::Captain,
+                    EnemyKind::SpreadShooter if state.config.tuning.spread_shooter => {
+                        Pattern::Spread
+                    }
+                    EnemyKind::Rusher | EnemyKind::Shooter | EnemyKind::SpreadShooter => {
+                        Pattern::Aimed
+                    }
                 };
                 let delay = state.rng.below(SHOOTER_STAGGER);
                 let delay = u16::try_from(delay).unwrap_or(0);

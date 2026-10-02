@@ -4,8 +4,8 @@
 //! spawned, and go to look when a hatch bangs open or shut nearby.
 //! All in the cargo hold (the Corvette's midship room at `SEED`), 24 x 14 cells: an L
 //! (void top-right) with a pillar at cells (5..=6, 3..=4), a pit strip at
-//! (10..=13, 9..=10), and hatches north (11..=12, 0), west (0, 6..=7) and east
-//! (23, 6..=7). Cells here are the hold's own.
+//! (10..=13, 9..=10), and hatches north (11..=12, 0), south (11..=12, 13), west (0, 6..=7)
+//! and east (23, 6..=7). Cells here are the hold's own.
 
 use sim::room::{Dir, cell_center};
 use sim::{
@@ -13,10 +13,10 @@ use sim::{
     PlayerInput, RoomId, Run, RunConfig, SimState, TickInputs, Tuning, step,
 };
 
-const SEED: u64 = 5;
-const CARGO_HOLD: RoomId = RoomId(2);
+const SEED: u64 = 4;
+const CARGO_HOLD: RoomId = RoomId(4);
 /// The hold's cell (0, 0) is this floor cell.
-const HOLD_AT: (usize, usize) = (32, 13);
+const HOLD_AT: (usize, usize) = (46, 13);
 /// Facings, `u16` turns.
 const RIGHT: u16 = 0;
 const DOWN: u16 = 16384;

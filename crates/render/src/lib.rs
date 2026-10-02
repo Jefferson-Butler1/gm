@@ -13,8 +13,7 @@ use bytemuck::{Pod, Zeroable};
 use sim::room::Cell;
 use sim::ship::Spot;
 use sim::{
-    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, RoomId, Ship,
-    SimState,
+    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchState, Pattern, Player, Ship, SimState,
 };
 use std::f32::consts::TAU;
 use std::ffi::c_void;
@@ -41,7 +40,11 @@ const PIT_LIP_COURSE: f32 = 0.125;
 const HATCH_CLOSED_COLOR: [f32; 4] = [0.35, 0.42, 0.55, 1.0];
 const HATCH_OPEN_COLOR: [f32; 4] = [0.1, 0.3, 0.2, 1.0];
 const HATCH_SEALED_COLOR: [f32; 4] = [0.95, 0.45, 0.1, 1.0];
-const PAD_COLOR: [f32; 4] = [0.3, 1.0, 0.6, 1.0];
+/// An airlock's outer hatch: red while locked; once the bridge falls, green, its alpha
+/// pulsing over [`AIRLOCK_PULSE_TICKS`] (the way out).
+const AIRLOCK_LOCKED_COLOR: [f32; 4] = [0.75, 0.1, 0.12, 1.0];
+const AIRLOCK_OPEN_COLOR: [f32; 4] = [0.3, 1.0, 0.6, 1.0];
+const AIRLOCK_PULSE_TICKS: u16 = 60;
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
 const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
@@ -53,6 +56,10 @@ const BLINK_TICKS: u16 = 4;
 const RUSHER_COLOR: [f32; 4] = [0.95, 0.35, 0.3, 1.0];
 const SHOOTER_COLOR: [f32; 4] = [0.7, 0.4, 1.0, 1.0];
 const SPREAD_SHOOTER_COLOR: [f32; 4] = [1.0, 0.35, 0.75, 1.0];
+/// The bridge captain: gold, and drawn this much bigger than its hitbox (a placeholder
+/// elite that should read as the boss at a glance).
+const CAPTAIN_COLOR: [f32; 4] = [1.0, 0.8, 0.2, 1.0];
+const CAPTAIN_SCALE: f32 = 1.5;
 /// A shooter's aim telegraph: a white core swelling to this fraction of its body.
 const AIM_CORE: f32 = 0.7;
 /// The "!" over an enemy that just noticed the party: a bar over a dot, their centers
@@ -91,8 +98,9 @@ const FIRE_COLOR: [f32; 3] = [1.0, 0.35, 0.3];
 const BUTTON_READY_ALPHA: f32 = 0.35;
 const BUTTON_UNREADY_ALPHA: f32 = 0.1;
 
-/// With no enemy on screen, a caret at the screen edge points to the nearest one: its
-/// half-size, and its inset from the edge, in view points.
+/// With no enemy on screen, a caret at the screen edge points to the nearest one (red),
+/// or with none left, to the nearest unlocked airlock (green): its half-size, and its
+/// inset from the edge, in view points.
 const CARET_COLOR: [f32; 4] = [1.0, 0.2, 0.2, 0.9];
 const CARET_HALF: f32 = 9.0;
 const CARET_MARGIN: f32 = 16.0;
@@ -499,8 +507,7 @@ impl Renderer {
             [p.0[0] + self.look[0], p.0[1] + self.look[1]]
         });
         self.camera = self.camera_for(&current.ship, focus);
-        self.push_floor(current);
-        let radius = sim::ENEMY_RADIUS.to_num::<f32>();
+        self.push_floor(current, alpha);
         let telegraph = current.config.tuning.shooter_telegraph;
         let cos_half = f32::from(current.config.tuning.sight_half_angle)
             .to_radians()
@@ -508,6 +515,7 @@ impl Renderer {
         // Where each enemy is drawn, spawns telegraphing in included.
         let mut enemies = Vec::with_capacity(current.enemies.len());
         for (id, e) in current.enemies.iter() {
+            let radius = drawn_radius(e);
             if !e.active() {
                 self.push_telegraph(e, radius, alpha);
                 enemies.push([e.pos.x.to_num(), e.pos.y.to_num()]);
@@ -569,17 +577,22 @@ impl Renderer {
         }
         self.push_effects(&players, current.tick, alpha);
         if let Some((focus, _)) = players.iter().flatten().next() {
-            self.push_enemy_caret(*focus, &enemies);
+            let (targets, color) = if enemies.is_empty() {
+                (unlocked_airlocks(current), AIRLOCK_OPEN_COLOR)
+            } else {
+                (enemies, CARET_COLOR)
+            };
+            self.push_caret(*focus, &targets, color);
         }
     }
 
-    /// With enemies about but none on screen, a caret on the screen edge points to the
+    /// With `targets` about but none on screen, a caret on the screen edge points to the
     /// nearest one: where the line from the player (`focus`) to it leaves the screen,
-    /// inset by [`CARET_MARGIN`]. `enemies` are floor-space positions, as drawn.
-    fn push_enemy_caret(&mut self, focus: [f32; 2], enemies: &[[f32; 2]]) {
+    /// inset by [`CARET_MARGIN`]. `targets` are floor-space positions, as drawn.
+    fn push_caret(&mut self, focus: [f32; 2], targets: &[[f32; 2]], color: [f32; 4]) {
         let [w, h] = self.size_pt;
         let on_screen = |[x, y]: [f32; 2]| (0.0..=w).contains(&x) && (0.0..=h).contains(&y);
-        if enemies.iter().any(|&e| on_screen(self.view_point(e))) {
+        if targets.iter().any(|&e| on_screen(self.view_point(e))) {
             return;
         }
         let offset = |[x, y]: [f32; 2]| [x - focus[0], y - focus[1]];
@@ -587,7 +600,7 @@ impl Renderer {
             let [dx, dy] = offset(e);
             dx.mul_add(dx, dy * dy)
         };
-        let Some(&nearest) = enemies
+        let Some(&nearest) = targets
             .iter()
             .min_by(|a, b| dist_sq(**a).total_cmp(&dist_sq(**b)))
         else {
@@ -611,7 +624,7 @@ impl Renderer {
         };
         let t = reach(dx, px, w).min(reach(dy, py, h)).max(0.0);
         let at = [dx.mul_add(t, px), dy.mul_add(t, py)];
-        self.push_screen(at, CARET_HALF, CARET_COLOR, CARET);
+        self.push_screen(at, CARET_HALF, color, CARET);
         if let Some(caret) = self.quads.last_mut() {
             // View points are +y down; the shader's frame is +y up.
             caret.dir = [dx / len, -dy / len];
@@ -774,21 +787,32 @@ impl Renderer {
         ]
     }
 
-    /// Every revealed room and corridor, the hatches in their walls by state, and their
-    /// extraction pads (dim until the room is clear). Unrevealed rooms stay black.
-    fn push_floor(&mut self, state: &SimState) {
+    /// Every revealed room and corridor, and the hatches in their walls by state: an
+    /// airlock's outer hatch red while locked, then pulsing green (over `alpha` of the
+    /// tick, so the pulse runs smooth). Unrevealed rooms stay black.
+    fn push_floor(&mut self, state: &SimState, alpha: f32) {
         let ship = &state.ship;
-        let rooms = (0..).map(RoomId).zip(ship.rooms());
         self.push_cells(state);
         let half = sim::room::CELL.to_num::<f32>() / 2.0;
+        // 0 -> 1 -> 0 over AIRLOCK_PULSE_TICKS.
+        let ticks = (state.tick.checked_rem(u64::from(AIRLOCK_PULSE_TICKS)))
+            .and_then(|t| u16::try_from(t).ok())
+            .map_or(0.0, f32::from)
+            + alpha;
+        let pulse = 0.5_f32.mul_add(-(ticks / f32::from(AIRLOCK_PULSE_TICKS) * TAU).cos(), 0.5);
         for (hatch, live) in ship.hatches().iter().zip(&state.hatches) {
             if !hatch.rooms.iter().any(|&r| state.visited(r)) {
                 continue;
             }
             let color = match live {
+                HatchState::Closed if hatch.airlock => {
+                    let [r, g, b, _] = AIRLOCK_OPEN_COLOR;
+                    [r, g, b, pulse.mul_add(0.6, 0.4)]
+                }
                 HatchState::Closed => HATCH_CLOSED_COLOR,
                 HatchState::Open => HATCH_OPEN_COLOR,
                 HatchState::Sealed => HATCH_SEALED_COLOR,
+                HatchState::AirlockLocked => AIRLOCK_LOCKED_COLOR,
             };
             for i in 0..hatch.gap.width {
                 let (x, y) = hatch.gap.cell(i);
@@ -796,20 +820,6 @@ impl Renderer {
                 let at = [center.x.to_num(), center.y.to_num()];
                 self.push_world(at, [half - 0.5, half - 0.5], color, SQUARE);
             }
-        }
-        for (id, placed) in rooms.filter(|&(id, _)| state.visited(id)) {
-            let Some((px, py)) = placed.room.extraction else {
-                continue;
-            };
-            // The ring marks the pad's reach: touching the cell with any part of the body.
-            let (ox, oy) = placed.at;
-            let center = sim::room::cell_center(px.saturating_add(ox), py.saturating_add(oy));
-            let at = [center.x.to_num(), center.y.to_num()];
-            let [r, g, b, _] = PAD_COLOR;
-            let alpha = if state.extraction_live(id) { 1.0 } else { 0.3 };
-            self.push_world(at, [half, half], [r, g, b, alpha], SQUARE);
-            let reach = half + sim::PLAYER_RADIUS.to_num::<f32>();
-            self.push_world(at, [reach, reach], [r, g, b, alpha * 0.8], RING);
         }
     }
 
@@ -970,6 +980,35 @@ const fn enemy_color(e: &Enemy) -> [f32; 4] {
             pattern: Pattern::Spread,
             ..
         } => SPREAD_SHOOTER_COLOR,
+        Behavior::Shooter {
+            pattern: Pattern::Captain,
+            ..
+        } => CAPTAIN_COLOR,
+    }
+}
+
+/// Where the unlocked airlocks' outer hatches are, in floor space: once the bridge falls,
+/// the way out. (How to find them is otherwise unspecified; the caret is the minimal aid.)
+fn unlocked_airlocks(state: &SimState) -> Vec<[f32; 2]> {
+    (state.ship.hatches().iter().zip(&state.hatches))
+        .filter(|&(h, s)| h.airlock && *s == HatchState::Closed)
+        .map(|(h, _)| {
+            let (x, y) = h.gap.cell(0);
+            let at = sim::room::cell_center(x, y);
+            [at.x.to_num(), at.y.to_num()]
+        })
+        .collect()
+}
+
+/// How big `e` is drawn: its hitbox, but bigger for the captain.
+fn drawn_radius(e: &Enemy) -> f32 {
+    let radius = sim::ENEMY_RADIUS.to_num::<f32>();
+    match e.behavior {
+        Behavior::Shooter {
+            pattern: Pattern::Captain,
+            ..
+        } => radius * CAPTAIN_SCALE,
+        Behavior::Rusher { .. } | Behavior::Shooter { .. } => radius,
     }
 }
 
