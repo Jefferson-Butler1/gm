@@ -16,11 +16,15 @@ final class GameUIView: UIView {
     private var game: Game?
     private var link: CADisplayLink?
     private var lastSeq: UInt64 = 0
+    private let haptics = HapticsPlayer()
+    private let gamepad = GamepadInput()
+    private let gyro = GyroInput()
 
     init(model: GameModel) {
         self.model = model
         super.init(frame: .zero)
         isMultipleTouchEnabled = true
+        gamepad.onMenu = { [weak model] in model?.settingsOpen.toggle() }
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.link?.isPaused = true
             self?.model.appActive = false
@@ -85,9 +89,15 @@ final class GameUIView: UIView {
 
     @objc private func step(_ link: CADisplayLink) {
         guard let game else { return }
+        game.setGamepad(pad: gamepad.poll())
+        let peek = model.camera.tiltPeek > 0
+        gyro.run(peek)
+        let orientation = window?.windowScene?.interfaceOrientation ?? .landscapeRight
+        game.setTilt(gravity: peek ? gyro.gravity(orientation) : nil)
         let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         // Sounds and mood are per frame, not gated on `seq`.
         model.audio.frame(sounds: hud.sounds, mood: hud.mood)
+        if model.haptics { haptics.play(hud.haptics) }
         // Only touch SwiftUI state when Rust publishes new numbers.
         if hud.seq != lastSeq {
             lastSeq = hud.seq

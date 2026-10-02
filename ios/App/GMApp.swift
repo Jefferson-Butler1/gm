@@ -16,14 +16,11 @@ final class GameModel {
     /// The Controls options: each a touch scheme with the fire mode it plays best with,
     /// with a stable key for persistence. The first is the default.
     static let controls: [(key: String, label: String, scheme: Scheme, fireMode: FireMode)] = [
-        ("F-hold", "Fire button · hold to auto-fire, drag to aim, push out to fire", .fireButton, .hold),
-        ("E-tap", "Auto-aim · tap to fire", .fixedAutoAim, .tap),
-        ("E-hold", "Auto-aim · hold to fire, flick to dodge", .fixedAutoAim, .hold),
-        ("C-hold", "Auto-aim, floating stick · hold to fire, flick to dodge", .autoAim, .hold),
-        ("B-hold", "Fixed twin sticks · aim fires", .fixedSticks, .hold),
-        ("B-release", "Fixed twin sticks · drag to aim, lift to fire", .fixedSticks, .release),
-        ("A-hold", "Floating twin sticks · aim fires", .floatingSticks, .hold),
-        ("D-hold", "Twin sticks + aim assist · aim fires", .aimAssist, .hold),
+        ("brawlStars", "Brawl Stars / ETG mobile · tap for a quick auto shot, drag to aim, release to fire", .fireButton, .release),
+        ("soulKnight", "Soul Knight · fire button: hold to auto-aim, drag to aim", .fireButton, .hold),
+        ("twinStick", "Twin-stick (ETG, Nuclear Throne) · aiming fires", .fixedSticks, .hold),
+        ("tapToFire", "Tap to fire · auto-aim", .fixedAutoAim, .tap),
+        ("claw", "Claw (PUBG, CoD Mobile) · thumbs move and aim, index fingers fire and dodge", .claw, .hold),
     ]
     /// Camera look options, with stable keys for persistence.
     static let looks: [(look: LookMode, key: String, label: String)] = [
@@ -36,6 +33,7 @@ final class GameModel {
     private static let assistKey = "controls.assist"
     private static let cameraKey = "camera"
     private static let volumeKey = "audio.volume.v2"  // v2: sound starts off
+    private static let hapticsKey = "haptics"
 
     var hud: HudData?
     var controlsKey: String = UserDefaults.standard.string(forKey: GameModel.controlsKey)
@@ -63,9 +61,14 @@ final class GameModel {
                 "lead": Double(camera.lead),
                 "smoothingSecs": Double(camera.smoothingSecs),
                 "thumbClearance": Double(camera.thumbClearance),
+                "tiltPeek": Double(camera.tiltPeek),
             ], forKey: Self.cameraKey)
             game?.setCamera(settings: camera)
         }
+    }
+    /// Swift-only: GameUIView skips the frame's haptics when off.
+    var haptics: Bool = UserDefaults.standard.object(forKey: GameModel.hapticsKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(haptics, forKey: Self.hapticsKey) }
     }
     /// Difficulty and tuning; the game applies them live.
     var runSettings: RunSettings = RunSettingsStore.load() {
@@ -136,6 +139,7 @@ final class GameModel {
         if let value = saved["lead"] as? Double { camera.lead = Float(value) }
         if let value = saved["smoothingSecs"] as? Double { camera.smoothingSecs = Float(value) }
         if let value = saved["thumbClearance"] as? Double { camera.thumbClearance = Float(value) }
+        if let value = saved["tiltPeek"] as? Double { camera.tiltPeek = Float(value) }
         return camera
     }
 
@@ -265,6 +269,9 @@ struct ControlsSettings: View {
                         }
                     }
                 }
+                Section("Feedback") {
+                    Toggle("Haptics", isOn: $model.haptics)
+                }
                 Section("Camera") {
                     Picker("Camera look", selection: $model.camera.look) {
                         ForEach(GameModel.looks, id: \.key) { option in
@@ -283,6 +290,9 @@ struct ControlsSettings: View {
                     }
                     SliderRow(label: "Thumb clearance", value: $model.camera.thumbClearance, range: 0...120, step: 5) {
                         "\(Int($0)) pt"
+                    }
+                    SliderRow(label: "Tilt peek (gyro)", value: $model.camera.tiltPeek, range: 0...800, step: 50) {
+                        $0 == 0 ? "off" : "\(Int($0)) pt/g"
                     }
                 }
                 Section("Sound") {
