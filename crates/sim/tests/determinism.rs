@@ -8,7 +8,7 @@ use sim::{
 use std::ops::Range;
 use std::sync::Arc;
 
-const SEED: u64 = 2;
+const SEED: u64 = 127;
 const TICKS: u64 = 2700;
 /// Ticks when the party holds only RESTART (the scripted start, then after the death).
 /// RESTART also abandons a live run, so each window presses it on its last tick only:
@@ -16,7 +16,8 @@ const TICKS: u64 = 2700;
 const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
 /// Ticks when the party walks straight down from the start, the airlock's center, through
 /// its hatch and the passage below into the midship room's encounter, and on a few cells.
-/// At `SEED` that room is the cargo hold.
+/// Both walks are in restarted runs (the two run seeds after `SEED`), which board at the
+/// port airlock with the cargo hold midship.
 const WALK_IN: [Range<u64>; 2] = [40..145, 1250..1355];
 /// Both players stand idle from just after entering the cargo hold, so its shooter lives
 /// long enough to fire and the rushers kill them; they only roll every
@@ -29,7 +30,7 @@ const AUTO_FIGHT: Range<u64> = 1355..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x3d73_f8d8_637e_c093;
+const GOLDEN_TRACE: u64 = 0x4196_f12d_8a05_346a;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist

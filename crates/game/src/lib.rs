@@ -19,7 +19,7 @@ use haptics::{Haptic, Haptics};
 use layout::ControlLayout;
 use render::Renderer;
 use settings::RunSettings;
-use sim::{Run, SimState, TICK_HZ, TickInputs};
+use sim::{CORVETTE, POOL, Run, Ship, SimState, TICK_HZ, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -123,6 +123,16 @@ impl std::fmt::Display for GameError {
 }
 
 impl std::error::Error for GameError {}
+
+/// Debug room preview (issue #38): the pool rooms some Corvette slot takes, in pool order.
+#[uniffi::export]
+#[must_use]
+pub fn preview_rooms() -> Vec<String> {
+    POOL.iter()
+        .filter(|room| CORVETTE.slots.iter().any(|slot| slot.fits(room)))
+        .map(|room| room.name.to_owned())
+        .collect()
+}
 
 struct Inner {
     renderer: Renderer,
@@ -269,6 +279,27 @@ impl Game {
     /// death the sim ignores it until the death pause has elapsed.
     pub fn restart(&self) {
         self.lock().controls.request_restart();
+    }
+
+    /// Debug room preview (issue #38): swaps in a fresh run on the first seed whose
+    /// Corvette places pool room `name` (one of [`preview_rooms`]). Restarts go back to
+    /// ordinary seeds.
+    pub fn preview_room(&self, name: &str) {
+        let places = |seed: &u64| {
+            let ship = Ship::generate(&CORVETTE, *seed);
+            ship.rooms().iter().any(|placed| placed.room.name == name)
+        };
+        let Some(seed) = (0..10_000).find(places) else {
+            eprintln!("[gm] preview: no Corvette places {name:?}");
+            return;
+        };
+        eprintln!("[gm] preview {name:?}: seed {seed}");
+        let mut g = self.lock();
+        let mut fresh = SimState::new(seed, g.current.config);
+        // Session time keeps counting, as in a restart.
+        fresh.tick = g.current.tick;
+        g.prev.clone_from(&fresh);
+        g.current = fresh;
     }
 
     /// Touch in view points.
