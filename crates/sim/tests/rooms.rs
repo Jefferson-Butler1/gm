@@ -64,6 +64,29 @@ fn the_pool_the_corvette_and_the_test_box_are_valid() {
     assert_eq!(BOX.validate(), Ok(()));
 }
 
+/// Entering a room, nothing spawns on top of you: every pool room's spawns, base and
+/// reinforcements, are at least 3 cells (either axis) from each of its hatch points.
+#[test]
+fn no_pool_room_spawns_an_enemy_closer_than_3_cells_to_a_hatch() {
+    let near: Vec<_> = POOL
+        .iter()
+        .flat_map(|room| {
+            let layers = room.reinforcements.iter().map(|layer| layer.placements);
+            let spawns = std::iter::once(room.base).chain(layers).flatten();
+            spawns.filter_map(move |p| {
+                let close = room.exits.iter().any(|exit| {
+                    (0..exit.width).any(|i| {
+                        let (x, y) = exit.cell(i);
+                        p.x.abs_diff(x) < 3 && p.y.abs_diff(y) < 3
+                    })
+                });
+                close.then_some((room.name, p.x, p.y))
+            })
+        })
+        .collect();
+    assert!(near.is_empty(), "spawns by a hatch: {near:?}");
+}
+
 #[test]
 fn ragged_rows_and_unknown_cells_are_rejected() {
     let ragged = PrototypeRoom {

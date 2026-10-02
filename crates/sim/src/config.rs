@@ -149,20 +149,19 @@ impl Tuning {
         regen_delay_ticks: 36,
         regen_charge_ticks: 24,
         spread_shooter: true,
-        // 5 and 4 cells of 32 pt; 3 s.
-        hearing_radius: 160,
+        // 15 and 4 cells of 32 pt; 3 s. A shot carries across most of a room.
+        hearing_radius: 480,
         alert_radius: 128,
         forget_ticks: 180,
-        // 10 cells: a slammed hatch carries further than a shot, and draws the nearer
-        // half or so of a room's base layer (shots' 5 cells reach almost none of it).
+        // 10 cells: a slammed hatch draws the nearer half or so of a room's base layer.
         hatch_hearing_radius: 320,
         // A 120° cone. At 150°/s a walking player (230 pt/s) out-circles an enemy within
         // ~88 pt (2.75 cells): about where a rusher is closing in.
         sight_half_angle: 60,
         turn_rate: 150,
-        // A slow amble, 1.25 cells/s: under a third of a shooter's 120, so a moving enemy
-        // reads as idle, not hunting, and a 3-cell leg takes about 2.4 s.
-        patrol_speed: 40,
+        // An amble, 1.9 cells/s: half a shooter's 120, so a moving enemy reads as idle,
+        // not hunting, and a 6-cell leg takes about 3.2 s.
+        patrol_speed: 60,
     };
 }
 
