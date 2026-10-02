@@ -14,6 +14,7 @@ const SEED: u64 = 7;
 
 const DOWN: u16 = 16384;
 const LEFT: u16 = 32768;
+const UP: u16 = 49152;
 /// The shot telegraph.
 const AIM_TICKS: u16 = Tuning::NORMAL.shooter_telegraph;
 
@@ -377,7 +378,8 @@ fn separation_never_pushes_a_rusher_into_walls_or_pits() {
 
 // --- shooter, enemy bullets, steering -------------------------------------------------
 
-/// An empty arena plus one active, hunting shooter at `at`, `ticks` from starting to aim.
+/// An empty arena plus one active, hunting shooter at `at`, `ticks` from starting to aim,
+/// facing left (toward the player, in every test that uses it).
 fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
     let mut state = empty_arena();
     add_shooter(&mut state, at, ticks);
@@ -387,6 +389,7 @@ fn arena_with_shooter(at: FxVec2, ticks: u16) -> SimState {
 fn add_shooter(state: &mut SimState, at: FxVec2, ticks: u16) {
     state.enemies.insert(Enemy {
         spawn_ticks: 0,
+        facing: LEFT,
         awareness: hunting(),
         behavior: Behavior::Shooter {
             pattern: Pattern::Aimed,
@@ -524,6 +527,9 @@ fn a_rusher_steers_around_a_pit_between_it_and_the_player() {
         x: Fx::from_num(384),
         y: Fx::from_num(48),
     };
+    for (_, rusher) in state.enemies.iter_mut() {
+        rusher.facing = UP; // at the player
+    }
     let mut events = Vec::new();
     for tick in 0..150 {
         events.extend(step(&mut state, &TickInputs::default()).events);
@@ -627,6 +633,7 @@ fn spread_shooter_fans_slow_pellets_at_the_target() {
         let mut state = arena(config);
         state.enemies.insert(Enemy {
             spawn_ticks: 0,
+            facing: LEFT,
             behavior: Behavior::Shooter {
                 pattern: Pattern::Spread,
                 shot_timer: 1,

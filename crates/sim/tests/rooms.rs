@@ -533,12 +533,15 @@ fn waves_advance_on_clear_then_the_hatches_unseal_and_the_room_stays_cleared() {
 #[test]
 fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_open_one() {
     // Cleared, so standing in the hold starts no fight; the player waits in the passage
-    // two cells above the hatch, a hunting-range rusher four cells below it.
+    // two cells above the hatch, a hunting-range rusher four cells below it, standing
+    // still (no patrol) looking straight at the hatch.
     let mut state = above_the_hold();
     state.cleared = 1 << CARGO_HOLD.0;
+    state.config.tuning.patrol_speed = 0;
     let player = pos(&state);
     let rusher = state.enemies.insert(Enemy {
         spawn_ticks: 0,
+        facing: UP,
         ..Enemy::rusher(FxVec2 {
             y: HOLD_TOP.saturating_add(CELL.saturating_mul_int(4)),
             ..player
