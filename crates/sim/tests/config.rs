@@ -104,16 +104,13 @@ fn restart(state: &mut SimState) {
 }
 
 #[test]
-fn restart_keeps_the_config_unless_a_new_one_was_supplied() {
+fn a_config_set_mid_run_applies_at_once_and_survives_a_restart() {
     let mut state = SimState::new(SEED, config(Difficulty::Hard));
+    let mut easy = config(Difficulty::Easy);
+    easy.tuning.charges = 1;
+    state.set_config(easy);
+    assert_eq!(state.config, easy);
+    assert_eq!(state.players[0].map(|p| p.gun.charges), Some(1), "capped");
     restart(&mut state);
-    assert_eq!(state.config, config(Difficulty::Hard));
-
-    state.next_config = Some(config(Difficulty::Easy));
-    assert_eq!(state.config, config(Difficulty::Hard), "not mid-run");
-    restart(&mut state);
-    assert_eq!(
-        (state.config, state.next_config),
-        (config(Difficulty::Easy), None)
-    );
+    assert_eq!(state.config, easy);
 }

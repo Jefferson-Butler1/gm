@@ -5,11 +5,13 @@
 //! time, renders `prev` -> `current` interpolated, and returns [`HudData`] for `SwiftUI`.
 
 mod audio;
+mod camera;
 mod controls;
 mod settings;
 mod stats;
 
 use audio::{Audio, Mood, Sound};
+use camera::{CameraLook, CameraSettings};
 use controls::{Controls, FireMode, Scheme, Viewport};
 use render::Renderer;
 use settings::RunSettings;
@@ -119,6 +121,7 @@ struct Inner {
     current: SimState,
     viewport: Viewport,
     controls: Controls,
+    look: CameraLook,
     /// Display-link time that `current` corresponds to; `None` resyncs on the next frame.
     sim_clock: Option<f64>,
     paused: bool,
@@ -177,6 +180,7 @@ impl Game {
                 current: state,
                 viewport,
                 controls: Controls::new(&viewport),
+                look: CameraLook::new(),
                 sim_clock: None,
                 paused: false,
                 stats: Stats::default(),
@@ -218,11 +222,16 @@ impl Game {
         self.lock().controls.set_assist(strength);
     }
 
-    /// Settings for the next run: difficulty and tunables apply when the run restarts
-    /// (death, win, or the Restart button), never mid-run.
+    /// Difficulty and tunables, live: they apply from the next tick and carry into
+    /// restarts.
     pub fn set_run_settings(&self, settings: RunSettings) {
-        eprintln!("[gm] next run: {settings:?}");
-        self.lock().current.next_config = Some(settings.run_config());
+        eprintln!("[gm] run settings: {settings:?}");
+        self.lock().current.set_config(settings.run_config());
+    }
+
+    pub fn set_camera(&self, settings: CameraSettings) {
+        eprintln!("[gm] camera: {settings:?}");
+        self.lock().look.set(settings);
     }
 
     /// Restart: sends RESTART on the next tick. A live run restarts at once; after a
@@ -295,6 +304,28 @@ impl Game {
         let max_charges = g.current.config.tuning.charges;
         let vent_ready = player.is_some_and(|p| !p.gun.venting() && p.gun.charges < max_charges);
         let overlay = g.controls.overlay(roll_ready, vent_ready);
+        // The nearest enemy in slot 0's room, as an offset from it: what auto-aim shoots.
+        let enemy = player.and_then(|p| {
+            let ship = &g.current.ship;
+            let room = ship.room_at(p.pos)?;
+            g.current
+                .enemies
+                .iter()
+                .map(|(_, e)| e)
+                .filter(|e| e.active() && ship.room_at(e.pos) == Some(room))
+                .map(|e| {
+                    let (ex, ey) = (e.pos.x.to_num::<f32>(), e.pos.y.to_num::<f32>());
+                    [ex - p.pos.x.to_num::<f32>(), ey - p.pos.y.to_num::<f32>()]
+                })
+                .min_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
+        });
+        let look = g.look.update(
+            target_timestamp,
+            player.map(|p| p.facing),
+            g.controls.aim_push(),
+            enemy,
+        );
+        g.renderer.set_look(look);
         let presented = g
             .renderer
             .draw(&g.prev, &g.current, alpha, &overlay)
