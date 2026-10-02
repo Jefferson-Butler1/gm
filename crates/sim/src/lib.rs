@@ -38,7 +38,7 @@ pub use combat::{
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
 pub use encounter::reveal;
 pub use gun::PhasePistol;
-pub use hull::CORVETTE;
+pub use hull::{CLASSES, CORVETTE, FREIGHTER, GUNSHIP, Template};
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use path::FlowField;
 pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
@@ -124,14 +124,15 @@ pub struct SimState {
 }
 
 impl SimState {
-    /// A fresh single-player run: a Corvette generated from `seed`, the party standing in
+    /// A fresh single-player run: a ship of the seed's class ([`Template::for_seed`])
+    /// generated from `seed`, the party standing in
     /// its start airlock with every hatch in its [`HatchKind::initial`] state: closed, but
     /// airlocks locked and crawlspaces behind panels. `config` is clamped to what the sim
     /// handles (see [`RunConfig::sanitized`]).
     #[must_use]
     pub fn new(seed: u64, config: RunConfig) -> Self {
         let config = config.sanitized();
-        let ship = Ship::generate(&CORVETTE, seed);
+        let ship = Ship::generate(Template::for_seed(seed), seed);
         let (room, at) = ship.start();
         let player = Player {
             pos: at,

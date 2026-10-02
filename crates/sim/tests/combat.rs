@@ -10,7 +10,7 @@ use sim::{
 };
 use std::sync::Arc;
 
-const SEED: u64 = 7;
+const SEED: u64 = 1741;
 
 const DOWN: u16 = 16384;
 const LEFT: u16 = 32768;
