@@ -20,4 +20,4 @@ export GM_BUNDLE_ID=com.yourname.gm         # unique to you
 
 ## License
 
-Code is MIT (`LICENSE`). Third-party assets are CC0; see `CREDITS.md`.
+Code is MIT or Apache-2.0, at your option (`LICENSE-MIT`, `LICENSE-APACHE`). Third-party assets are CC0; see `CREDITS.md`.

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # Host-side CLI that generates the Swift bindings from libgame.a (see run.sh).
 [dependencies]
