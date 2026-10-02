@@ -15,8 +15,8 @@ use bytemuck::{Pod, Zeroable};
 use sim::room::{Cell, Dir};
 use sim::ship::Spot;
 use sim::{
-    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchKind, HatchState, Pattern, Player, RoomId,
-    Ship, SimState,
+    Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchKind, HatchState, Pattern, PickupKind,
+    Player, RoomId, Ship, SimState,
 };
 use std::f32::consts::TAU;
 use std::ffi::c_void;
@@ -56,6 +56,16 @@ const CHEST_LID_COLOR: [f32; 4] = [0.45, 0.3, 0.1, 1.0];
 const CHEST_OPEN_COLOR: [f32; 4] = [0.35, 0.25, 0.12, 1.0];
 /// Its half-size, in world pt.
 const CHEST_HALF: [f32; 2] = [11.0, 8.0];
+/// Scrap pickups: small squares, copper for 1s and a bigger pale blue for 5s, each glinting
+/// (a white core) for `SCRAP_GLINT_TICKS` of every `SCRAP_GLINT_PERIOD`, staggered by
+/// slot so a pile twinkles rather than blinks.
+const SCRAP_ONE_COLOR: [f32; 4] = [0.85, 0.5, 0.25, 1.0];
+const SCRAP_FIVE_COLOR: [f32; 4] = [0.6, 0.85, 1.0, 1.0];
+const SCRAP_ONE_HALF: f32 = 3.0;
+const SCRAP_FIVE_HALF: f32 = 4.5;
+const SCRAP_GLINT_PERIOD: u64 = 45;
+const SCRAP_GLINT_TICKS: u64 = 5;
+const SCRAP_GLINT_STAGGER: u64 = 17;
 const PLAYER_COLOR: [f32; 4] = [0.3, 0.9, 1.0, 1.0];
 /// Rolling (i-frames): shrunk and white, so dodge timing reads at a glance.
 const ROLLING_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
@@ -397,6 +407,7 @@ impl Renderer {
                 | Event::WaveStarted { .. }
                 | Event::RoomCleared { .. }
                 | Event::ChestOpened { .. }
+                | Event::ScrapCollected { .. }
                 | Event::Won => continue,
             };
             if !self.flashes.contains(&(flash, tick)) {
@@ -502,7 +513,7 @@ impl Renderer {
         Some(acquire)
     }
 
-    /// The world through the camera: the revealed floor, enemies, players, bullets.
+    /// The world through the camera: the revealed floor, Scrap, enemies, players, bullets.
     fn push_scene(&mut self, prev: &SimState, current: &SimState, alpha: f32) {
         // Across a restart (a new run seed) positions jump back to the start; don't smear
         // them across the floor.
@@ -530,6 +541,7 @@ impl Renderer {
         });
         self.camera = self.camera_for(&current.ship, focus);
         self.push_floor(current, alpha);
+        self.push_pickups(prev, current, alpha);
         let telegraph = current.config.tuning.shooter_telegraph;
         let cos_half = f32::from(current.config.tuning.sight_half_angle)
             .to_radians()
@@ -867,6 +879,27 @@ impl Renderer {
             let [w, h] = CHEST_HALF;
             self.push_world(at, [w, h], color, SQUARE);
             self.push_world([at[0], at[1] - h / 3.0], [w, 1.0], lid, SQUARE);
+        }
+    }
+
+    /// Scrap on the floor, interpolated like bullets.
+    fn push_pickups(&mut self, prev: &SimState, current: &SimState, alpha: f32) {
+        for (stagger, (id, p)) in (0_u64..).zip(current.pickups.iter()) {
+            let from = prev.pickups.get(id).map_or(p.pos, |q| q.pos);
+            let pos = lerp(from, p.pos, alpha);
+            let (color, half) = match p.kind {
+                PickupKind::Scrap(5..) => (SCRAP_FIVE_COLOR, SCRAP_FIVE_HALF),
+                PickupKind::Scrap(_) => (SCRAP_ONE_COLOR, SCRAP_ONE_HALF),
+            };
+            self.push_world(pos, [half, half], color, SQUARE);
+            let phase = current
+                .tick
+                .wrapping_add(stagger.wrapping_mul(SCRAP_GLINT_STAGGER))
+                .checked_rem(SCRAP_GLINT_PERIOD);
+            if phase.is_some_and(|t| t < SCRAP_GLINT_TICKS) {
+                let core = half * 0.5;
+                self.push_world(pos, [core, core], HIT_COLOR, SQUARE);
+            }
         }
     }
 

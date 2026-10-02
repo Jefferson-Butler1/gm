@@ -25,9 +25,9 @@ impl Stats {
         self.hud.clone()
     }
 
-    /// Reads slot 0's HP and gun, the run state, and the room and wave from `state`: the
-    /// fight's room, else the one slot 0 stands in (the last one while it crosses a
-    /// hatch); and the hint: in a room whose chest is open, or once the airlocks unlock.
+    /// Reads slot 0's HP and gun, the party's Scrap, the run state, and the room and wave
+    /// from `state`: the fight's room, else the one slot 0 stands in (the last one while
+    /// it crosses a hatch); and the hint: in a room whose chest is open, or once the airlocks unlock.
     /// Publishes immediately (bumps `seq`) when anything changed.
     pub fn set_status(&mut self, state: &SimState) {
         let id = match state.run {
@@ -65,6 +65,7 @@ impl Stats {
         let vent_progress = gun.filter(PhasePistol::venting).map_or(0.0, |g| {
             1.0 - f32::from(g.vent_ticks) / f32::from(g.vent_length.max(1))
         });
+        let scrap = state.scrap;
         let h = &mut self.hud;
         let gun_changed = (h.charges, h.max_charges, h.venting) != (charges, max_charges, venting)
             || h.vent_progress.to_bits() != vent_progress.to_bits();
@@ -72,10 +73,12 @@ impl Stats {
             || h.room != name
             || h.hint != hint
             || gun_changed
+            || h.scrap != scrap
         {
             (h.hp, h.max_hp, h.run, h.wave, h.waves) = (hp, MAX_HP, run, wave, waves);
             (h.charges, h.max_charges, h.venting, h.vent_progress) =
                 (charges, max_charges, venting, vent_progress);
+            h.scrap = scrap;
             h.room = name;
             hint.clone_into(&mut h.hint);
             h.seq = h.seq.wrapping_add(1);

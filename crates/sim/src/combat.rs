@@ -11,7 +11,7 @@ use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
 use crate::rng::Rng;
 use crate::room::{cell_center, cell_of};
 use crate::ship::{Body, HatchId, Spot, Tiles};
-use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, trig};
+use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, pickup, trig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -138,6 +138,8 @@ pub struct Bullet {
     pub pos: FxVec2,
     pub vel: FxVec2,
     pub ticks_left: u8,
+    /// The enemy that fired it, whose Scrap a hit halves; `None` for the players'.
+    pub from: Option<EnemyId>,
 }
 
 /// One enemy of any type; [`Behavior`] holds what differs by type.
@@ -159,6 +161,9 @@ pub struct Enemy {
     /// Where it wanders while unaware.
     pub patrol: Patrol,
     pub behavior: Behavior,
+    /// Its share of the floor's Scrap, dropped where it dies; each hit it lands on a
+    /// player halves it (see [`crate::pickup`]).
+    pub scrap: u8,
 }
 
 /// An unaware enemy's patrol: stand looking around, walk slowly to a random nearby cell,
@@ -278,6 +283,7 @@ impl Enemy {
             behavior: Behavior::Rusher {
                 contact_cooldown: 0,
             },
+            scrap: 0,
         }
     }
 
@@ -304,6 +310,7 @@ impl Enemy {
                 shot_timer: pattern.interval(config).saturating_add(delay),
                 strafe: 1,
             },
+            scrap: 0,
         }
     }
 
@@ -357,7 +364,8 @@ impl Enemy {
 
 /// One live tick, in order: players (move, fall, respawn, fire), their bullets, enemies
 /// (notice, move, fire, separate, contact, telegraph countdown), enemy bullets, the death
-/// check, the access panels shot, then the room (waves, hatches, chests, the airlocks).
+/// check, the access panels shot, the room (waves, hatches, chests, the airlocks), then
+/// the pickups (magnetized ones fly, touched ones are collected).
 pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) {
     // Hatches only change after everything that moves: panels shot, then
     // `encounter::tick`.
@@ -398,6 +406,7 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
         encounter::reveal(state, hatch);
     }
     encounter::tick(state, events);
+    pickup::tick(state, events);
 }
 
 /// Moves and fires the players. Returns where each shot this tick was fired from.
@@ -437,6 +446,7 @@ fn players(
                 pos: add(player.pos, scale(dir, MUZZLE)),
                 vel: scale(dir, per_tick(tuning.bullet_speed)),
                 ticks_left: BULLET_TICKS,
+                from: None,
             });
             events.events.push(Event::ShotFired { slot });
             shots.push(player.pos);
@@ -470,7 +480,7 @@ fn fly(bullet: &mut Bullet, tiles: Tiles<'_>) -> bool {
 }
 
 /// Returns the hatches bullets stopped in: shot access panels open (see
-/// [`encounter::reveal`]).
+/// [`encounter::reveal`]). A kill drops the enemy's Scrap where it died.
 fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) -> Vec<HatchId> {
     // Each bullet hits at most the first live enemy it overlaps, in slot order. A hit
     // alerts it to the nearest living player (bullets don't record who fired them).
@@ -482,7 +492,7 @@ fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) -> V
         .filter(|p| p.alive())
         .map(|p| p.pos)
         .collect();
-    let enemies = &mut state.enemies;
+    let (enemies, pickups, rng) = (&mut state.enemies, &mut state.pickups, &mut state.rng);
     let mut struck = Vec::new();
     state.bullets.retain(|_, bullet| {
         if !fly(bullet, tiles) {
@@ -505,6 +515,7 @@ fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) -> V
         events.events.push(Event::EnemyHit { enemy });
         if e.hp == 0 {
             events.events.push(Event::EnemyKilled { enemy, pos: e.pos });
+            pickup::drop_scrap(pickups, rng, tiles, e.pos, e.scrap);
         } else if let Some(&shooter) = players.iter().min_by_key(|&&p| dist_sq(p, e.pos)) {
             e.alert(enemy, shooter, events);
         }
@@ -514,11 +525,12 @@ fn bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) -> V
     struck
 }
 
-/// Enemy bullets hurt the first player (in slot order) they overlap who can take the hit.
+/// Enemy bullets hurt the first player (in slot order) they overlap who can take the hit,
+/// halving the Scrap of the enemy that fired it (if it still lives).
 /// Invulnerable players (rolling, or just hurt) don't stop them: dodged bullets fly on.
 fn enemy_bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents) {
     let hurt_ticks = state.config.tuning.hurt_ticks;
-    let players = &mut state.players;
+    let (players, enemies) = (&mut state.players, &mut state.enemies);
     state.enemy_bullets.retain(|_, bullet| {
         if !fly(bullet, tiles) {
             return false;
@@ -532,6 +544,9 @@ fn enemy_bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents
         let Some((slot, player)) = hit else {
             return true;
         };
+        if let Some(shooter) = bullet.from.and_then(|id| enemies.get_mut(id)) {
+            shooter.scrap /= 2;
+        }
         events.events.push(Event::PlayerHit { slot });
         if !player.alive() {
             events.events.push(Event::PlayerDied { slot });
@@ -701,7 +716,7 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
                     if *shot_timer == 0 {
                         fire(
                             &mut state.enemy_bullets,
-                            enemy.pos,
+                            (id, enemy.pos),
                             angle,
                             *pattern,
                             &config,
@@ -743,7 +758,8 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
     telegraphs_and_contact(state, events);
 }
 
-/// After enemies move: spawn telegraphs count down, and rushers touching a player hurt it.
+/// After enemies move: spawn telegraphs count down, and rushers touching a player hurt it,
+/// halving their Scrap.
 fn telegraphs_and_contact(state: &mut SimState, events: &mut TickEvents) {
     let config = state.config;
     let reach = PLAYER_RADIUS.saturating_add(ENEMY_RADIUS);
@@ -769,6 +785,7 @@ fn telegraphs_and_contact(state: &mut SimState, events: &mut TickEvents) {
                 && player.hurt(config.tuning.hurt_ticks)
             {
                 *contact_cooldown = CONTACT_COOLDOWN;
+                enemy.scrap /= 2;
                 events.events.push(Event::PlayerHit { slot });
                 if !player.alive() {
                     events.events.push(Event::PlayerDied { slot });
@@ -915,10 +932,10 @@ fn pick_goal<'a>(
     })
 }
 
-/// A shooter at `from` fires its `pattern` centered on `angle`.
+/// Shooter `id` at `from` fires its `pattern` centered on `angle`.
 fn fire(
     bullets: &mut Arena<Bullet>,
-    from: FxVec2,
+    from: (EnemyId, FxVec2),
     angle: u16,
     pattern: Pattern,
     config: &RunConfig,
@@ -940,10 +957,11 @@ fn fire(
     }
 }
 
-/// `count` bullets from `from` at `speed`, `spacing` apart and centered on `angle`.
+/// `count` bullets from shooter `id` at `from`, at `speed`, `spacing` apart and centered
+/// on `angle`.
 fn volley(
     bullets: &mut Arena<Bullet>,
-    from: FxVec2,
+    (id, from): (EnemyId, FxVec2),
     angle: u16,
     (count, spacing): (u8, i16),
     speed: u16,
@@ -959,6 +977,7 @@ fn volley(
             pos: add(from, scale(dir, ENEMY_RADIUS)),
             vel: scale(dir, per_tick(speed)),
             ticks_left: ENEMY_BULLET_TICKS,
+            from: Some(id),
         });
     }
 }
@@ -1130,13 +1149,13 @@ fn push_out(a: FxVec2, b: FxVec2, spacing: Fx) -> FxVec2 {
 }
 
 /// Distance between two points.
-fn dist(a: FxVec2, b: FxVec2) -> Fx {
+pub fn dist(a: FxVec2, b: FxVec2) -> Fx {
     // `dist_sq` is in squared raw bits, so its root is in raw bits.
     Fx::from_bits(i64::try_from(dist_sq(a, b).unsigned_abs().isqrt()).unwrap_or(i64::MAX))
 }
 
 /// Circles whose radii sum to `reach` overlap.
-fn overlaps(a: FxVec2, b: FxVec2, reach: Fx) -> bool {
+pub fn overlaps(a: FxVec2, b: FxVec2, reach: Fx) -> bool {
     let reach = i128::from(reach.to_bits());
     dist_sq(a, b) < reach.saturating_mul(reach)
 }

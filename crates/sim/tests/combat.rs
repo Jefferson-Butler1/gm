@@ -1,12 +1,13 @@
 //! Combat rules through the public `step`: gun vs rusher and shooter, contact damage,
-//! enemy bullets, i-frames, steering, and death -> restart.
+//! enemy bullets, i-frames, steering, Scrap drops and hits halving them, and death ->
+//! restart.
 
 use sim::room::{Category, Derelict, Placed, PrototypeRoom, Theme, cell_center, cell_of};
 use sim::ship::{Body, Tiles};
 use sim::{
     Arrival, Awareness, Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy,
-    Event, Fx, FxVec2, MAX_HP, Pattern, PlayerInput, RUSHER_HP, Rng, RoomId, Run, RunConfig, Ship,
-    SimState, TickInputs, Tuning, step, trig,
+    Event, Fx, FxVec2, MAX_HP, Pattern, PickupKind, PlayerInput, RUSHER_HP, Rng, RoomId, Run,
+    RunConfig, Ship, SimState, TickInputs, Tuning, step, trig,
 };
 use std::sync::Arc;
 
@@ -137,6 +138,95 @@ fn held_fire_kills_a_rusher() {
         MAX_HP,
         "killed before it arrived"
     );
+}
+
+/// Every live enemy's Scrap set to `scrap`.
+fn set_scrap(state: &mut SimState, scrap: u8) {
+    for (_, e) in state.enemies.iter_mut() {
+        e.scrap = scrap;
+    }
+}
+
+/// The Scrap pickups lying about, by value, smallest first.
+fn scrap_values(state: &SimState) -> Vec<u8> {
+    let mut values: Vec<u8> = (state.pickups.iter())
+        .map(|(_, p)| match p.kind {
+            PickupKind::Scrap(value) => value,
+        })
+        .collect();
+    values.sort_unstable();
+    values
+}
+
+#[test]
+fn a_kill_drops_the_enemys_scrap_nearby_and_walking_over_it_collects_it() {
+    let mut state = arena_with_rusher(200);
+    set_scrap(&mut state, 7);
+    let events = run(&mut state, 40, &press(Buttons::FIRE));
+    let pos = events
+        .iter()
+        .find_map(|e| match e {
+            Event::EnemyKilled { pos, .. } => Some(*pos),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(scrap_values(&state), [1, 1, 5], "5s, then 1s");
+    for (_, p) in state.pickups.iter() {
+        let near = |a: Fx, b: Fx| a.abs_diff(b) <= Fx::from_num(12);
+        assert!(
+            near(p.pos.x, pos.x) && near(p.pos.y, pos.y),
+            "{p:?} vs {pos:?}"
+        );
+        assert!(!p.magnet, "no fight ended");
+    }
+
+    let (_, five) = state
+        .pickups
+        .iter()
+        .find(|(_, p)| p.kind == PickupKind::Scrap(5))
+        .unwrap();
+    let at = five.pos;
+    if let Some(player) = &mut state.players[0] {
+        (player.pos, player.solid) = (at, at);
+    }
+    let events = run(&mut state, 1, &TickInputs::default());
+    assert!(
+        events.contains(&Event::ScrapCollected { slot: 0, value: 5 }),
+        "{events:?}"
+    );
+    // The 1s lie close enough that one may come along with it.
+    let left: u32 = scrap_values(&state).into_iter().map(u32::from).sum();
+    assert!(
+        state.scrap >= 5 && state.scrap + left == 7,
+        "{}",
+        state.scrap
+    );
+}
+
+#[test]
+fn each_hit_an_enemy_lands_halves_its_scrap() {
+    // A rusher's contact hit, twice (once the post-hit window is over).
+    let mut state = arena_with_rusher(10);
+    set_scrap(&mut state, 9);
+    let events = run(&mut state, 1, &TickInputs::default());
+    assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
+    assert_eq!(first_enemy(&state).unwrap().scrap, 4);
+    let ticks = usize::from(Tuning::NORMAL.hurt_ticks) + 1;
+    let hits = count(&run(&mut state, ticks, &TickInputs::default()), |e| {
+        matches!(e, Event::PlayerHit { .. })
+    });
+    assert_eq!((hits, first_enemy(&state).unwrap().scrap), (1, 2));
+
+    // A shooter's bullet: the bullet knows who fired it.
+    let mut state = arena_with_shooter(point(160, 0), 1);
+    set_scrap(&mut state, 9);
+    let events = run(
+        &mut state,
+        usize::from(AIM_TICKS) + 41,
+        &TickInputs::default(),
+    );
+    assert!(events.contains(&Event::PlayerHit { slot: 0 }), "{events:?}");
+    assert_eq!(first_enemy(&state).unwrap().scrap, 4);
 }
 
 #[test]
@@ -462,6 +552,7 @@ fn bullet_flying_left(state: &mut SimState, from: FxVec2) {
             y: Fx::ZERO,
         },
         ticks_left: 100,
+        from: None,
     });
 }
 

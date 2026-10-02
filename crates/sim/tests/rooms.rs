@@ -1,15 +1,17 @@
 //! Rooms through the public API: format validation, placing rooms in one floor grid,
 //! walls and pits, walking through hatches with no cut, fog, seal on entry, waves, open
-//! on clear, enemies kept in their room, access panels, and chests.
+//! on clear (its Scrap flying to the party), enemies kept in their room, access panels,
+//! and chests.
 
+use sim::pickup::first_share;
 use sim::room::{
     CELL, Category, Connection, Derelict, DerelictError, Dir, EnemyKind, Exit, ExitKind, ExitRef,
     Placed, Placement, PrototypeRoom, RoomAction, RoomError, RoomTrigger, Theme, cell_center,
 };
 use sim::{
     Awareness, Buttons, CORVETTE, ENEMY_RADIUS, Enemy, Event, Fx, FxVec2, HatchId, HatchKind,
-    HatchState, MAX_HP, PLAYER_RADIUS, POOL, PlayerInput, RoomId, Run, RunConfig, SimState,
-    TickInputs, Tuning, per_tick, reveal, step,
+    HatchState, MAX_HP, PLAYER_RADIUS, POOL, Pickup, PickupKind, PlayerInput, RoomId, Run,
+    RunConfig, SimState, TickInputs, Tuning, per_tick, reveal, step,
 };
 
 const SEED: u64 = 57;
@@ -516,6 +518,49 @@ fn waves_advance_on_clear_then_the_hatches_unseal_and_the_room_stays_cleared() {
     assert_eq!(state.ship.room_at(pos(&state)), Some(CARGO_HOLD));
     assert_eq!(state.run, Run::Boarding);
     assert!(state.enemies.is_empty());
+}
+
+#[test]
+fn spawns_carry_their_scrap_share_and_it_flies_to_the_party_once_the_room_unseals() {
+    let (mut state, _) = walk_into_the_hold();
+    let first = first_share(&state.ship, CARGO_HOLD, 0);
+    let carried: Vec<u8> = state.enemies.iter().map(|(_, e)| e.scrap).collect();
+    assert_eq!(
+        state.scrap_shares.get(first..first + carried.len()),
+        Some(carried.as_slice())
+    );
+
+    // Scrap in the hold's far corner from the player, as if dropped in the fight.
+    let corner = state.ship.room(CARGO_HOLD).map(|r| r.at).unwrap();
+    let at = cell_center(corner.0 + 2, corner.1 + 11);
+    state.pickups.insert(Pickup {
+        kind: PickupKind::Scrap(5),
+        pos: at,
+        magnet: false,
+    });
+    state.enemies.retain(|_, _| false);
+    run(&mut state, 1, &TickInputs::default());
+    assert_eq!(
+        state.run,
+        Run::Encounter {
+            room: CARGO_HOLD,
+            wave: 1
+        }
+    );
+    let lying = |state: &SimState| state.pickups.iter().all(|(_, p)| p.pos == at && !p.magnet);
+    assert!(lying(&state), "it waits out the fight");
+
+    state.enemies.retain(|_, _| false);
+    let events = run(&mut state, 1, &TickInputs::default());
+    assert!(events.contains(&Event::RoomCleared { room: CARGO_HOLD }));
+    assert!(state.pickups.iter().all(|(_, p)| p.magnet));
+    let events = run(&mut state, 90, &TickInputs::default());
+    assert_eq!(
+        events,
+        [Event::ScrapCollected { slot: 0, value: 5 }],
+        "it came to the player standing still"
+    );
+    assert_eq!((state.scrap, state.pickups.len()), (5, 0));
 }
 
 #[test]

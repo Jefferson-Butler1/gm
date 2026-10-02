@@ -12,7 +12,8 @@ use crate::room::{
     Category, EnemyKind, LayerTrigger, Placed, Placement, RoomAction, RoomTrigger, cell_center,
 };
 use crate::{
-    Event, Fx, FxVec2, HatchId, HatchKind, HatchState, RoomId, Run, SimState, TickEvents, bit, trig,
+    Event, Fx, FxVec2, HatchId, HatchKind, HatchState, RoomId, Run, SimState, TickEvents, bit,
+    pickup, trig,
 };
 
 /// Reveals `hatch` if it's an access panel, turning it Closed. Returns whether it was one.
@@ -86,14 +87,14 @@ pub fn tick(state: &mut SimState, events: &mut TickEvents) {
         (!state.cleared(id) && room.room.has_enemies()).then_some((id, *room))
     });
     if let Some((id, room)) = entered {
-        spawn(state, &room, room.room.base, Arrival::Prespawn);
+        spawn(state, (id, 0), room.room.base, Arrival::Prespawn);
         state.run = Run::Encounter { room: id, wave: 0 };
         react(state, id, &room, RoomTrigger::OnEnterWithEnemies, events);
     }
 }
 
 /// The current wave of room `id` is dead: spawn the next reinforcement layer, or fire
-/// the cleared events and end the encounter.
+/// the cleared events, magnetize the room's pickups and end the encounter.
 fn next_wave(state: &mut SimState, id: RoomId, wave: u8, events: &mut TickEvents) {
     let Some(room) = state.ship.room(id).copied() else {
         return;
@@ -103,7 +104,7 @@ fn next_wave(state: &mut SimState, id: RoomId, wave: u8, events: &mut TickEvents
         match layer.trigger {
             LayerTrigger::OnEnemiesCleared => {
                 let wave = wave.saturating_add(1);
-                spawn(state, &room, layer.placements, Arrival::Reinforcement);
+                spawn(state, (id, wave), layer.placements, Arrival::Reinforcement);
                 state.run = Run::Encounter { room: id, wave };
                 events.events.push(Event::WaveStarted { wave });
             }
@@ -119,6 +120,7 @@ fn next_wave(state: &mut SimState, id: RoomId, wave: u8, events: &mut TickEvents
         }
     }
     state.cleared |= bit(id);
+    pickup::magnetize(state, id);
     events.events.push(Event::RoomCleared { room: id });
     state.run = Run::Boarding;
 }
@@ -215,13 +217,25 @@ fn unseal(state: &mut SimState, hatch: HatchId) {
     }
 }
 
-/// Spawns `placements` (cells of `room`) with `arrival`'s telegraph, except a captain,
-/// which gets its own. Prespawns start unaware, facing one of 8 directions at random, and
-/// stand a random while before their first patrol walk, so a room doesn't set off in
-/// step. Reinforcements and bosses join a fight in progress, already knowing where the
+/// Spawns `placements`, wave `wave` of room `id`, at its cells with `arrival`'s
+/// telegraph, except a captain, which gets its own. Each carries its Scrap share.
+/// Prespawns start unaware, facing one of 8 directions at random, and stand a random
+/// while before their first patrol walk, so a room doesn't set off in step. Reinforcements and bosses join a fight in progress, already knowing where the
 /// nearest living player is and facing it.
-fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], arrival: Arrival) {
-    for placement in placements {
+fn spawn(
+    state: &mut SimState,
+    (id, wave): (RoomId, u8),
+    placements: &[Placement],
+    arrival: Arrival,
+) {
+    let Some(room) = state.ship.room(id).copied() else {
+        return;
+    };
+    let first = pickup::first_share(&state.ship, id, wave);
+    for (i, placement) in placements.iter().enumerate() {
+        let scrap = (state.scrap_shares.get(first.saturating_add(i)))
+            .copied()
+            .unwrap_or(0);
         let arrival = if placement.kind == EnemyKind::Captain {
             Arrival::Boss
         } else {
@@ -282,6 +296,7 @@ fn spawn(state: &mut SimState, room: &Placed, placements: &[Placement], arrival:
             patrol,
             arrival,
             spawn_ticks: arrival.telegraph_ticks(),
+            scrap,
             ..enemy
         });
     }
