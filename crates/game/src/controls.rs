@@ -4,40 +4,16 @@
 //! rules. A connected gamepad replaces touch with one fixed mapping.
 
 use crate::TouchPhase;
+use crate::layout::{ControlKind, ControlLayout, Layout, Spot, default_control_layout};
 use render::{ButtonView, Overlay, StickView};
 use sim::{Buttons, MOVE_BUCKETS, PlayerInput};
 use std::f32::consts::TAU;
 use std::time::{Duration, Instant};
 
-/// Stick travel in points.
-const STICK_RADIUS: f32 = 60.0;
-/// Scheme B: a touch this close to a fixed base grabs it.
-const FIXED_GRAB_RADIUS: f32 = 130.0;
-/// Fixed stick bases sit this far in from the safe-area corner, in points.
-const BASE_INSET: f32 = 100.0;
-const DODGE_RADIUS: f32 = 34.0;
-/// Touches register a little outside the drawn button.
-const DODGE_HIT_RADIUS: f32 = DODGE_RADIUS * 1.3;
-/// Dodge button offset from the right stick base: up and toward the edge, clear of the
-/// stick's travel.
-const DODGE_OFFSET: [f32; 2] = [56.0, -110.0];
-const VENT_RADIUS: f32 = 26.0;
-const VENT_HIT_RADIUS: f32 = VENT_RADIUS * 1.3;
-/// Vent button offset from the right stick base: up and inward, clear of the dodge
-/// button and the stick's travel.
-const VENT_OFFSET: [f32; 2] = [-50.0, -130.0];
 const MOVE_DEADZONE: f32 = 0.1;
 const AIM_DEADZONE: f32 = 0.2;
 /// Scheme F: a drag this far out of the stick's travel fires; short of it, it only aims.
 const FIRE_PUSH: f32 = 0.75;
-/// Claw: the right index finger's fire button, in from the top-right safe corner and clear
-/// of the settings button.
-const CLAW_FIRE_INSET: [f32; 2] = [90.0, 130.0];
-const CLAW_FIRE_RADIUS: f32 = 44.0;
-const CLAW_FIRE_HIT_RADIUS: f32 = CLAW_FIRE_RADIUS * 1.3;
-/// Claw: the left index finger's dodge button, in from the top-left safe corner and below
-/// the HUD.
-const CLAW_DODGE_INSET: [f32; 2] = [90.0, 150.0];
 /// Scheme C: a right-half swipe this far within [`FLICK_TIME`] rolls in its direction.
 const FLICK_DISTANCE: f32 = 45.0;
 const FLICK_TIME: Duration = Duration::from_millis(200);
@@ -73,12 +49,12 @@ pub enum Scheme {
 
 impl Scheme {
     /// The right half fires at the nearest target and flicks dodge (C, E).
-    const fn auto_aim(self) -> bool {
+    pub(crate) const fn auto_aim(self) -> bool {
         matches!(self, Self::AutoAim | Self::FixedAutoAim)
     }
 
     /// Whether `side`'s stick (0 move, 1 aim) is anchored at its base.
-    const fn fixed(self, side: usize) -> bool {
+    pub(crate) const fn fixed(self, side: usize) -> bool {
         match self {
             Self::FixedSticks | Self::FireButton | Self::Claw => true,
             Self::FixedAutoAim => side == 0,
@@ -129,42 +105,12 @@ pub struct GamepadState {
     pub vent: bool,
 }
 
-/// Where the on-screen controls sit for a viewport.
-struct Layout {
-    width: f32,
-    bases: [[f32; 2]; 2],
-    dodge: [f32; 2],
-    vent: [f32; 2],
-    /// Claw's fire and dodge buttons, for the index fingers.
-    claw_fire: [f32; 2],
-    claw_dodge: [f32; 2],
-}
-
-impl Layout {
-    fn new(v: &Viewport) -> Self {
-        let y = v.point_height - v.safe_bottom - BASE_INSET;
-        let right = [v.point_width - v.safe_right - BASE_INSET, y];
-        Self {
-            width: v.point_width,
-            bases: [[v.safe_left + BASE_INSET, y], right],
-            dodge: [right[0] + DODGE_OFFSET[0], right[1] + DODGE_OFFSET[1]],
-            vent: [right[0] + VENT_OFFSET[0], right[1] + VENT_OFFSET[1]],
-            claw_fire: [
-                v.point_width - v.safe_right - CLAW_FIRE_INSET[0],
-                v.safe_top + CLAW_FIRE_INSET[1],
-            ],
-            claw_dodge: [
-                v.safe_left + CLAW_DODGE_INSET[0],
-                v.safe_top + CLAW_DODGE_INSET[1],
-            ],
-        }
-    }
-}
-
 struct Stick {
     id: u64,
     origin: [f32; 2],
     cur: [f32; 2],
+    /// Travel, in points: full deflection.
+    radius: f32,
     /// Fixed sticks keep their base; floating ones drag it along past the radius.
     fixed: bool,
     start: [f32; 2],
@@ -173,11 +119,12 @@ struct Stick {
 }
 
 impl Stick {
-    fn new(id: u64, origin: [f32; 2], p: [f32; 2], fixed: bool) -> Self {
+    fn new(id: u64, origin: [f32; 2], p: [f32; 2], radius: f32, fixed: bool) -> Self {
         Self {
             id,
             origin,
             cur: p,
+            radius,
             fixed,
             start: p,
             started: Instant::now(),
@@ -189,8 +136,8 @@ impl Stick {
         self.cur = p;
         let [dx, dy] = sub(p, self.origin);
         let len = dx.hypot(dy);
-        if !self.fixed && len > STICK_RADIUS {
-            let k = (len - STICK_RADIUS) / len;
+        if !self.fixed && len > self.radius {
+            let k = (len - self.radius) / len;
             self.origin = [dx.mul_add(k, self.origin[0]), dy.mul_add(k, self.origin[1])];
         }
     }
@@ -198,12 +145,12 @@ impl Stick {
     /// Deflection as (angle in turns `0..1` from +x toward +y, magnitude `0..=1`).
     fn polar(&self) -> (f32, f32) {
         let [dx, dy] = sub(self.cur, self.origin);
-        (turns(dx, dy), (dx.hypot(dy) / STICK_RADIUS).min(1.0))
+        (turns(dx, dy), (dx.hypot(dy) / self.radius).min(1.0))
     }
 
     fn knob(&self) -> [f32; 2] {
         let [dx, dy] = sub(self.cur, self.origin);
-        let k = STICK_RADIUS / dx.hypot(dy).max(STICK_RADIUS);
+        let k = self.radius / dx.hypot(dy).max(self.radius);
         [dx.mul_add(k, self.origin[0]), dy.mul_add(k, self.origin[1])]
     }
 }
@@ -233,6 +180,10 @@ pub struct Controls {
     fire_mode: FireMode,
     /// Aim assist for scheme D, `0..=1`.
     assist: f32,
+    viewport: Viewport,
+    /// The player's arrangement for this scheme; `None` is the default layout.
+    custom: Option<ControlLayout>,
+    /// `custom` or the default, resolved on `viewport`.
     layout: Layout,
     sticks: [Option<Stick>; 2],
     dodge: Option<Dodge>,
@@ -255,11 +206,14 @@ pub struct Controls {
 
 impl Controls {
     pub fn new(viewport: &Viewport) -> Self {
+        let scheme = Scheme::default();
         Self {
-            scheme: Scheme::default(),
+            scheme,
             fire_mode: FireMode::default(),
             assist: 0.5,
-            layout: Layout::new(viewport),
+            viewport: *viewport,
+            custom: None,
+            layout: Layout::new(viewport, &default_control_layout(scheme, *viewport)),
             sticks: [None, None],
             dodge: None,
             dodge_touch: None,
@@ -289,7 +243,23 @@ impl Controls {
 
     /// Stick origins belong to the old layout; rotation cancels the touches anyway.
     pub fn set_viewport(&mut self, viewport: &Viewport) {
-        self.layout = Layout::new(viewport);
+        self.viewport = *viewport;
+        self.relayout();
+    }
+
+    /// The player's arrangement from the layout editor; `None` for the default.
+    pub fn set_layout(&mut self, layout: Option<ControlLayout>) {
+        self.custom = layout;
+        self.relayout();
+    }
+
+    /// Resolves the layout after a viewport, scheme or layout change. Held sticks belong
+    /// to the old one.
+    fn relayout(&mut self) {
+        let layout = self
+            .custom
+            .unwrap_or_else(|| default_control_layout(self.scheme, self.viewport));
+        self.layout = Layout::new(&self.viewport, &layout);
         self.sticks = [None, None];
     }
 
@@ -304,9 +274,9 @@ impl Controls {
         self.vent = false;
     }
 
-    pub const fn set_scheme(&mut self, scheme: Scheme) {
+    pub fn set_scheme(&mut self, scheme: Scheme) {
         self.scheme = scheme;
-        self.sticks = [None, None];
+        self.relayout();
     }
 
     pub const fn set_fire_mode(&mut self, mode: FireMode) {
@@ -385,41 +355,47 @@ impl Controls {
         if self.gamepad.is_some() {
             return;
         }
-        if dist(p, self.layout.vent) < VENT_HIT_RADIUS {
+        let hits = |spot: Spot| dist(p, spot.at) < spot.hit;
+        if hits(self.layout.vent) {
             self.vent = true;
             return;
         }
-        if self.scheme == Scheme::Claw && dist(p, self.layout.claw_fire) < CLAW_FIRE_HIT_RADIUS {
+        if self.scheme.uses(ControlKind::Fire) && hits(self.layout.fire) {
             self.fire_touch = Some(id);
             return;
         }
-        if !self.scheme.auto_aim() && dist(p, self.dodge_button()) < DODGE_HIT_RADIUS {
+        if self.scheme.uses(ControlKind::Dodge) && hits(self.layout.dodge) {
             self.dodge_touch = Some((id, p));
             return;
         }
-        let side = usize::from(p[0] >= self.layout.width * 0.5);
-        let (Some(slot), Some(&base)) = (self.sticks.get_mut(side), self.layout.bases.get(side))
+        // A fixed stick grabs touches near its base wherever the layout put it; the
+        // screen halves split the rest.
+        let grabbed = (0..)
+            .zip(self.layout.sticks)
+            .filter(|&(side, spot)| self.scheme.fixed(side) && hits(spot))
+            .min_by(|(_, a), (_, b)| dist(p, a.at).total_cmp(&dist(p, b.at)))
+            .map(|(side, _)| side);
+        let side = grabbed.unwrap_or_else(|| usize::from(p[0] >= self.layout.width * 0.5));
+        let (Some(slot), Some(&base)) = (self.sticks.get_mut(side), self.layout.sticks.get(side))
         else {
             return;
         };
         if slot.is_some() {
             return;
         }
-        if self.scheme.fixed(side) {
-            if dist(p, base) < FIXED_GRAB_RADIUS {
-                // Scheme F's fire button measures a drag from where the thumb landed, so
-                // an off-center press still auto-aims.
-                let origin = if self.scheme == Scheme::FireButton && side == 1 {
-                    p
-                } else {
-                    base
-                };
-                let mut stick = Stick::new(id, origin, p, true);
-                stick.drag(p);
-                *slot = Some(stick);
-            }
-        } else {
-            *slot = Some(Stick::new(id, p, p, false));
+        if grabbed.is_some() {
+            // Scheme F's fire button measures a drag from where the thumb landed, so an
+            // off-center press still auto-aims.
+            let origin = if self.scheme == Scheme::FireButton && side == 1 {
+                p
+            } else {
+                base.at
+            };
+            let mut stick = Stick::new(id, origin, p, base.radius, true);
+            stick.drag(p);
+            *slot = Some(stick);
+        } else if !self.scheme.fixed(side) {
+            *slot = Some(Stick::new(id, p, p, base.radius, false));
         }
         if side == 1
             && self.fire_mode == FireMode::Tap
@@ -432,15 +408,6 @@ impl Controls {
                 Shot::At(turns(dx, dy))
             });
             self.shot = self.aimed_shot(right).or(toward_touch);
-        }
-    }
-
-    /// Where the dodge button sits: under the right thumb, or top-left for the claw.
-    fn dodge_button(&self) -> [f32; 2] {
-        if self.scheme == Scheme::Claw {
-            self.layout.claw_dodge
-        } else {
-            self.layout.dodge
         }
     }
 
@@ -580,44 +547,41 @@ impl Controls {
         if self.gamepad.is_some() {
             return overlay;
         }
-        for (side, ((view, stick), &base)) in overlay
+        for (side, ((view, stick), spot)) in overlay
             .sticks
             .iter_mut()
             .zip(&self.sticks)
-            .zip(&self.layout.bases)
+            .zip(&self.layout.sticks)
             .enumerate()
         {
             *view = match stick {
                 Some(s) => Some(StickView {
                     base: s.origin,
-                    radius: STICK_RADIUS,
+                    radius: s.radius,
                     knob: s.knob(),
+                    knob_radius: spot.knob_radius(),
                     active: true,
                 }),
                 None if self.scheme.fixed(side) => Some(StickView {
-                    base,
-                    radius: STICK_RADIUS,
-                    knob: base,
+                    base: spot.at,
+                    radius: spot.radius,
+                    knob: spot.at,
+                    knob_radius: spot.knob_radius(),
                     active: false,
                 }),
                 None => None,
             };
         }
-        overlay.dodge = (!self.scheme.auto_aim()).then_some(ButtonView {
-            center: self.dodge_button(),
-            radius: DODGE_RADIUS,
-            ready: roll_ready,
-        });
-        overlay.fire = (self.scheme == Scheme::Claw).then_some(ButtonView {
-            center: self.layout.claw_fire,
-            radius: CLAW_FIRE_RADIUS,
-            ready: true,
-        });
-        overlay.vent = Some(ButtonView {
-            center: self.layout.vent,
-            radius: VENT_RADIUS,
-            ready: vent_ready,
-        });
+        let button = |kind, spot: Spot, ready| {
+            self.scheme.uses(kind).then_some(ButtonView {
+                center: spot.at,
+                radius: spot.radius,
+                ready,
+            })
+        };
+        overlay.dodge = button(ControlKind::Dodge, self.layout.dodge, roll_ready);
+        overlay.fire = button(ControlKind::Fire, self.layout.fire, true);
+        overlay.vent = button(ControlKind::Vent, self.layout.vent, vent_ready);
         overlay
     }
 }
@@ -665,6 +629,7 @@ fn quantize(x: f32, max: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{ControlPlacement, STICK_RADIUS, place_controls};
 
     fn controls(scheme: Scheme) -> Controls {
         let mut c = Controls::new(&Viewport {
@@ -682,7 +647,7 @@ mod tests {
     #[test]
     fn a_dodge_button_tap_sends_one_dodge_on_release() {
         let mut c = controls(Scheme::FixedSticks);
-        let [x, y] = c.layout.dodge;
+        let [x, y] = c.layout.dodge.at;
         c.touch(1, TouchPhase::Began, x, y);
         assert!(!c.next_input().buttons.contains(Buttons::DODGE));
         c.touch(1, TouchPhase::Ended, x, y);
@@ -693,7 +658,7 @@ mod tests {
     #[test]
     fn a_swipe_off_the_dodge_button_rolls_that_way_at_once() {
         let mut c = controls(Scheme::FireButton);
-        let [x, y] = c.layout.dodge;
+        let [x, y] = c.layout.dodge.at;
         c.touch(1, TouchPhase::Began, x, y);
         c.touch(1, TouchPhase::Moved, x, y - 30.0); // straight up
         let input = c.next_input();
@@ -707,7 +672,7 @@ mod tests {
     fn vent_button_sends_one_vent_in_every_scheme() {
         for scheme in [Scheme::FixedSticks, Scheme::AutoAim] {
             let mut c = controls(scheme);
-            let [x, y] = c.layout.vent;
+            let [x, y] = c.layout.vent.at;
             c.touch(1, TouchPhase::Began, x, y);
             let input = c.next_input();
             assert!(input.buttons.contains(Buttons::VENT), "{scheme:?}");
@@ -730,7 +695,7 @@ mod tests {
     #[test]
     fn fixed_sticks_only_grab_near_their_base() {
         let mut c = controls(Scheme::FixedSticks);
-        let [x, y] = c.layout.bases[0];
+        let [x, y] = c.layout.sticks[0].at;
         c.touch(1, TouchPhase::Began, x, 20.0); // far above the left base
         c.touch(2, TouchPhase::Began, x + STICK_RADIUS, y); // full right
         let input = c.next_input();
@@ -750,7 +715,7 @@ mod tests {
     #[test]
     fn hold_fires_every_tick_the_aim_stick_is_deflected() {
         let mut c = controls(Scheme::FixedSticks);
-        let [x, y] = c.layout.bases[1];
+        let [x, y] = c.layout.sticks[1].at;
         c.touch(1, TouchPhase::Began, x, y + STICK_RADIUS); // straight down
         assert_eq!(fired(c.next_input()), Some(16384));
         assert_eq!(fired(c.next_input()), Some(16384));
@@ -763,7 +728,7 @@ mod tests {
         // Fixed stick: the touch's offset from the base is the aim.
         let mut c = controls(Scheme::FixedSticks);
         c.set_fire_mode(FireMode::Tap);
-        let [x, y] = c.layout.bases[1];
+        let [x, y] = c.layout.sticks[1].at;
         c.touch(1, TouchPhase::Began, x - STICK_RADIUS, y); // straight left
         assert_eq!(fired(c.next_input()), Some(32768));
         c.touch(1, TouchPhase::Moved, x, y + STICK_RADIUS);
@@ -842,7 +807,7 @@ mod tests {
     #[test]
     fn scheme_f_auto_fires_held_still_aims_dragged_and_fires_pushed_out() {
         let mut c = controls(Scheme::FireButton);
-        let [x, y] = c.layout.bases[1];
+        let [x, y] = c.layout.sticks[1].at;
         c.touch(1, TouchPhase::Began, x, y);
         let input = c.next_input();
         assert!(input.buttons.contains(Buttons::FIRE | Buttons::AUTO_AIM));
@@ -912,11 +877,11 @@ mod tests {
     #[test]
     fn gamepad_replaces_the_touch_controls_while_connected() {
         let mut c = controls(Scheme::FixedSticks);
-        let [x, y] = c.layout.bases[0];
+        let [x, y] = c.layout.sticks[0].at;
         c.touch(1, TouchPhase::Began, x + STICK_RADIUS, y); // held full right
         c.set_gamepad(Some(GamepadState::default()));
         assert_eq!(c.next_input().move_mag, 0, "connecting drops held sticks");
-        let [dx, dy] = c.layout.dodge;
+        let [dx, dy] = c.layout.dodge.at;
         c.touch(2, TouchPhase::Began, dx, dy);
         assert!(!c.next_input().buttons.contains(Buttons::DODGE));
         let overlay = c.overlay(true, true);
@@ -928,10 +893,10 @@ mod tests {
     #[test]
     fn the_claw_aims_with_the_thumb_and_fires_with_the_index_finger() {
         let mut c = controls(Scheme::Claw);
-        let [x, y] = c.layout.bases[1];
+        let [x, y] = c.layout.sticks[1].at;
         c.touch(1, TouchPhase::Began, x, y + STICK_RADIUS); // thumb aims down
         assert_eq!(aimed(c.next_input()), (None, Some(1 << 14)), "aims only");
-        let [fx, fy] = c.layout.claw_fire;
+        let [fx, fy] = c.layout.fire.at;
         c.touch(2, TouchPhase::Began, fx, fy);
         assert_eq!(fired(c.next_input()), Some(1 << 14));
         c.touch(1, TouchPhase::Ended, x, y + STICK_RADIUS);
@@ -947,12 +912,86 @@ mod tests {
     #[test]
     fn scheme_e_anchors_only_the_move_stick() {
         let mut c = controls(Scheme::FixedAutoAim);
-        let [x, y] = c.layout.bases[0];
+        let [x, y] = c.layout.sticks[0].at;
         c.touch(1, TouchPhase::Began, x, 20.0); // far above the left base: ignored
         c.touch(2, TouchPhase::Began, x + STICK_RADIUS, y); // full right from the base
         let input = c.next_input();
         assert_eq!((input.move_dir, input.move_mag), (0, 255));
         let overlay = c.overlay(true, true);
         assert!(overlay.sticks[1].is_none(), "the fire side floats");
+    }
+
+    #[test]
+    fn the_default_layout_keeps_the_built_in_positions() {
+        use ControlKind::{AimStick, Dodge, Fire, MoveStick, Vent};
+        // Where the controls sat before layouts, on the test viewport.
+        let close = |a: Spot, at: [f32; 2], radius: f32| {
+            assert!(dist(a.at, at) < 1e-3, "{a:?} vs {at:?}");
+            assert!((a.radius - radius).abs() < 1e-3, "{a:?} vs {radius}");
+        };
+        let c = controls(Scheme::FireButton);
+        close(c.layout.sticks[0], [159.0, 272.0], 60.0);
+        close(c.layout.sticks[1], [693.0, 272.0], 60.0);
+        close(c.layout.dodge, [749.0, 162.0], 34.0);
+        close(c.layout.vent, [643.0, 142.0], 26.0);
+        let c = controls(Scheme::Claw);
+        close(c.layout.dodge, [149.0, 150.0], 34.0);
+        close(c.layout.fire, [703.0, 130.0], 44.0);
+        let kinds = |scheme| {
+            let layout = default_control_layout(scheme, c.viewport);
+            place_controls(scheme, layout, c.viewport)
+                .iter()
+                .map(|p| p.kind)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            kinds(Scheme::Claw),
+            [MoveStick, AimStick, Dodge, Vent, Fire]
+        );
+        assert_eq!(kinds(Scheme::FixedAutoAim), [MoveStick, Vent]);
+    }
+
+    #[test]
+    fn a_custom_layout_moves_and_resizes_the_touch_targets() {
+        let mut c = controls(Scheme::FixedSticks);
+        let old_dodge = c.layout.dodge.at;
+        let mut layout = default_control_layout(Scheme::FixedSticks, c.viewport);
+        // Dodge doubled in the middle of the safe area; the move stick on the right half.
+        layout.dodge = ControlPlacement {
+            x: 0.5,
+            y: 0.5,
+            size: 2.0,
+        };
+        layout.move_stick.x = 0.6;
+        c.set_layout(Some(layout));
+
+        c.touch(1, TouchPhase::Began, old_dodge[0], old_dodge[1]);
+        c.touch(1, TouchPhase::Ended, old_dodge[0], old_dodge[1]);
+        assert!(
+            !c.next_input().buttons.contains(Buttons::DODGE),
+            "moved away"
+        );
+        // 80 pt off center: outside the default button's reach, inside the doubled one.
+        let [x, y] = c.layout.dodge.at;
+        assert!(dist([x, y], [426.0, 186.0]) < 1e-3);
+        c.touch(2, TouchPhase::Began, x + 80.0, y);
+        c.touch(2, TouchPhase::Ended, x + 80.0, y);
+        assert!(c.next_input().buttons.contains(Buttons::DODGE));
+
+        let [x, y] = c.layout.sticks[0].at;
+        assert!(x > c.layout.width * 0.5);
+        c.touch(3, TouchPhase::Began, x + STICK_RADIUS, y);
+        let input = c.next_input();
+        assert_eq!(
+            (input.move_dir, input.move_mag),
+            (0, 255),
+            "the right half's touch grabs the moved stick"
+        );
+
+        c.set_layout(None);
+        assert!(
+            dist(c.layout.dodge.at, old_dodge) < 1e-3,
+            "back to the default"
+        );
     }
 }

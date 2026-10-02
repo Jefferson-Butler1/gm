@@ -8,6 +8,7 @@ mod audio;
 mod camera;
 mod controls;
 mod haptics;
+mod layout;
 mod settings;
 mod stats;
 
@@ -15,6 +16,7 @@ use audio::{Audio, Mood, Sound};
 use camera::{CameraLook, CameraSettings};
 use controls::{Controls, FireMode, GamepadState, Scheme, Viewport};
 use haptics::{Haptic, Haptics};
+use layout::ControlLayout;
 use render::Renderer;
 use settings::RunSettings;
 use sim::{Run, SimState, TICK_HZ, TickInputs};
@@ -221,6 +223,13 @@ impl Game {
     pub fn set_scheme(&self, scheme: Scheme) {
         eprintln!("[gm] scheme={scheme:?}");
         self.lock().controls.set_scheme(scheme);
+    }
+
+    /// Where the touch controls sit, from the layout editor; `None` for the scheme's
+    /// default. Applies live (the editor previews every drag, so no log here); Swift
+    /// sends it after each scheme change.
+    pub fn set_layout(&self, layout: Option<ControlLayout>) {
+        self.lock().controls.set_layout(layout);
     }
 
     /// The connected game controller, polled by Swift every frame; `None` without one.
