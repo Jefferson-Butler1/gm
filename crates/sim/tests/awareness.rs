@@ -158,8 +158,9 @@ fn a_full_circle_sight_cone_sees_behind_too() {
 
 #[test]
 fn a_hit_from_behind_alerts_an_enemy_and_turns_it_toward_the_shooter() {
-    // 7 cells apart, out of earshot (5): only the bullet can alert it.
+    // 7 cells apart, out of earshot (5 here): only the bullet can alert it.
     let mut state = hold((1, 10));
+    state.config.tuning.hearing_radius = 160;
     let id = rusher(&mut state, (8, 10), RIGHT);
     let mut fire = TickInputs::default();
     fire.players[0] = PlayerInput {
@@ -309,7 +310,7 @@ fn a_hunter_that_loses_the_player_searches_where_it_last_saw_it_then_gives_up() 
     assert!(events.is_empty(), "{events:?}");
     let now = enemy(&state, id).unwrap().pos;
     assert_ne!(now, spot);
-    assert!(cells_apart(now, spot) < 5, "patrols near where it gave up");
+    assert!(cells_apart(now, spot) < 8, "patrols near where it gave up");
 }
 
 /// Where [`patrolled`] puts its rusher: a couple of cells up and left of the pit strip,

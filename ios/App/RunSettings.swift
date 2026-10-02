@@ -3,7 +3,9 @@ import SwiftUI
 /// Persists the run settings (difficulty + tuning, issue #15) in UserDefaults. Rust owns the
 /// defaults (`defaultRunSettings()`); only values that were saved override them.
 enum RunSettingsStore {
-    private static let key = "run.settings"
+    /// v2: the awareness tuning pass changed the defaults; v1 saved every value, which would
+    /// pin the old ones.
+    private static let key = "run.settings.v2"
 
     static let difficulties: [(value: Difficulty, key: String, label: String)] = [
         (.easy, "easy", "Easy"),
