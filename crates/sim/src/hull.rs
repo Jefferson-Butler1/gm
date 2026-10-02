@@ -19,6 +19,7 @@
 //! sweep in the tests.
 
 use crate::pool::POOL;
+use crate::rng::Rng;
 use crate::room::{Category, Dir, PrototypeRoom, Size, Theme, nth};
 
 /// Where along the ship a slot is. Position gives function (issue #31).
@@ -620,3 +621,173 @@ pub const CORVETTE: Template = Template {
     ],
 }
 .valid();
+
+/// The Freighter (issue #27): long and cargo-heavy. Three holds bulkhead the keel, so
+/// you fight through each in turn: aft hold `H`, midship hold `G` and fore hold `K`.
+///
+/// Engineering `E` at the stern has the aft airlock `X` beyond it, the crawlspace `C`
+/// behind an access panel above it, and the stores `R` below. The port `A` and
+/// starboard `Z` airlocks open off the midship hold. Optional side compartments hang off
+/// the aft hold (`P`, `S`) and the fore hold (`T`). The bridge `B` is past the fore hold.
+pub const FREIGHTER: Template = Template {
+    name: "freighter",
+    rows: &[
+        "                                        PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC           PPPPPPPPPPPP              AAAAAAAAAAAA              TTTTTTTTTTTT                                ",
+        "                 CCCCCCCCCCCC               #==#                      #==#                      #==#                                    ",
+        "                     #==#                   #==#                      #==#                      #==#                                    ",
+        "                     #==#         HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "              EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX##EEEEEEEEEEEEEEEEEE##HHHHHHHHHHHHHHHHHHHHHHHH##GGGGGGGGGGGGGGGGGGGGGGGG##KKKKKKKKKKKKKKKKKKKKKKKK##BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX==EEEEEEEEEEEEEEEEEE==HHHHHHHHHHHHHHHHHHHHHHHH==GGGGGGGGGGGGGGGGGGGGGGGG==KKKKKKKKKKKKKKKKKKKKKKKK==BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX==EEEEEEEEEEEEEEEEEE==HHHHHHHHHHHHHHHHHHHHHHHH==GGGGGGGGGGGGGGGGGGGGGGGG==KKKKKKKKKKKKKKKKKKKKKKKK==BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX##EEEEEEEEEEEEEEEEEE##HHHHHHHHHHHHHHHHHHHHHHHH##GGGGGGGGGGGGGGGGGGGGGGGG##KKKKKKKKKKKKKKKKKKKKKKKK##BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "              EEEEEEEEEEEEEEEEEE  HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                     #==#         HHHHHHHHHHHHHHHHHHHHHHHH  GGGGGGGGGGGGGGGGGGGGGGGG  KKKKKKKKKKKKKKKKKKKKKKKK  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                     #==#                   #==#                      #==#                                                              ",
+        "                 RRRRRRRRRRRR               #==#                      #==#                                                              ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                 RRRRRRRRRRRR           SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+        "                                        SSSSSSSSSSSS              ZZZZZZZZZZZZ                                                          ",
+    ],
+    slots: &[
+        airlock(slot(b'A', Size::S, Zone::Hull, &[Dir::South]), Dir::North),
+        airlock(slot(b'Z', Size::S, Zone::Hull, &[Dir::North]), Dir::South),
+        airlock(slot(b'X', Size::S, Zone::Hull, &[Dir::East]), Dir::West),
+        slot(
+            b'E',
+            Size::M,
+            Zone::Aft,
+            &[Dir::North, Dir::East, Dir::South, Dir::West],
+        ),
+        slot(
+            b'H',
+            Size::L,
+            Zone::Mid,
+            &[Dir::North, Dir::East, Dir::South, Dir::West],
+        ),
+        slot(
+            b'G',
+            Size::L,
+            Zone::Mid,
+            &[Dir::North, Dir::East, Dir::South, Dir::West],
+        ),
+        slot(b'K', Size::L, Zone::Mid, &[Dir::North, Dir::East, Dir::West]),
+        slot(b'B', Size::L, Zone::Fore, &[Dir::West]),
+        optional(slot(b'P', Size::S, Zone::Mid, &[Dir::South])),
+        optional(slot(b'S', Size::S, Zone::Mid, &[Dir::North])),
+        optional(slot(b'T', Size::S, Zone::Mid, &[Dir::South])),
+        slot(b'C', Size::S, Zone::Crawlspace, &[Dir::South]),
+        slot(b'R', Size::S, Zone::Stores, &[Dir::North]),
+    ],
+}
+.valid();
+
+/// The Gunship (issue #27): short and dense.
+///
+/// From engineering `E` at the stern, one keel
+/// runs fore past four small compartments packed along it: the port airlock `A`, the
+/// starboard airlock `Z`, and two crew or cargo rooms, `S` and the optional `P`. Then
+/// comes the war room `W`, which bulkheads the way to the bridge `B`. As on the Corvette,
+/// the aft airlock `X` is past engineering, with the crawlspace `C` (behind an access
+/// panel) above it and the stores `R` below.
+pub const GUNSHIP: Template = Template {
+    name: "gunship",
+    rows: &[
+        "                 CCCCCCCCCCCC                                                                            ",
+        "                 CCCCCCCCCCCC                                                                            ",
+        "                 CCCCCCCCCCCC                                                                            ",
+        "                 CCCCCCCCCCCC                                                                            ",
+        "                 CCCCCCCCCCCC                                                                            ",
+        "                 CCCCCCCCCCCC                                                                            ",
+        "                 CCCCCCCCCCCC                                                                            ",
+        "                 CCCCCCCCCCCC     AAAAAAAAAAAA PPPPPPPPPPPP                                              ",
+        "                 CCCCCCCCCCCC     AAAAAAAAAAAA PPPPPPPPPPPP                                              ",
+        "                 CCCCCCCCCCCC     AAAAAAAAAAAA PPPPPPPPPPPP                                              ",
+        "                     #==#         AAAAAAAAAAAA PPPPPPPPPPPP                                              ",
+        "                     #==#         AAAAAAAAAAAA PPPPPPPPPPPP                      BBBBBBBBBBBBBBBBBBBBBBBB",
+        "              EEEEEEEEEEEEEEEEEE  AAAAAAAAAAAA PPPPPPPPPPPP  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  AAAAAAAAAAAA PPPPPPPPPPPP  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  AAAAAAAAAAAA PPPPPPPPPPPP  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  AAAAAAAAAAAA PPPPPPPPPPPP  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX##EEEEEEEEEEEEEEEEEE##AAAAAAAAAAAA#PPPPPPPPPPPP##WWWWWWWWWWWWWWWWWW##BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX==EEEEEEEEEEEEEEEEEE=============================WWWWWWWWWWWWWWWWWW==BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX==EEEEEEEEEEEEEEEEEE=============================WWWWWWWWWWWWWWWWWW==BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX##EEEEEEEEEEEEEEEEEE##SSSSSSSSSSSS#ZZZZZZZZZZZZ##WWWWWWWWWWWWWWWWWW##BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  SSSSSSSSSSSS ZZZZZZZZZZZZ  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  SSSSSSSSSSSS ZZZZZZZZZZZZ  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "XXXXXXXXXXXX  EEEEEEEEEEEEEEEEEE  SSSSSSSSSSSS ZZZZZZZZZZZZ  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "              EEEEEEEEEEEEEEEEEE  SSSSSSSSSSSS ZZZZZZZZZZZZ  WWWWWWWWWWWWWWWWWW  BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                     #==#         SSSSSSSSSSSS ZZZZZZZZZZZZ                      BBBBBBBBBBBBBBBBBBBBBBBB",
+        "                     #==#         SSSSSSSSSSSS ZZZZZZZZZZZZ                                              ",
+        "                 RRRRRRRRRRRR     SSSSSSSSSSSS ZZZZZZZZZZZZ                                              ",
+        "                 RRRRRRRRRRRR     SSSSSSSSSSSS ZZZZZZZZZZZZ                                              ",
+        "                 RRRRRRRRRRRR     SSSSSSSSSSSS ZZZZZZZZZZZZ                                              ",
+        "                 RRRRRRRRRRRR                                                                            ",
+        "                 RRRRRRRRRRRR                                                                            ",
+        "                 RRRRRRRRRRRR                                                                            ",
+        "                 RRRRRRRRRRRR                                                                            ",
+        "                 RRRRRRRRRRRR                                                                            ",
+        "                 RRRRRRRRRRRR                                                                            ",
+        "                 RRRRRRRRRRRR                                                                            ",
+    ],
+    slots: &[
+        airlock(slot(b'A', Size::S, Zone::Hull, &[Dir::South]), Dir::North),
+        airlock(slot(b'Z', Size::S, Zone::Hull, &[Dir::North]), Dir::South),
+        airlock(slot(b'X', Size::S, Zone::Hull, &[Dir::East]), Dir::West),
+        slot(
+            b'E',
+            Size::M,
+            Zone::Aft,
+            &[Dir::North, Dir::East, Dir::South, Dir::West],
+        ),
+        slot(b'S', Size::S, Zone::Mid, &[Dir::North]),
+        optional(slot(b'P', Size::S, Zone::Mid, &[Dir::South])),
+        slot(b'W', Size::M, Zone::Fore, &[Dir::East, Dir::West]),
+        slot(b'B', Size::L, Zone::Fore, &[Dir::West]),
+        slot(b'C', Size::S, Zone::Crawlspace, &[Dir::South]),
+        slot(b'R', Size::S, Zone::Stores, &[Dir::North]),
+    ],
+}
+.valid();
+
+/// Every ship class. A run's comes from its seed: see [`Template::for_seed`].
+pub const CLASSES: &[Template] = &[CORVETTE, FREIGHTER, GUNSHIP];
+
+/// Salts the run seed for the class draw, so it isn't the run RNG's own stream.
+const CLASS_STREAM: u64 = 0x5419_F100_2A3D_0002;
+
+impl Template {
+    /// The ship class a run on `seed` boards: one of [`CLASSES`], drawn from the seed
+    /// alone so a peer picks the same one.
+    #[must_use]
+    pub fn for_seed(seed: u64) -> &'static Self {
+        let count = u32::try_from(CLASSES.len()).unwrap_or(1);
+        let pick = Rng::from_seed(seed ^ CLASS_STREAM).below(count);
+        usize::try_from(pick)
+            .ok()
+            .and_then(|i| CLASSES.get(i))
+            .unwrap_or(&CORVETTE)
+    }
+}

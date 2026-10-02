@@ -13,7 +13,7 @@ use sim::{
     PlayerInput, RoomId, Run, RunConfig, SimState, TickInputs, Tuning, step,
 };
 
-const SEED: u64 = 4;
+const SEED: u64 = 3229;
 const CARGO_HOLD: RoomId = RoomId(4);
 /// The hold's cell (0, 0) is this floor cell.
 const HOLD_AT: (usize, usize) = (46, 13);
