@@ -7,3 +7,4 @@
   roll), and a table row with the file, source URL, author, and license (the roll skips
   tables). Keep the format: `#` title, `##` sections, `-` lines.
 - Issue tracker conventions: `docs/agents/issue-tracker.md`.
+- **Devlog:** when Jeff asks for a devlog entry, follow `docs/agents/devlog.md`.
