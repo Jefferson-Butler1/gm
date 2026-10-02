@@ -30,7 +30,7 @@ const AUTO_FIGHT: Range<u64> = 1355..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xe038_d8fa_543d_4593;
+const GOLDEN_TRACE: u64 = 0xbb82_dc52_360a_bff6;
 
 /// A reproducible input script for two players: scripted restarts, walks into the cargo
 /// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
@@ -185,7 +185,8 @@ fn snapshots_share_the_ship_and_checksum_the_live_hatches() {
 /// Guards the script's purpose: the golden trace must cover walking, rolling (dropped
 /// mid-roll dodges, a hit on a vulnerable landing), falling into a pit, shooting, venting
 /// (auto and manual, and the refills), kills, opening a hatch into a sealed encounter
-/// with a second wave, shooters firing, player deaths and restarts.
+/// with a second wave, shooters firing, Scrap dropped and collected (so rollback covers
+/// pickups), player deaths and restarts.
 #[test]
 fn script_exercises_movement_dodge_combat_and_rooms() {
     let mut state = start();
@@ -239,11 +240,12 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     let entries = count(|e| matches!(e, Event::HatchOpened { .. }));
     let waves = count(|e| matches!(e, Event::WaveStarted { .. }));
     let cleared = count(|e| matches!(e, Event::RoomCleared { .. }));
+    let collected = count(|e| matches!(e, Event::ScrapCollected { .. }));
     println!(
         "rolls={rolls} dropped_dodges={dropped_dodges} landing_hits={landing_hits} \
          shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
          entries={entries} waves={waves} cleared={cleared} sealed={sealed} \
-         enemy_shots={enemy_shots} falls={falls}"
+         enemy_shots={enemy_shots} falls={falls} collected={collected}"
     );
     println!("auto_vents={auto_vents} manual_vents={manual_vents} refills={refills}");
     assert!(
@@ -268,4 +270,6 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     assert!(enemy_shots >= 2, "enemy_shots={enemy_shots}");
     // Rolls landing in the cargo hold's pit: falls, respawns, and a fatal fall.
     assert!(falls >= 2, "falls={falls}");
+    // Kills drop Scrap, collected (magnetized on the clear, or walked over).
+    assert!(collected >= 1, "collected={collected}");
 }

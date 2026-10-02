@@ -229,6 +229,10 @@ struct ContentView: View {
                                 .foregroundStyle(.orange)
                         }
                     }
+                    // The party's Scrap.
+                    Label("\(hud.scrap)", systemImage: "diamond.fill")
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange)
                     // Room, and the wave while a fight is on.
                     Text(hud.wave > 0 ? "\(hud.room.capitalized) · wave \(hud.wave)/\(hud.waves)" : hud.room.capitalized)
                         .font(.system(size: 13, weight: .semibold))

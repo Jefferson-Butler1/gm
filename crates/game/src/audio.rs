@@ -77,10 +77,11 @@ impl Audio {
                 Event::WaveStarted { .. } => Sound::WaveStarted,
                 Event::RoomCleared { .. } => Sound::RoomCleared,
                 Event::Won => Sound::Won,
-                // No chest sound until the items map brings the reward.
-                Event::Restarted | Event::EnemyInvestigating { .. } | Event::ChestOpened { .. } => {
-                    continue;
-                }
+                // No chest sound until the items map brings the reward; no pickup sound yet.
+                Event::Restarted
+                | Event::EnemyInvestigating { .. }
+                | Event::ChestOpened { .. }
+                | Event::ScrapCollected { .. } => continue,
             };
             self.add(sound);
         }

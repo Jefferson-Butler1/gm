@@ -7,6 +7,8 @@ use std::marker::PhantomData;
 
 /// Handle to a value in an [`Arena<T>`]. Stale once the value is removed: the slot's
 /// generation moves on, so a reused slot never answers to an old ID.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct Id<T> {
     index: usize,
     generation: u32,
@@ -26,6 +28,11 @@ impl<T> PartialEq for Id<T> {
     }
 }
 impl<T> Eq for Id<T> {}
+impl<T> std::hash::Hash for Id<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.index, self.generation).hash(state);
+    }
+}
 impl<T> std::fmt::Debug for Id<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Id({}v{})", self.index, self.generation)
@@ -86,6 +93,14 @@ impl<T> Arena<T> {
             .get(id.index)
             .filter(|s| s.generation == id.generation)
             .and_then(|s| s.value.as_ref())
+    }
+
+    #[must_use]
+    pub fn get_mut(&mut self, id: Id<T>) -> Option<&mut T> {
+        self.slots
+            .get_mut(id.index)
+            .filter(|s| s.generation == id.generation)
+            .and_then(|s| s.value.as_mut())
     }
 
     /// Live values in slot order.

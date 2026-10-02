@@ -71,6 +71,8 @@ pub struct HudData {
     /// the vent (0 when not venting).
     pub venting: bool,
     pub vent_progress: f32,
+    /// The party's Scrap.
+    pub scrap: u32,
     /// This frame's sounds, each at most once. Per frame: play them whether or not `seq`
     /// changed.
     pub sounds: Vec<Sound>,
