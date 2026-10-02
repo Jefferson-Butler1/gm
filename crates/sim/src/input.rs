@@ -29,7 +29,8 @@ impl Buttons {
     pub const DODGE: Self = Self(1 << 1);
     pub const INTERACT: Self = Self(1 << 2);
     pub const RESTART: Self = Self(1 << 3);
-    /// With `FIRE`: aim at the nearest target instead of along `aim`.
+    /// With `FIRE`: aim at the nearest target in line of fire (else the nearest at all)
+    /// instead of along `aim`.
     pub const AUTO_AIM: Self = Self(1 << 4);
     /// Vent the phase pistol now, refilling every charge (see `PhasePistol`).
     pub const VENT: Self = Self(1 << 5);

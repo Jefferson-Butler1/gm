@@ -82,7 +82,7 @@ const fn then(placements: &'static [Placement]) -> Reinforcement {
     }
 }
 
-/// Empty: the party boards here. Its pit is the first one you meet.
+/// Empty: the party boards here.
 const AIRLOCK: PrototypeRoom = PrototypeRoom {
     name: "airlock",
     category: Category::Entrance,
@@ -91,7 +91,7 @@ const AIRLOCK: PrototypeRoom = PrototypeRoom {
         "#####..#####",
         "#..........#",
         "#..........#",
-        "#..oo......#",
+        "#..........#",
         "............",
         "............",
         "#..........#",

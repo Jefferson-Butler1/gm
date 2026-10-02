@@ -31,8 +31,8 @@ pub struct CameraSettings {
     /// How far the view shifts down so the player sits above center, pt: the thumbs on
     /// the bottom-corner controls hide less of what's below. Added to any look.
     pub thumb_clearance: f32,
-    /// Tilt peek: tipping the phone leans the view, pt per g of tilt; 0 is off. Raise an
-    /// edge to look toward it.
+    /// Tilt peek: tipping the phone leans the view, pt per radian of tilt; 0 is off. Dip
+    /// an edge to look toward it, like rolling a marble that way.
     /// Only quick tilts count: the rest pose re-centers over [`TILT_REST_SECS`], so a
     /// grip that settles doesn't hold the view off. Added to any look.
     pub tilt_peek: f32,
@@ -59,7 +59,8 @@ pub struct CameraLook {
     offset: [f32; 2],
     /// Display time of the last update, for frame-rate-independent easing.
     last: Option<f64>,
-    /// Gravity in screen axes (+x right, +y down), in g, while tilt peek runs.
+    /// The phone's [roll, pitch] in radians while tilt peek runs: roll rises as the right
+    /// edge dips, pitch as the bottom edge does.
     tilt: Option<[f32; 2]>,
     /// The tilt peek's rest pose: `tilt`, slowly followed.
     rest: Option<[f32; 2]>,
@@ -80,9 +81,9 @@ impl CameraLook {
         self.settings = settings;
     }
 
-    /// This frame's gravity in screen axes, or `None` with tilt peek off.
-    pub const fn set_tilt(&mut self, gravity: Option<[f32; 2]>) {
-        self.tilt = gravity;
+    /// This frame's [roll, pitch], or `None` with tilt peek off.
+    pub const fn set_tilt(&mut self, angles: Option<[f32; 2]>) {
+        self.tilt = angles;
     }
 
     /// Eases the lean toward this frame's target and returns it. `facing` is the player's
@@ -134,18 +135,18 @@ impl CameraLook {
         self.offset
     }
 
-    /// The tilt peek, pt: how far gravity has swung from the rest pose, which then eases
-    /// after it.
+    /// The tilt peek, pt: how far the phone has tipped from the rest pose, which then
+    /// eases after it.
     fn peek(&mut self, dt: f32) -> [f32; 2] {
         let Some(tilt) = self.tilt.filter(|_| self.settings.tilt_peek > 0.0) else {
             self.rest = None;
             return [0.0, 0.0];
         };
         let rest = self.rest.get_or_insert(tilt);
-        // Raising an edge (gravity swinging away from it) looks toward it.
+        // Dipping an edge looks toward it.
         let peek = [
-            (rest[0] - tilt[0]) * self.settings.tilt_peek,
-            (rest[1] - tilt[1]) * self.settings.tilt_peek,
+            (tilt[0] - rest[0]) * self.settings.tilt_peek,
+            (tilt[1] - rest[1]) * self.settings.tilt_peek,
         ];
         let k = 1.0 - (-dt / TILT_REST_SECS).exp();
         for (r, t) in rest.iter_mut().zip(tilt) {
@@ -169,10 +170,10 @@ mod tests {
             tilt_peek: 400.0,
             ..default_camera_settings()
         });
-        camera.set_tilt(Some([0.0, 0.5]));
+        camera.set_tilt(Some([0.0, 0.8]));
         let [x, y] = camera.update(0.0, None, 0.0, None);
         assert!(x.abs() < 0.01 && y.abs() < 0.01, "the rest pose");
-        camera.set_tilt(Some([-0.1, 0.5])); // right edge raised
+        camera.set_tilt(Some([0.1, 0.8])); // right edge dipped
         let [x, _] = camera.update(0.01, None, 0.0, None);
         assert!((x - 40.0).abs() < 1.0, "{x}");
         // Held for 10 s of 60 Hz frames.

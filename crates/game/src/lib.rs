@@ -52,7 +52,7 @@ pub struct HudData {
     /// Whole `frame()` call: sim steps, render and drawable acquire.
     pub rust_ms_avg: f64,
     pub tick: u64,
-    /// Slot 0's HP.
+    /// Slot 0's HP, in half hearts.
     pub hp: u8,
     pub max_hp: u8,
     pub run: RunState,
@@ -274,11 +274,11 @@ impl Game {
         self.lock().current.set_config(settings.run_config());
     }
 
-    /// Tilt peek: gravity in screen axes (+x right, +y down), in g, polled each frame;
-    /// `None` while the peek is off.
-    pub fn set_tilt(&self, gravity: Option<Vec<f32>>) {
-        let gravity = gravity.and_then(|g| Some([*g.first()?, *g.get(1)?]));
-        self.lock().look.set_tilt(gravity);
+    /// Tilt peek: the phone's [roll, pitch] in radians (see `CameraLook::set_tilt`),
+    /// polled each frame; `None` while the peek is off.
+    pub fn set_tilt(&self, angles: Option<Vec<f32>>) {
+        let angles = angles.and_then(|a| Some([*a.first()?, *a.get(1)?]));
+        self.lock().look.set_tilt(angles);
     }
 
     /// Shows or hides the minimap (on by default).
@@ -290,6 +290,13 @@ impl Game {
     pub fn set_camera(&self, settings: CameraSettings) {
         eprintln!("[gm] camera: {settings:?}");
         self.lock().look.set(settings);
+    }
+
+    /// This run's seed and ship class, e.g. "Seed 1430 · gunship": what to report after a
+    /// playtest.
+    pub fn run_label(&self) -> String {
+        let seed = self.lock().current.seed;
+        format!("Seed {seed} · {}", Template::for_seed(seed).name)
     }
 
     /// Restart: sends RESTART on the next tick. A live run restarts at once; after a
@@ -384,7 +391,9 @@ impl Game {
         let max_charges = g.current.config.tuning.charges;
         let vent_ready = player.is_some_and(|p| !p.gun.venting() && p.gun.charges < max_charges);
         let overlay = g.controls.overlay(roll_ready, vent_ready);
-        // The nearest enemy in slot 0's room, as an offset from it: what auto-aim shoots.
+        // The nearest enemy in slot 0's room that has noticed the party, as an offset from
+        // it: what the enemy look leans toward. Unaware ones patrol, and the camera
+        // shouldn't wander with them.
         let enemy = player.and_then(|p| {
             let ship = &g.current.ship;
             let room = ship.room_at(p.pos)?;
@@ -392,7 +401,7 @@ impl Game {
                 .enemies
                 .iter()
                 .map(|(_, e)| e)
-                .filter(|e| e.active() && ship.room_at(e.pos) == Some(room))
+                .filter(|e| e.active() && e.hunting() && ship.room_at(e.pos) == Some(room))
                 .map(|e| {
                     let (ex, ey) = (e.pos.x.to_num::<f32>(), e.pos.y.to_num::<f32>());
                     [ex - p.pos.x.to_num::<f32>(), ey - p.pos.y.to_num::<f32>()]
