@@ -12,6 +12,7 @@ mod layout;
 mod minimap;
 mod settings;
 mod stats;
+mod view_box;
 
 use audio::{Audio, Mood, Sound};
 use camera::{CameraLook, CameraSettings};
@@ -155,6 +156,8 @@ struct Inner {
     stats: Stats,
     audio: Audio,
     haptics: Haptics,
+    /// The view boxes, landscape then portrait.
+    view_boxes: [view_box::ViewBox; 2],
     /// The minimap setting.
     minimap: bool,
 }
@@ -216,6 +219,10 @@ impl Game {
                 stats: Stats::default(),
                 audio: Audio::default(),
                 haptics: Haptics::default(),
+                view_boxes: [
+                    view_box::default_view_box(false),
+                    view_box::default_view_box(true),
+                ],
                 minimap: true,
             }),
         }))
@@ -297,6 +304,15 @@ impl Game {
     pub fn run_label(&self) -> String {
         let seed = self.lock().current.seed;
         format!("Seed {seed} · {}", Template::for_seed(seed).name)
+    }
+
+    /// The view box for one orientation, from the view box editor; applies live.
+    pub fn set_view_box(&self, portrait: bool, view_box: view_box::ViewBox) {
+        eprintln!("[gm] view box portrait={portrait}: {view_box:?}");
+        let mut g = self.lock();
+        if let Some(slot) = g.view_boxes.get_mut(usize::from(portrait)) {
+            *slot = view_box;
+        }
     }
 
     /// Restart: sends RESTART on the next tick. A live run restarts at once; after a
@@ -408,6 +424,11 @@ impl Game {
                 })
                 .min_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
         });
+        let portrait = g.viewport.point_height > g.viewport.point_width;
+        if let Some(&b) = g.view_boxes.get(usize::from(portrait)) {
+            let frame = view_box::Frame::new(b, &g.viewport);
+            g.look.set_frame(frame);
+        }
         let look = g.look.update(
             target_timestamp,
             player.map(|p| p.facing),

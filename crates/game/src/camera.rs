@@ -2,6 +2,7 @@
 //! controller camera leads along the right stick by how far it's pushed; the mouse camera
 //! sits partway toward the cursor. Settings apply live (presentation only, not the sim).
 
+use crate::view_box::Frame;
 use std::f32::consts::TAU;
 
 /// What the camera leans toward.
@@ -28,9 +29,6 @@ pub struct CameraSettings {
     pub lead: f32,
     /// Time constant easing the lean toward its target, s; 0 snaps.
     pub smoothing_secs: f32,
-    /// How far the view shifts down so the player sits above center, pt: the thumbs on
-    /// the bottom-corner controls hide less of what's below. Added to any look.
-    pub thumb_clearance: f32,
     /// Tilt peek: tipping the phone leans the view up to this far, pt; 0 is off. Raise an
     /// edge to see more that way. Past a dead zone of [`TILT_DEADZONE`] the lean grows
     /// with the tilt, reaching all of it [`TILT_FULL`] further on. The rest pose follows
@@ -55,7 +53,6 @@ pub const fn default_camera_settings() -> CameraSettings {
         look: LookMode::Aim,
         lead: 80.0,
         smoothing_secs: 0.2,
-        thumb_clearance: 40.0,
         tilt_peek: 0.0,
     }
 }
@@ -71,6 +68,8 @@ pub struct CameraLook {
     tilt: Option<[f32; 2]>,
     /// The tilt peek's rest pose: `tilt`, slowly followed.
     rest: Option<[f32; 2]>,
+    /// The view box on the current screen.
+    frame: Frame,
 }
 
 impl CameraLook {
@@ -81,11 +80,17 @@ impl CameraLook {
             last: None,
             tilt: None,
             rest: None,
+            frame: Frame::FREE,
         }
     }
 
     pub const fn set(&mut self, settings: CameraSettings) {
         self.settings = settings;
+    }
+
+    /// The view box for the current screen and orientation.
+    pub const fn set_frame(&mut self, frame: Frame) {
+        self.frame = frame;
     }
 
     /// This frame's [roll, pitch], or `None` with tilt peek off.
@@ -126,10 +131,11 @@ impl CameraLook {
             .map_or(0.0, |last| (now - last).clamp(0.0, 0.1) as f32);
         self.last = Some(now);
         let peek = self.peek(dt);
-        let target = [
-            toward[0] + peek[0],
-            toward[1] + self.settings.thumb_clearance + peek[1],
-        ];
+        // Every lean starts from the view box's center and stays inside the box.
+        let rest = self.frame.rest;
+        let target = self
+            .frame
+            .clamp([rest[0] + toward[0] + peek[0], rest[1] + toward[1] + peek[1]]);
         let tau = self.settings.smoothing_secs;
         let k = if tau <= 0.0 {
             1.0
@@ -139,6 +145,8 @@ impl CameraLook {
         for (o, t) in self.offset.iter_mut().zip(target) {
             *o = (t - *o).mul_add(k, *o);
         }
+        // Easing toward a box that just moved (a turn of the phone) can't leave it either.
+        self.offset = self.frame.clamp(self.offset);
         self.offset
     }
 
@@ -175,7 +183,6 @@ mod tests {
         camera.set(CameraSettings {
             look: LookMode::Centered,
             smoothing_secs: 0.0,
-            thumb_clearance: 0.0,
             tilt_peek,
             ..default_camera_settings()
         });
