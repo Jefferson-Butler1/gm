@@ -377,8 +377,8 @@ struct ControlsSettings: View {
                     SliderRow(label: "Thumb clearance", value: $model.camera.thumbClearance, range: 0...120, step: 5) {
                         "\(Int($0)) pt"
                     }
-                    SliderRow(label: "Tilt peek (gyro)", value: $model.camera.tiltPeek, range: 0...800, step: 50) {
-                        $0 == 0 ? "off" : "\(Int($0)) pt/rad"
+                    SliderRow(label: "Tilt peek (gyro)", value: $model.camera.tiltPeek, range: 0...300, step: 10) {
+                        $0 == 0 ? "off" : "\(Int($0)) pt"
                     }
                 }
                 Section("Sound") {
