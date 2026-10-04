@@ -48,7 +48,7 @@ fn in_an_outer_hatch() -> SimState {
 fn every_airlock_starts_locked_and_the_bridges_last_wave_unlocks_them_all() {
     let state = SimState::new(SEED, RunConfig::default());
     let hatches = outer_hatches(&state);
-    assert_eq!(hatches.len(), 3);
+    assert_eq!(hatches.len(), 4, "3 hull airlocks and the bridge's");
     assert!(hatches.iter().all(|&(_, s)| s == HatchState::AirlockLocked));
     assert!(!state.airlocks_unlocked());
 

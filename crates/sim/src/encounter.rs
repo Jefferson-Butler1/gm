@@ -134,7 +134,16 @@ fn react(
     trigger: RoomTrigger,
     events: &mut TickEvents,
 ) {
-    let hatches: Vec<HatchId> = state.ship.hatches_of(id).collect();
+    // Outer hatches (the bridge's) keep their own lock: only the captain's fall opens them.
+    let ship = std::sync::Arc::clone(&state.ship);
+    let hatches: Vec<HatchId> = ship
+        .hatches_of(id)
+        .filter(|h| {
+            ship.hatches()
+                .get(usize::from(h.0))
+                .is_some_and(|h| h.kind != HatchKind::Airlock)
+        })
+        .collect();
     for &(_, action) in room.room.events.iter().filter(|&&(t, _)| t == trigger) {
         match action {
             RoomAction::Seal => {

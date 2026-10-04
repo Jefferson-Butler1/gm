@@ -7,9 +7,10 @@
 //! - Space: outside the ship.
 //!
 //! Each slot's legend ([`Slot`]) gives its size class, its zone, whether it's optional,
-//! which of its standard hatch points open onto a corridor, and for an airlock, which
-//! opens onto space. The party boards through a random airlock, and once the bridge (the
-//! boss slot) is clear, leaves through any. Every room of a class
+//! which of its standard hatch points open onto a corridor, and for an airlock (or the
+//! bridge), which opens onto space. The party boards through a random hull airlock, and
+//! once the bridge (the boss slot) is clear, leaves through any outer hatch, the bridge's
+//! own included. Every room of a class
 //! has the same hatch points (see [`Size::hatches`]), so filling can't fail: any pool room
 //! of the slot's class and zone fits it. [`Ship::generate`](crate::Ship::generate) fills
 //! a template from a seed.
@@ -68,7 +69,9 @@ pub struct Slot {
     pub optional: bool,
     /// The sides whose hatch points open onto a corridor; the rest are walled.
     pub hatches: &'static [Dir],
-    /// An airlock: the side whose hatch point is its outer hatch, onto space.
+    /// The side whose hatch point is an outer hatch, onto space: every hull airlock's,
+    /// and the bridge's way out once its captain falls. Only hull airlocks are boarded
+    /// through.
     pub airlock: Option<Dir>,
 }
 
@@ -155,8 +158,9 @@ pub enum TemplateError {
     EmptySlot {
         slot: usize,
     },
-    /// An airlock is boarded through: it must never be left out, and only take entrance
-    /// rooms with floor at their center.
+    /// A hull airlock is boarded through: it must never be left out, and only take
+    /// entrance rooms with floor at their center. Any other slot with an outer hatch must
+    /// never be left out either.
     BadAirlock {
         slot: usize,
     },
@@ -488,10 +492,11 @@ impl Template {
                 return Err(TemplateError::EmptySlot { slot: s });
             }
             if slot.airlock.is_some() {
-                if slot.optional || !all_entrances {
+                let boarded = matches!(slot.zone, Zone::Hull);
+                if slot.optional || (boarded && !all_entrances) {
                     return Err(TemplateError::BadAirlock { slot: s });
                 }
-                has_airlock = true;
+                has_airlock |= boarded;
             }
             has_boss |= !slot.optional && all_bosses;
             s = s.saturating_add(1);
@@ -535,7 +540,7 @@ const fn optional(slot: Slot) -> Slot {
     }
 }
 
-/// `slot` as an airlock whose outer hatch is on side `outer`.
+/// `slot` with an outer hatch, onto space, on side `outer`: an airlock, or the bridge.
 const fn airlock(slot: Slot, outer: Dir) -> Slot {
     Slot {
         airlock: Some(outer),
@@ -552,7 +557,8 @@ const fn airlock(slot: Slot, outer: Dir) -> Slot {
 /// engineering `E` at the stern, with the aft airlock beyond it. Off engineering are the
 /// stores `R` (the reward room, with a chest) and, behind an access panel at the end of a
 /// short passage, the crawlspace `C` (with another). Fore through a bulkhead passage is
-/// the bridge `B`, whose captain guards the airlocks' locks.
+/// the bridge `B`, whose captain guards the airlocks' locks, and whose own outer hatch
+/// through the bow is the nearest way out once it falls.
 pub const CORVETTE: Template = Template {
     name: "corvette",
     rows: &[
@@ -611,7 +617,7 @@ pub const CORVETTE: Template = Template {
             Zone::Mid,
             &[Dir::North, Dir::East, Dir::South, Dir::West],
         ),
-        slot(b'B', Size::L, Zone::Fore, &[Dir::West]),
+        airlock(slot(b'B', Size::L, Zone::Fore, &[Dir::West]), Dir::East),
         optional(slot(b'P', Size::S, Zone::Mid, &[Dir::South])),
         optional(slot(b'S', Size::S, Zone::Mid, &[Dir::North])),
         slot(b'C', Size::S, Zone::Crawlspace, &[Dir::South]),
@@ -692,7 +698,7 @@ pub const FREIGHTER: Template = Template {
             &[Dir::North, Dir::East, Dir::South, Dir::West],
         ),
         slot(b'K', Size::L, Zone::Mid, &[Dir::North, Dir::East, Dir::West]),
-        slot(b'B', Size::L, Zone::Fore, &[Dir::West]),
+        airlock(slot(b'B', Size::L, Zone::Fore, &[Dir::West]), Dir::East),
         optional(slot(b'P', Size::S, Zone::Mid, &[Dir::South])),
         optional(slot(b'S', Size::S, Zone::Mid, &[Dir::North])),
         optional(slot(b'T', Size::S, Zone::Mid, &[Dir::South])),
@@ -763,7 +769,7 @@ pub const GUNSHIP: Template = Template {
         slot(b'S', Size::S, Zone::Mid, &[Dir::North]),
         optional(slot(b'P', Size::S, Zone::Mid, &[Dir::South])),
         slot(b'W', Size::M, Zone::Fore, &[Dir::East, Dir::West]),
-        slot(b'B', Size::L, Zone::Fore, &[Dir::West]),
+        airlock(slot(b'B', Size::L, Zone::Fore, &[Dir::West]), Dir::East),
         slot(b'C', Size::S, Zone::Crawlspace, &[Dir::South]),
         slot(b'R', Size::S, Zone::Stores, &[Dir::North]),
     ],
