@@ -201,8 +201,13 @@ fn sweep(class: &Template) {
             "{name} seed {seed}: {problems:?}\n{}",
             draw(&ship)
         );
-        // 3 hull airlocks and the bridge's own way out.
-        assert_eq!(outer_hatches(&ship).count(), 4, "{name} seed {seed}");
+        // The hull airlocks and the bridge's own way out.
+        let outers = class.slots.iter().filter(|slot| slot.airlock.is_some());
+        assert_eq!(
+            outer_hatches(&ship).count(),
+            outers.count(),
+            "{name} seed {seed}"
+        );
         let panels = ship.hatches().iter().filter(|h| h.kind == HatchKind::Panel);
         assert_eq!(panels.count(), 1, "{name} seed {seed}: one crawlspace");
         let chests = (0..).map(RoomId).take(ship.rooms().len());

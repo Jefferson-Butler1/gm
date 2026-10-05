@@ -330,17 +330,17 @@ fn placed_rooms_share_only_walls_and_hatches_and_all_join_the_start() {
 
 // --- play ---------------------------------------------------------------------------
 
-// The Corvette at `SEED`, boarded through the port airlock. Rooms are its filled slots in
-// legend order, then corridors; hatches go by slot, then side (north, east, south, west),
-// then the airlocks' outer hatches.
-const AIRLOCK: RoomId = RoomId(0);
+// The Corvette at `SEED`. Rooms are its filled slots in legend order, then corridors;
+// hatches go by slot, then side (north, east, south, west), then the outer hatches.
+/// The port compartment, above the hold.
+const PORT: RoomId = RoomId(1);
 const ENGINE_ROOM: RoomId = RoomId(3);
 /// The midship slot, whose room at `SEED` is the cargo hold, at floor cell (46, 12).
 const CARGO_HOLD: RoomId = RoomId(4);
-/// The cargo hold's hatches: up to the passage from the port airlock (floor cells 57..=58
-/// of row 12), and east to the passage to the bridge.
-const INTO_HOLD: HatchId = HatchId(10);
-const OUT_OF_HOLD: HatchId = HatchId(11);
+/// The cargo hold's hatches: up to the passage from the port compartment (floor cells
+/// 57..=58 of row 12), and east to the passage to the bridge.
+const INTO_HOLD: HatchId = HatchId(8);
+const OUT_OF_HOLD: HatchId = HatchId(9);
 /// The hold's first row: its top edge is the hatch's bottom edge.
 const HOLD_TOP: Fx = CELL.saturating_mul_int(13);
 
@@ -371,13 +371,12 @@ const fn place(state: &mut SimState, at: FxVec2) {
     }
 }
 
-/// A fresh run with slot 0 in the passage down from the airlock, lined up over the hatch
+/// A fresh run with slot 0 in the passage down from the port compartment, lined up over the hatch
 /// into the cargo hold, two cells above it.
 fn above_the_hold() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     let hold = state.ship.room(CARGO_HOLD).map(|r| r.room.name);
     assert_eq!(hold, Some("cargo hold"), "SEED's midship room");
-    assert_eq!(state.ship.start().0, AIRLOCK, "SEED's boarding airlock");
     place(
         &mut state,
         FxVec2 {
@@ -416,7 +415,6 @@ fn walk_into_the_hold() -> (SimState, Vec<Event>) {
 fn walking_into_a_closed_hatch_opens_it_and_reveals_the_room_behind() {
     let state = above_the_hold();
     assert_eq!(state.hatches[usize::from(INTO_HOLD.0)], HatchState::Closed);
-    assert!(state.visited(AIRLOCK));
     assert!(!state.visited(CARGO_HOLD), "fogged until the hatch opens");
 
     let (state, events) = walk_into_the_hold();
@@ -511,9 +509,11 @@ fn waves_advance_on_clear_then_the_hatches_unseal_and_the_room_stays_cleared() {
     );
     assert!(!state.visited(ENGINE_ROOM), "still fogged until touched");
 
-    // Open: walk back up the passage into the airlock, then down into a quiet hold.
+    // Open: walk back up the passage into the (cleared) port compartment, then down into
+    // a quiet hold.
+    state.cleared |= 1 << PORT.0;
     run(&mut state, 60, &walk(NORTH));
-    assert_eq!(state.ship.room_at(pos(&state)), Some(AIRLOCK));
+    assert_eq!(state.ship.room_at(pos(&state)), Some(PORT));
     run(&mut state, 60, &walk(SOUTH));
     assert_eq!(state.ship.room_at(pos(&state)), Some(CARGO_HOLD));
     assert_eq!(state.run, Run::Boarding);
