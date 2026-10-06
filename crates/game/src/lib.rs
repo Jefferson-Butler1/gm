@@ -19,7 +19,7 @@ use haptics::{Haptic, Haptics};
 use layout::ControlLayout;
 use render::Renderer;
 use settings::RunSettings;
-use sim::{CORVETTE, POOL, Run, Ship, SimState, TICK_HZ, TickInputs};
+use sim::{CLASSES, POOL, Run, Ship, SimState, TICK_HZ, Template, TickInputs};
 use stats::Stats;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -124,12 +124,17 @@ impl std::fmt::Display for GameError {
 
 impl std::error::Error for GameError {}
 
-/// Debug room preview (issue #38): the pool rooms some Corvette slot takes, in pool order.
+/// Debug room preview (issue #38): the pool rooms some ship class's slot takes, in pool
+/// order.
 #[uniffi::export]
 #[must_use]
 pub fn preview_rooms() -> Vec<String> {
     POOL.iter()
-        .filter(|room| CORVETTE.slots.iter().any(|slot| slot.fits(room)))
+        .filter(|room| {
+            CLASSES
+                .iter()
+                .any(|class| class.slots.iter().any(|slot| slot.fits(room)))
+        })
         .map(|room| room.name.to_owned())
         .collect()
 }
@@ -282,15 +287,15 @@ impl Game {
     }
 
     /// Debug room preview (issue #38): swaps in a fresh run on the first seed whose
-    /// Corvette places pool room `name` (one of [`preview_rooms`]). Restarts go back to
+    /// ship places pool room `name` (one of [`preview_rooms`]). Restarts go back to
     /// ordinary seeds.
     pub fn preview_room(&self, name: &str) {
         let places = |seed: &u64| {
-            let ship = Ship::generate(&CORVETTE, *seed);
+            let ship = Ship::generate(Template::for_seed(*seed), *seed);
             ship.rooms().iter().any(|placed| placed.room.name == name)
         };
         let Some(seed) = (0..10_000).find(places) else {
-            eprintln!("[gm] preview: no Corvette places {name:?}");
+            eprintln!("[gm] preview: no ship places {name:?}");
             return;
         };
         eprintln!("[gm] preview {name:?}: seed {seed}");

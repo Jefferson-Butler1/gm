@@ -23,7 +23,7 @@
 //! | service gantry | L    | Cargo       | the rare guarded hallway, corridor-shaped        |
 //! | mess hall     | L    | Crew        | a pillar field; 3 waves from new directions      |
 //! | container stacks | L    | Cargo       | staggered stacks: lanes, chokepoints, flanks     |
-//! | war room      | M    | Bridge      | seat pillars; no Corvette slot (the Gunship's)   |
+//! | war room      | M    | Bridge      | seat pillars; the Gunship's, before its bridge   |
 //!
 //! Spread shooters are the pattern experiment (issue #15); with it off they're shooters.
 //!
@@ -643,8 +643,8 @@ const CONTAINER_STACKS: PrototypeRoom = PrototypeRoom {
 }
 .valid();
 
-/// Command: a briefing room, seats (single pillars) facing a holo table. The Corvette
-/// has no fore M slot; it's for the Gunship.
+/// Command: a briefing room, seats (single pillars) facing a holo table. Only the Gunship
+/// has a fore M slot.
 const WAR_ROOM: PrototypeRoom = PrototypeRoom {
     name: "war room",
     category: Category::Normal,

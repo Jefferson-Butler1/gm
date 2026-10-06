@@ -6,7 +6,7 @@ use serde::de::value::{Error, SeqDeserializer};
 use sim::hull::{Slot, Template, TemplateError, Zone};
 use sim::room::{Category, Cell, Dir, MAX_ROOMS, Size, cell_of};
 use sim::ship::{Hatch, HatchKind, Spot};
-use sim::{CORVETTE, POOL, RoomId, Ship};
+use sim::{CLASSES, POOL, RoomId, Ship};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Every cell of `ship`'s grid, row-major.
@@ -160,54 +160,61 @@ fn problems(ship: &Ship) -> Vec<String> {
     problems
 }
 
-/// The name of the room filling `slot` in `ship`, if it's filled.
-fn filling(ship: &Ship, slot: &Slot) -> Option<&'static str> {
-    let at = CORVETTE.origin(slot.letter)?;
+/// The name of the room filling `slot` of `class` in `ship`, if it's filled.
+fn filling(class: &Template, ship: &Ship, slot: &Slot) -> Option<&'static str> {
+    let at = class.origin(slot.letter)?;
     ship.rooms()
         .iter()
         .find(|r| r.at == at && r.room.category != Category::Connector)
         .map(|r| r.room.name)
 }
 
-/// 10,000 seeds: every ship is walled in and joins up, with its 3 airlocks, its bridge, its
-/// crawlspace (behind a panel) and stores reachable, and a chest in each of those last
-/// two; and the sweep sees every slot take every room that fits it, every optional slot
-/// both filled and left out, and the party board through each airlock. A ship's
-/// checksum covers all its static data, so each distinct one is checked once.
-/// About 6 s in debug, under 1 s in release.
+/// For each ship class, 10,000 seeds: every ship is walled in and joins up, with its 3
+/// airlocks, its bridge, its crawlspace (behind a panel) and stores reachable, and a chest
+/// in each of those last two; and the sweep sees every slot take every room that fits it,
+/// every optional slot both filled and left out, and the party board through each
+/// airlock. A ship's checksum covers all its static data, so each distinct one is checked
+/// once. About 15 s in debug, a couple in release.
 #[test]
-fn every_seed_yields_a_fully_connected_corvette_and_every_fill_turns_up() {
+fn every_seed_yields_a_fully_connected_ship_of_each_class_and_every_fill_turns_up() {
+    for class in CLASSES {
+        sweep(class);
+    }
+}
+
+fn sweep(class: &Template) {
+    let name = class.name;
     let mut seen: BTreeMap<u8, BTreeSet<Option<&str>>> = BTreeMap::new();
     let mut boarded = BTreeSet::new();
     let mut layouts = BTreeSet::new();
     for seed in 0..10_000 {
-        let ship = Ship::generate(&CORVETTE, seed);
+        let ship = Ship::generate(class, seed);
         if !layouts.insert(ship.checksum()) {
             continue;
         }
         let problems = problems(&ship);
         assert!(
             problems.is_empty(),
-            "seed {seed}: {problems:?}\n{}",
+            "{name} seed {seed}: {problems:?}\n{}",
             draw(&ship)
         );
-        assert_eq!(outer_hatches(&ship).count(), 3, "seed {seed}");
+        assert_eq!(outer_hatches(&ship).count(), 3, "{name} seed {seed}");
         let panels = ship.hatches().iter().filter(|h| h.kind == HatchKind::Panel);
-        assert_eq!(panels.count(), 1, "seed {seed}: one crawlspace");
+        assert_eq!(panels.count(), 1, "{name} seed {seed}: one crawlspace");
         let chests = (0..).map(RoomId).take(ship.rooms().len());
         assert_eq!(
             chests.filter_map(|id| ship.chest(id)).count(),
             2,
-            "seed {seed}"
+            "{name} seed {seed}"
         );
         boarded.insert(ship.room(ship.start().0).map(|r| r.at));
-        for slot in CORVETTE.slots {
+        for slot in class.slots {
             seen.entry(slot.letter)
                 .or_default()
-                .insert(filling(&ship, slot));
+                .insert(filling(class, &ship, slot));
         }
     }
-    for slot in CORVETTE.slots {
+    for slot in class.slots {
         let mut expected: BTreeSet<Option<&str>> = POOL
             .iter()
             .filter(|room| slot.fits(room))
@@ -217,24 +224,34 @@ fn every_seed_yields_a_fully_connected_corvette_and_every_fill_turns_up() {
             expected.insert(None);
         }
         assert_eq!(
-            seen[&slot.letter],
-            expected,
-            "slot {}",
+            seen.get(&slot.letter),
+            Some(&expected),
+            "{name} slot {}",
             char::from(slot.letter)
         );
     }
-    let airlocks: BTreeSet<_> = (CORVETTE.slots.iter())
+    let airlocks: BTreeSet<_> = (class.slots.iter())
         .filter(|slot| slot.airlock.is_some())
-        .map(|slot| CORVETTE.origin(slot.letter))
+        .map(|slot| class.origin(slot.letter))
         .collect();
-    assert_eq!(boarded, airlocks, "boarded through every airlock");
-    println!("{} different Corvettes", layouts.len());
+    assert_eq!(boarded, airlocks, "{name}: boarded through every airlock");
+    println!("{} different {name}s", layouts.len());
+}
+
+#[test]
+fn runs_board_every_ship_class() {
+    let boarded: BTreeSet<_> = (0..100).map(|seed| Template::for_seed(seed).name).collect();
+    let classes: BTreeSet<_> = CLASSES.iter().map(|class| class.name).collect();
+    assert_eq!(boarded, classes);
 }
 
 #[test]
 fn a_seed_always_generates_the_same_ship_and_a_peer_rebuilds_it_from_seed_and_checksum() {
-    let ship = Ship::generate(&CORVETTE, 42);
-    assert_eq!(ship.checksum(), Ship::generate(&CORVETTE, 42).checksum());
+    let ship = Ship::generate(Template::for_seed(42), 42);
+    assert_eq!(
+        ship.checksum(),
+        Ship::generate(Template::for_seed(42), 42).checksum()
+    );
     let load = |seed: u64, checksum: u64| {
         Ship::deserialize(SeqDeserializer::<_, Error>::new(
             [seed, checksum].into_iter(),

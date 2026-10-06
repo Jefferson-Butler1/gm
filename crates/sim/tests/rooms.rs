@@ -12,7 +12,7 @@ use sim::{
     TickInputs, Tuning, per_tick, reveal, step,
 };
 
-const SEED: u64 = 21;
+const SEED: u64 = 57;
 const LEFT: u16 = 32768;
 const UP: u16 = 49152;
 /// Move buckets (32 per turn).

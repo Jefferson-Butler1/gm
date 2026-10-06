@@ -10,7 +10,7 @@
 //! through an open one; enemies never leave their room (see [`Tiles`]).
 
 use crate::checksum;
-use crate::hull::{AROUND, CORVETTE, Slot, Template, Zone, toward};
+use crate::hull::{AROUND, Slot, Template, Zone, toward};
 use crate::pool::POOL;
 use crate::room::{
     Category, Cell, Derelict, Dir, Exit, Placed, PrototypeRoom, Theme, cell_center, cell_of,
@@ -419,12 +419,12 @@ impl Serialize for Ship {
     }
 }
 
-/// Regenerates the only ship class there is so far, [`CORVETTE`], from the seed sent,
+/// Regenerates the seed's ship class ([`Template::for_seed`]) from the seed sent,
 /// and checks it is the ship sent. Hand-placed ships (tests) don't round-trip.
 impl<'de> Deserialize<'de> for Ship {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let (seed, checksum) = <(u64, u64)>::deserialize(deserializer)?;
-        let ship = Self::generate(&CORVETTE, seed);
+        let ship = Self::generate(Template::for_seed(seed), seed);
         if ship.checksum == checksum {
             Ok(ship)
         } else {

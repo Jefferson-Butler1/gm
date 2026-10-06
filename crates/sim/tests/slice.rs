@@ -10,7 +10,7 @@ use sim::{
 };
 use std::collections::VecDeque;
 
-const SEED: u64 = 11;
+const SEED: u64 = 1430;
 
 /// The Corvette's boss room: the bridge.
 fn bridge(ship: &Ship) -> RoomId {
