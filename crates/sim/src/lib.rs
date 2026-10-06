@@ -36,6 +36,7 @@ pub use combat::{
     SPREAD_SHOOTER_HP, chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
+pub use encounter::reveal;
 pub use gun::PhasePistol;
 pub use hull::CORVETTE;
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
@@ -43,7 +44,7 @@ pub use path::FlowField;
 pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
 pub use pool::POOL;
 pub use rng::Rng;
-pub use ship::{HatchId, HatchState, Ship};
+pub use ship::{HatchId, HatchKind, HatchState, Ship};
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -115,6 +116,8 @@ pub struct SimState {
     pub visited: u64,
     /// Bit `i` set = room `i` is cleared, so re-entering it starts no encounter.
     pub cleared: u64,
+    /// Bit `i` set = room `i`'s chest (see [`room::PrototypeRoom::chest`]) is open.
+    pub chests: u64,
     /// Difficulty and tunables. The host may swap them mid-run ([`Self::set_config`]);
     /// restarts keep them.
     pub config: RunConfig,
@@ -122,7 +125,9 @@ pub struct SimState {
 
 impl SimState {
     /// A fresh single-player run: a Corvette generated from `seed`, the party standing in
-    /// its start airlock with every hatch closed, and every airlock's outer hatch locked. `config` is clamped to what the sim handles (see [`RunConfig::sanitized`]).
+    /// its start airlock with every hatch in its [`HatchKind::initial`] state: closed, but
+    /// airlocks locked and crawlspaces behind panels. `config` is clamped to what the sim
+    /// handles (see [`RunConfig::sanitized`]).
     #[must_use]
     pub fn new(seed: u64, config: RunConfig) -> Self {
         let config = config.sanitized();
@@ -138,17 +143,7 @@ impl SimState {
             seed,
             rng: Rng::from_seed(seed),
             run: Run::Boarding,
-            hatches: ship
-                .hatches()
-                .iter()
-                .map(|h| {
-                    if h.airlock {
-                        HatchState::AirlockLocked
-                    } else {
-                        HatchState::Closed
-                    }
-                })
-                .collect(),
+            hatches: ship.hatches().iter().map(|h| h.kind.initial()).collect(),
             ship: Arc::new(ship),
             players: [Some(player), None, None, None],
             enemies: Arena::default(),
@@ -156,6 +151,7 @@ impl SimState {
             enemy_bullets: Arena::default(),
             visited: bit(room),
             cleared: 0,
+            chests: 0,
             config,
         }
     }
@@ -199,12 +195,17 @@ impl SimState {
         self.cleared & bit(room) != 0
     }
 
+    #[must_use]
+    pub fn chest_opened(&self, room: RoomId) -> bool {
+        self.chests & bit(room) != 0
+    }
+
     /// Whether the bridge is clear, so the airlocks are unlocked: stepping into any
     /// airlock's outer hatch wins.
     #[must_use]
     pub fn airlocks_unlocked(&self) -> bool {
         (self.ship.hatches().iter().zip(&self.hatches))
-            .any(|(h, s)| h.airlock && *s == HatchState::Closed)
+            .any(|(h, s)| h.kind == HatchKind::Airlock && *s == HatchState::Closed)
     }
 
     /// Endianness-pinned hash of the whole state, comparable across machines.
@@ -269,6 +270,11 @@ pub enum Event {
     },
     /// The room's last wave died.
     RoomCleared {
+        room: RoomId,
+    },
+    /// A player touched `room`'s closed chest, opening it (a placeholder: the items map
+    /// will fill it).
+    ChestOpened {
         room: RoomId,
     },
     /// A player stepped out through an unlocked airlock: the run is won.
