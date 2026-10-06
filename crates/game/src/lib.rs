@@ -61,6 +61,8 @@ pub struct HudData {
     /// on; `waves` is 0 in a room without enemies.
     pub wave: u8,
     pub waves: u8,
+    /// A line telling the player what to do next; empty for none.
+    pub hint: String,
     /// Slot 0's phase pistol: charges left of `max_charges` (for pips).
     pub charges: u8,
     pub max_charges: u8,
@@ -85,7 +87,7 @@ pub enum RunState {
     Playing,
     /// `can_restart` flips once the death pause is over; a tap then restarts.
     Dead { can_restart: bool },
-    /// Extracted: the derelict is cleared. A tap starts a new run.
+    /// Escaped through an airlock: the derelict is cleared. A tap starts a new run.
     Won,
 }
 

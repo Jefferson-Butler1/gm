@@ -26,7 +26,6 @@ const POCKET: PrototypeRoom = PrototypeRoom {
     base: &[],
     reinforcements: &[],
     events: &[],
-    extraction: None,
 }
 .valid();
 

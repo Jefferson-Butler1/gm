@@ -12,7 +12,7 @@ use sim::{
     per_tick, step,
 };
 
-const SEED: u64 = 2;
+const SEED: u64 = 3;
 const LEFT: u16 = 32768;
 const UP: u16 = 49152;
 /// Move buckets (32 per turn).
@@ -44,7 +44,6 @@ const BOX: PrototypeRoom = PrototypeRoom {
         (RoomTrigger::OnEnterWithEnemies, RoomAction::Seal),
         (RoomTrigger::OnEnemiesCleared, RoomAction::Unseal),
     ],
-    extraction: None,
 };
 
 fn exit(dir: Dir, x: usize, y: usize, width: usize) -> &'static [Exit] {
@@ -189,14 +188,7 @@ fn connections_must_link_facing_exits_on_the_same_cells_exactly_once() {
             width: 1,
             kind: ExitKind::Either,
         }],
-        category: Category::Exit,
-        extraction: Some((2, 2)),
         ..BOX
-    };
-    const NORMAL_WEST_BOX: PrototypeRoom = PrototypeRoom {
-        category: Category::Normal,
-        extraction: None,
-        ..WEST_BOX
     };
     const RAGGED_BOX: PrototypeRoom = PrototypeRoom {
         cells: &["#####", "#...#", "#...", "#...#", "#####"],
@@ -253,11 +245,6 @@ fn connections_must_link_facing_exits_on_the_same_cells_exactly_once() {
             error: RoomError::RaggedRow { row: 2 }
         })
     );
-    assert_eq!(
-        derelict([at(BOX, 0), at(NORMAL_WEST_BOX, 4)], BOX_TO_WEST_BOX).validate(),
-        Err(DerelictError::NoExitRoom),
-        "nowhere to win"
-    );
 }
 
 #[test]
@@ -271,8 +258,6 @@ fn placed_rooms_share_only_walls_and_hatches_and_all_join_the_start() {
             width: 1,
             kind: ExitKind::Either,
         }],
-        category: Category::Exit,
-        extraction: Some((2, 2)),
         ..BOX
     };
     /// No exits: joins nothing.
@@ -317,41 +302,19 @@ fn placed_rooms_share_only_walls_and_hatches_and_all_join_the_start() {
     );
 }
 
-#[test]
-fn exit_rooms_and_only_exit_rooms_have_an_extraction_pad_on_floor() {
-    let exit_room = |extraction| PrototypeRoom {
-        category: Category::Exit,
-        extraction,
-        ..BOX
-    };
-    assert_eq!(exit_room(Some((1, 1))).validate(), Ok(()));
-    assert_eq!(
-        exit_room(None).validate(),
-        Err(RoomError::ExtractionMismatch)
-    );
-    assert_eq!(
-        exit_room(Some((0, 0))).validate(),
-        Err(RoomError::ExtractionOffFloor)
-    );
-    let stray = PrototypeRoom {
-        extraction: Some((1, 1)),
-        ..BOX
-    };
-    assert_eq!(stray.validate(), Err(RoomError::ExtractionMismatch));
-}
-
 // --- play ---------------------------------------------------------------------------
 
-// The Corvette at `SEED`. Rooms are its filled slots in legend order, then corridors;
-// hatches go by slot, then side (north, east, south, west).
+// The Corvette at `SEED`, boarded through the port airlock. Rooms are its filled slots in
+// legend order, then corridors; hatches go by slot, then side (north, east, south, west),
+// then the airlocks' outer hatches.
 const AIRLOCK: RoomId = RoomId(0);
-const ENGINE_ROOM: RoomId = RoomId(1);
-/// The midship slot, whose room at `SEED` is the cargo hold, at floor cell (32, 13).
-const CARGO_HOLD: RoomId = RoomId(2);
-/// The cargo hold's hatches: up to the passage from the airlock (floor cells 43..=44 of
-/// row 13), and east to the passage to the bridge.
-const INTO_HOLD: HatchId = HatchId(2);
-const OUT_OF_HOLD: HatchId = HatchId(3);
+const ENGINE_ROOM: RoomId = RoomId(3);
+/// The midship slot, whose room at `SEED` is the cargo hold, at floor cell (46, 13).
+const CARGO_HOLD: RoomId = RoomId(4);
+/// The cargo hold's hatches: up to the passage from the port airlock (floor cells 57..=58
+/// of row 13), and east to the passage to the bridge.
+const INTO_HOLD: HatchId = HatchId(8);
+const OUT_OF_HOLD: HatchId = HatchId(9);
 /// The hold's first row: its top edge is the hatch's bottom edge.
 const HOLD_TOP: Fx = CELL.saturating_mul_int(14);
 
@@ -388,10 +351,11 @@ fn above_the_hold() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     let hold = state.ship.room(CARGO_HOLD).map(|r| r.room.name);
     assert_eq!(hold, Some("cargo hold"), "SEED's midship room");
+    assert_eq!(state.ship.start().0, AIRLOCK, "SEED's boarding airlock");
     place(
         &mut state,
         FxVec2 {
-            x: CELL.saturating_mul_int(44), // centered on the 2-cell gap
+            x: CELL.saturating_mul_int(58), // centered on the 2-cell gap
             y: cell_center(0, 11).y,
         },
     );
@@ -570,9 +534,9 @@ fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_ope
 
 #[test]
 fn bullets_fly_over_pits_and_stop_at_walls() {
-    // The airlock's pit is at floor cells (41..=42, 3), its west wall at x = 1216..1248.
+    // The airlock's pit is at floor cells (55..=56, 3), its west wall at x = 1664..1696.
     let mut state = SimState::new(SEED, RunConfig::default());
-    place(&mut state, cell_center(44, 3));
+    place(&mut state, cell_center(58, 3));
     let mut fire_left = TickInputs::default();
     fire_left.players[0] = PlayerInput {
         aim: LEFT,
@@ -581,8 +545,8 @@ fn bullets_fly_over_pits_and_stop_at_walls() {
     };
     run(&mut state, 1, &fire_left);
     run(&mut state, 7, &TickInputs::default());
-    let past_pit = CELL.saturating_mul_int(41);
-    let wall = CELL.saturating_mul_int(39);
+    let past_pit = CELL.saturating_mul_int(55);
+    let wall = CELL.saturating_mul_int(53);
     let bullet = state.bullets.iter().next().map(|(_, b)| b.pos.x);
     assert!(
         bullet.is_some_and(|x| x < past_pit && x > wall),
