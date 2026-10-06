@@ -13,6 +13,17 @@
 //! | bridge        | L    | Bridge      | two thick waves, then the captain; the boss room |
 //! | crawlspace    | S    | Crawlspace  | none: behind an access panel, a chest            |
 //! | stores        | S    | Stores      | none: the reward room, a chest                   |
+//! | medbay        | S    | Crew        | circle-strafe the operating table; 2 waves       |
+//! | hydroponics   | S    | Crew        | shooters behind pit troughs                      |
+//! | cargo lift    | S    | Cargo       | a small ring round an open lift shaft            |
+//! | reactor       | M    | Engineering | an arena ring round the core and its pit moat    |
+//! | machine shop  | M    | Engineering | a chokepoint: one door into the shooters' bay    |
+//! | coolant plant | M    | Engineering | pit channels and bridges; 3 waves                |
+//! | sensor gallery | M    | Engineering | a long gallery for shooters, flank lanes         |
+//! | service gantry | L    | Cargo       | the rare guarded hallway, corridor-shaped        |
+//! | mess hall     | L    | Crew        | a pillar field; 3 waves from new directions      |
+//! | container stacks | L    | Cargo       | staggered stacks: lanes, chokepoints, flanks     |
+//! | war room      | M    | Bridge      | seat pillars; no Corvette slot (the Gunship's)   |
 //!
 //! Spread shooters are the pattern experiment (issue #15); with it off they're shooters.
 //!
@@ -335,6 +346,330 @@ const STORES: PrototypeRoom = PrototypeRoom {
 }
 .valid();
 
+// --- the pool proper (issue #38) ----------------------------------------------------
+//
+// These rooms keep enemies at least 3 cells (Chebyshev) from every hatch point, since any
+// hatch may be the way in. Themes without a zone of their own yet (medical, hydroponics,
+// sensors) file under the zone's nearest theme.
+
+/// Medical: an operating table dead center to circle-strafe around, beds along the
+/// walls. The patients get up once the orderlies are down.
+const MEDBAY: PrototypeRoom = PrototypeRoom {
+    name: "medbay",
+    category: Category::Normal,
+    theme: Theme::Crew,
+    cells: &[
+        "#####..#####",
+        "#..........#",
+        "#.#......#.#",
+        "#.#......#.#",
+        ".....##.....",
+        ".....##.....",
+        "#.#......#.#",
+        "#.#......#.#",
+        "#..........#",
+        "#####..#####",
+    ],
+    exits: Size::S.hatches(),
+    base: &[shooter(10, 1), rusher(3, 3), rusher(8, 6)],
+    reinforcements: &[then(&[rusher(1, 1), rusher(10, 8)])],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// Hydroponics: four nutrient troughs (pits). Shots fly over them and rushers go round,
+/// so the shooters tucked behind them are safe until you roll across.
+const HYDROPONICS: PrototypeRoom = PrototypeRoom {
+    name: "hydroponics",
+    category: Category::Normal,
+    theme: Theme::Crew,
+    cells: &[
+        "#####..#####",
+        "#..........#",
+        "#.ooo..ooo.#",
+        "#..........#",
+        "............",
+        "............",
+        "#..........#",
+        "#.ooo..ooo.#",
+        "#..........#",
+        "#####..#####",
+    ],
+    exits: Size::S.hatches(),
+    base: &[shooter(1, 1), shooter(10, 8), rusher(8, 3), rusher(3, 6)],
+    reinforcements: &[],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// A small arena ring: the cargo lift's open shaft (a 4 x 4 pit) fills the middle, so
+/// every fight goes round it and the shooters fire across it.
+const CARGO_LIFT: PrototypeRoom = PrototypeRoom {
+    name: "cargo lift",
+    category: Category::Normal,
+    theme: Theme::Cargo,
+    cells: &[
+        "#####..#####",
+        "#..........#",
+        "#..........#",
+        "#...oooo...#",
+        "....oooo....",
+        "....oooo....",
+        "#...oooo...#",
+        "#..........#",
+        "#..........#",
+        "#####..#####",
+    ],
+    exits: Size::S.hatches(),
+    base: &[shooter(10, 1), shooter(1, 8), rusher(1, 1)],
+    reinforcements: &[then(&[rusher(10, 8), rusher(2, 1)])],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// An arena ring: the reactor's core (walls in a moat of pits) fills the middle. Shooters
+/// hold the far side, rushers come round both ways, and the second wave brings a spread
+/// shooter.
+const REACTOR: PrototypeRoom = PrototypeRoom {
+    name: "reactor",
+    category: Category::Normal,
+    theme: Theme::Engineering,
+    cells: &[
+        "########..########",
+        "#................#",
+        "#................#",
+        "#.....oooooo.....#",
+        "#....o######o....#",
+        ".....o######o.....",
+        ".....o######o.....",
+        "#....o######o....#",
+        "#.....oooooo.....#",
+        "#................#",
+        "#................#",
+        "########..########",
+    ],
+    exits: Size::M.hatches(),
+    base: &[shooter(3, 4), shooter(3, 7), rusher(16, 1), rusher(16, 10)],
+    reinforcements: &[then(&[spread_shooter(1, 1), rusher(1, 10), rusher(13, 4)])],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// A chokepoint: a bulkhead splits the shop, and its one door lines up with the west and
+/// east hatches. The shooters hold the tool bay behind it, so you push through the door
+/// or wait for the rushers to funnel out of it.
+const MACHINE_SHOP: PrototypeRoom = PrototypeRoom {
+    name: "machine shop",
+    category: Category::Normal,
+    theme: Theme::Engineering,
+    cells: &[
+        "########..########",
+        "#......#.........#",
+        "#......#.........#",
+        "#......#...##....#",
+        "#......#...##....#",
+        "..................",
+        "..................",
+        "#......#...##....#",
+        "#......#...##....#",
+        "#......#.........#",
+        "#......#.........#",
+        "########..########",
+    ],
+    exits: Size::M.hatches(),
+    base: &[shooter(3, 3), shooter(3, 8), rusher(14, 1), rusher(14, 10)],
+    reinforcements: &[then(&[spread_shooter(4, 5), rusher(1, 1), rusher(1, 10)])],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// Pit channels: two coolant channels cut the plant into three bands, crossed by three
+/// short bridges. Shooters in the outer bands fire across at the middle one, where the
+/// hatches are; roll a channel to reach them.
+const COOLANT_PLANT: PrototypeRoom = PrototypeRoom {
+    name: "coolant plant",
+    category: Category::Normal,
+    theme: Theme::Engineering,
+    cells: &[
+        "########..########",
+        "#................#",
+        "#................#",
+        "#ooo..oooooo..ooo#",
+        "#.........##.....#",
+        "..................",
+        "..................",
+        "#.....##.........#",
+        "#ooooooo..ooooooo#",
+        "#................#",
+        "#................#",
+        "########..########",
+    ],
+    exits: Size::M.hatches(),
+    base: &[shooter(2, 1), shooter(15, 10), rusher(7, 5), rusher(10, 6)],
+    reinforcements: &[
+        then(&[shooter(15, 1), shooter(2, 10)]),
+        then(&[rusher(4, 4), rusher(13, 7), spread_shooter(4, 1)]),
+    ],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// Sensors: a long gallery. Consoles wall off a lane along each side, so the shooters at
+/// the far end have the whole middle; the side lanes are the flank route up to them.
+const SENSOR_GALLERY: PrototypeRoom = PrototypeRoom {
+    name: "sensor gallery",
+    category: Category::Normal,
+    theme: Theme::Engineering,
+    cells: &[
+        "########..########",
+        "#................#",
+        "#................#",
+        "#..#####..#####..#",
+        "#................#",
+        "..................",
+        "..................",
+        "#................#",
+        "#..#####..#####..#",
+        "#................#",
+        "#................#",
+        "########..########",
+    ],
+    exits: Size::M.hatches(),
+    base: &[shooter(3, 4), shooter(3, 7), rusher(13, 1), rusher(13, 10)],
+    reinforcements: &[then(&[
+        spread_shooter(3, 5),
+        shooter(1, 1),
+        shooter(1, 10),
+        rusher(4, 1),
+    ])],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// The rare guarded hallway: a gantry, corridor-shaped (void above and below), that
+/// crosses the slot with stubs to the north and south hatches. Guards hold both ends
+/// behind crates, so there is no side to hide on.
+const SERVICE_GANTRY: PrototypeRoom = PrototypeRoom {
+    name: "service gantry",
+    category: Category::Normal,
+    theme: Theme::Cargo,
+    cells: &[
+        "         ##..##         ",
+        "         #....#         ",
+        "         #....#         ",
+        "##########....##########",
+        "#......................#",
+        "#.....##........##.....#",
+        "........................",
+        "........................",
+        "#.....##........##.....#",
+        "#......................#",
+        "##########....##########",
+        "         #....#         ",
+        "         #....#         ",
+        "         ##..##         ",
+    ],
+    exits: Size::L.hatches(),
+    base: &[shooter(3, 4), shooter(20, 9), rusher(19, 4)],
+    reinforcements: &[then(&[rusher(3, 9), rusher(20, 5)])],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// A pillar field: rows of tables round a serving counter, and three waves, each from
+/// somewhere new; the last brings a spread shooter to the counter.
+const MESS_HALL: PrototypeRoom = PrototypeRoom {
+    name: "mess hall",
+    category: Category::Normal,
+    theme: Theme::Crew,
+    cells: &[
+        "###########..###########",
+        "#......................#",
+        "#......................#",
+        "#..##..##......##..##..#",
+        "#..##..##......##..##..#",
+        "#......................#",
+        "..........####..........",
+        "..........####..........",
+        "#......................#",
+        "#..##..##......##..##..#",
+        "#..##..##......##..##..#",
+        "#......................#",
+        "#......................#",
+        "###########..###########",
+    ],
+    exits: Size::L.hatches(),
+    base: &[shooter(1, 1), rusher(5, 5), rusher(18, 8)],
+    reinforcements: &[
+        then(&[shooter(22, 1), shooter(22, 12), rusher(5, 8)]),
+        then(&[spread_shooter(11, 8), rusher(3, 1), rusher(20, 12)]),
+    ],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// Staggered container stacks: short lanes and chokepoints between them, with a flank
+/// route round every stack. The shooters sit in opposite corners, so one always has an
+/// angle.
+const CONTAINER_STACKS: PrototypeRoom = PrototypeRoom {
+    name: "container stacks",
+    category: Category::Normal,
+    theme: Theme::Cargo,
+    cells: &[
+        "###########..###########",
+        "#......................#",
+        "#.######.......#####...#",
+        "#.######.......#####...#",
+        "#..........##..........#",
+        "#...####...##...######.#",
+        "........................",
+        "........................",
+        "#.######...##...####...#",
+        "#..........##..........#",
+        "#...#####.......######.#",
+        "#...#####.......######.#",
+        "#......................#",
+        "###########..###########",
+    ],
+    exits: Size::L.hatches(),
+    base: &[shooter(22, 2), shooter(1, 12), rusher(9, 9), rusher(15, 4)],
+    reinforcements: &[then(&[
+        rusher(22, 12),
+        rusher(1, 1),
+        shooter(17, 12),
+        spread_shooter(5, 1),
+    ])],
+    events: LOCKDOWN,
+}
+.valid();
+
+/// Command: a briefing room, seats (single pillars) facing a holo table. The Corvette
+/// has no fore M slot; it's for the Gunship.
+const WAR_ROOM: PrototypeRoom = PrototypeRoom {
+    name: "war room",
+    category: Category::Normal,
+    theme: Theme::Bridge,
+    cells: &[
+        "########..########",
+        "#................#",
+        "#................#",
+        "#..#..#....#..#..#",
+        "#................#",
+        ".......####.......",
+        ".......####.......",
+        "#................#",
+        "#..#..#....#..#..#",
+        "#................#",
+        "#................#",
+        "########..########",
+    ],
+    exits: Size::M.hatches(),
+    base: &[shooter(1, 1), shooter(16, 10), rusher(4, 5), rusher(13, 6)],
+    reinforcements: &[then(&[spread_shooter(16, 1), rusher(1, 10), rusher(4, 1)])],
+    events: LOCKDOWN,
+}
+.valid();
+
 /// Every room the generator may place, checked against each template when it builds.
 pub const POOL: &[PrototypeRoom] = &[
     AIRLOCK,
@@ -346,4 +681,15 @@ pub const POOL: &[PrototypeRoom] = &[
     BRIDGE,
     CRAWLSPACE,
     STORES,
+    MEDBAY,
+    HYDROPONICS,
+    CARGO_LIFT,
+    REACTOR,
+    MACHINE_SHOP,
+    COOLANT_PLANT,
+    SENSOR_GALLERY,
+    SERVICE_GANTRY,
+    MESS_HALL,
+    CONTAINER_STACKS,
+    WAR_ROOM,
 ];
