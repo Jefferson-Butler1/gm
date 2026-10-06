@@ -43,7 +43,7 @@ pub use hull::{CLASSES, CORVETTE, FREIGHTER, GUNSHIP, Template};
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use path::FlowField;
 pub use pickup::{Pickup, PickupKind};
-pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
+pub use player::{ASSIST_CONE, HEART, MAX_HP, PLAYER_RADIUS, Player, RUSHER_DAMAGE};
 pub use pool::POOL;
 pub use rng::Rng;
 pub use ship::{HatchId, HatchKind, HatchState, Ship};
@@ -165,7 +165,8 @@ impl SimState {
             scrap: 0,
             scrap_shares,
             visited: bit(room),
-            cleared: 0,
+            // The boarding airlock: its boarding party is never fought.
+            cleared: bit(room),
             chests: 0,
             config,
         }

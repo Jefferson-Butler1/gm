@@ -97,8 +97,11 @@ fn problems(ship: &Ship) -> Vec<String> {
     }
     for hatch in outer_hatches(ship) {
         let [a, b] = hatch.rooms;
-        if a != b || ship.room(a).map(|r| r.room.category) != Some(Category::Entrance) {
-            problems.push(format!("outer hatch {hatch:?} is not an airlock's"));
+        let category = ship.room(a).map(|r| r.room.category);
+        if a != b || !matches!(category, Some(Category::Entrance | Category::Boss)) {
+            problems.push(format!(
+                "outer hatch {hatch:?} is not an airlock's or the bridge's"
+            ));
         }
     }
     if !ship
@@ -169,7 +172,7 @@ fn filling(class: &Template, ship: &Ship, slot: &Slot) -> Option<&'static str> {
         .map(|r| r.room.name)
 }
 
-/// For each ship class, 10,000 seeds: every ship is walled in and joins up, with its 3
+/// For each ship class, 10,000 seeds: every ship is walled in and joins up, with its 3 hull
 /// airlocks, its bridge, its crawlspace (behind a panel) and stores reachable, and a chest
 /// in each of those last two; and the sweep sees every slot take every room that fits it,
 /// every optional slot both filled and left out, and the party board through each
@@ -198,7 +201,13 @@ fn sweep(class: &Template) {
             "{name} seed {seed}: {problems:?}\n{}",
             draw(&ship)
         );
-        assert_eq!(outer_hatches(&ship).count(), 3, "{name} seed {seed}");
+        // The hull airlocks and the bridge's own way out.
+        let outers = class.slots.iter().filter(|slot| slot.airlock.is_some());
+        assert_eq!(
+            outer_hatches(&ship).count(),
+            outers.count(),
+            "{name} seed {seed}"
+        );
         let panels = ship.hatches().iter().filter(|h| h.kind == HatchKind::Panel);
         assert_eq!(panels.count(), 1, "{name} seed {seed}: one crawlspace");
         let chests = (0..).map(RoomId).take(ship.rooms().len());
@@ -231,7 +240,7 @@ fn sweep(class: &Template) {
         );
     }
     let airlocks: BTreeSet<_> = (class.slots.iter())
-        .filter(|slot| slot.airlock.is_some())
+        .filter(|slot| slot.airlock.is_some() && slot.zone == Zone::Hull)
         .map(|slot| class.origin(slot.letter))
         .collect();
     assert_eq!(boarded, airlocks, "{name}: boarded through every airlock");

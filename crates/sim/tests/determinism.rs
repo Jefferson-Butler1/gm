@@ -8,21 +8,20 @@ use sim::{
 use std::ops::Range;
 use std::sync::Arc;
 
-const SEED: u64 = 18164;
+const SEED: u64 = 8;
 const TICKS: u64 = 2700;
 /// Ticks when the party holds only RESTART (the scripted start, then after the death).
 /// RESTART also abandons a live run, so each window presses it on its last tick only:
 /// once the death pause is over, not every tick after the run has restarted.
 const RESTARTS: [Range<u64>; 2] = [0..40, 1200..1250];
-/// Ticks when the party walks straight down from the start, the airlock's center, through
-/// its hatch and the passage below into the midship room's encounter, and on a few cells.
-/// Both walks are in restarted runs (the two run seeds after `SEED`), which board at the
-/// port airlock with the cargo hold midship.
+/// Ticks when the party walks straight right from the start, the aft airlock's center,
+/// through its hatch and the passage beyond into engineering's encounter, and on a few
+/// cells. Both walks are in restarted runs (the two run seeds after `SEED`, a Corvette
+/// and a Freighter), which board at the aft airlock with a reactor beyond it.
 const WALK_IN: [Range<u64>; 2] = [40..145, 1250..1355];
-/// Both players stand idle from just after entering the cargo hold, so its shooter lives
+/// Both players stand idle from just after entering the reactor, so its shooter lives
 /// long enough to fire and the rushers kill them; they only roll every
-/// [`STAND_STILL_ROLL`] ticks, alternately down and right, so some rolls land in the hold's
-/// pit strip and some hits land on a roll's vulnerable landing.
+/// [`STAND_STILL_ROLL`] ticks, alternately down and right, so some rolls land in its pit and some hits land on a roll's vulnerable landing.
 const STAND_STILL: Range<u64> = 150..1200;
 const STAND_STILL_ROLL: u64 = 72;
 /// Random movement, but fire held with auto-aim, so the second visit clears waves.
@@ -30,10 +29,10 @@ const AUTO_FIGHT: Range<u64> = 1355..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0xbb82_dc52_360a_bff6;
+const GOLDEN_TRACE: u64 = 0x4e2c_66fd_59f2_373b;
 
-/// A reproducible input script for two players: scripted restarts, walks into the cargo
-/// hold, and a stand-still death (see the phase constants); pseudo-random sticks, assist
+/// A reproducible input script for two players: scripted restarts, walks into the
+/// reactor, and a stand-still death (see the phase constants); pseudo-random sticks, assist
 /// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is
 /// pressed on ~1 tick in 32 so rolls, dropped dodges and walking all show up; FIRE is held
 /// about half the time, so the pistol empties and auto-vents; VENT is pressed on ~1 tick
@@ -94,7 +93,7 @@ fn script() -> Vec<TickInputs> {
                     .iter()
                     .find(|r| r.contains(&tick))
                     .map(|_| PlayerInput {
-                        move_dir: 8, // of 32: straight down
+                        move_dir: 0, // of 32: straight right
                         move_mag: u8::MAX,
                         ..PlayerInput::default()
                     })
@@ -266,9 +265,9 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
         entries >= 2 && waves >= 1 && cleared >= 1 && sealed,
         "entries={entries} waves={waves} cleared={cleared} sealed={sealed}"
     );
-    // The cargo hold's second wave brings a shooter.
+    // The reactor's waves bring a shooter.
     assert!(enemy_shots >= 2, "enemy_shots={enemy_shots}");
-    // Rolls landing in the cargo hold's pit: falls, respawns, and a fatal fall.
+    // Rolls landing in the reactor's pit: falls, respawns, and a fatal fall.
     assert!(falls >= 2, "falls={falls}");
     // Kills drop Scrap, collected (magnetized on the clear, or walked over).
     assert!(collected >= 1, "collected={collected}");

@@ -330,19 +330,19 @@ fn placed_rooms_share_only_walls_and_hatches_and_all_join_the_start() {
 
 // --- play ---------------------------------------------------------------------------
 
-// The Corvette at `SEED`, boarded through the port airlock. Rooms are its filled slots in
-// legend order, then corridors; hatches go by slot, then side (north, east, south, west),
-// then the airlocks' outer hatches.
-const AIRLOCK: RoomId = RoomId(0);
+// The Corvette at `SEED`. Rooms are its filled slots in legend order, then corridors;
+// hatches go by slot, then side (north, east, south, west), then the outer hatches.
+/// The port compartment, above the hold.
+const PORT: RoomId = RoomId(1);
 const ENGINE_ROOM: RoomId = RoomId(3);
-/// The midship slot, whose room at `SEED` is the cargo hold, at floor cell (46, 13).
+/// The midship slot, whose room at `SEED` is the cargo hold, at floor cell (46, 12).
 const CARGO_HOLD: RoomId = RoomId(4);
-/// The cargo hold's hatches: up to the passage from the port airlock (floor cells 57..=58
-/// of row 13), and east to the passage to the bridge.
-const INTO_HOLD: HatchId = HatchId(10);
-const OUT_OF_HOLD: HatchId = HatchId(11);
+/// The cargo hold's hatches: up to the passage from the port compartment (floor cells
+/// 57..=58 of row 12), and east to the passage to the bridge.
+const INTO_HOLD: HatchId = HatchId(8);
+const OUT_OF_HOLD: HatchId = HatchId(9);
 /// The hold's first row: its top edge is the hatch's bottom edge.
-const HOLD_TOP: Fx = CELL.saturating_mul_int(14);
+const HOLD_TOP: Fx = CELL.saturating_mul_int(13);
 
 fn walk(bucket: u8) -> TickInputs {
     let mut inputs = TickInputs::default();
@@ -371,18 +371,17 @@ const fn place(state: &mut SimState, at: FxVec2) {
     }
 }
 
-/// A fresh run with slot 0 in the passage down from the airlock, lined up over the hatch
+/// A fresh run with slot 0 in the passage down from the port compartment, lined up over the hatch
 /// into the cargo hold, two cells above it.
 fn above_the_hold() -> SimState {
     let mut state = SimState::new(SEED, RunConfig::default());
     let hold = state.ship.room(CARGO_HOLD).map(|r| r.room.name);
     assert_eq!(hold, Some("cargo hold"), "SEED's midship room");
-    assert_eq!(state.ship.start().0, AIRLOCK, "SEED's boarding airlock");
     place(
         &mut state,
         FxVec2 {
             x: CELL.saturating_mul_int(58), // centered on the 2-cell gap
-            y: cell_center(0, 11).y,
+            y: cell_center(0, 10).y,
         },
     );
     state
@@ -416,7 +415,6 @@ fn walk_into_the_hold() -> (SimState, Vec<Event>) {
 fn walking_into_a_closed_hatch_opens_it_and_reveals_the_room_behind() {
     let state = above_the_hold();
     assert_eq!(state.hatches[usize::from(INTO_HOLD.0)], HatchState::Closed);
-    assert!(state.visited(AIRLOCK));
     assert!(!state.visited(CARGO_HOLD), "fogged until the hatch opens");
 
     let (state, events) = walk_into_the_hold();
@@ -511,9 +509,11 @@ fn waves_advance_on_clear_then_the_hatches_unseal_and_the_room_stays_cleared() {
     );
     assert!(!state.visited(ENGINE_ROOM), "still fogged until touched");
 
-    // Open: walk back up the passage into the airlock, then down into a quiet hold.
+    // Open: walk back up the passage into the (cleared) port compartment, then down into
+    // a quiet hold.
+    state.cleared |= 1 << PORT.0;
     run(&mut state, 60, &walk(NORTH));
-    assert_eq!(state.ship.room_at(pos(&state)), Some(AIRLOCK));
+    assert_eq!(state.ship.room_at(pos(&state)), Some(PORT));
     run(&mut state, 60, &walk(SOUTH));
     assert_eq!(state.ship.room_at(pos(&state)), Some(CARGO_HOLD));
     assert_eq!(state.run, Run::Boarding);
@@ -569,7 +569,7 @@ fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_ope
     // two cells above the hatch, a hunting-range rusher four cells below it, standing
     // still (no patrol) looking straight at the hatch.
     let mut state = above_the_hold();
-    state.cleared = 1 << CARGO_HOLD.0;
+    state.cleared |= 1 << CARGO_HOLD.0;
     state.config.tuning.patrol_speed = 0;
     let player = pos(&state);
     let rusher = state.enemies.insert(Enemy {
@@ -602,10 +602,39 @@ fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_ope
 }
 
 #[test]
-fn bullets_fly_over_pits_and_stop_at_walls() {
-    // The airlock's pit is at floor cells (55..=56, 3), its west wall at x = 1664..1696.
+fn auto_aim_prefers_an_enemy_in_line_of_fire_over_a_nearer_one_behind_a_pillar() {
+    // The cargo hold's pillar covers its cells (5..=6, 3..=4).
     let mut state = SimState::new(SEED, RunConfig::default());
-    place(&mut state, cell_center(58, 3));
+    let (hx, hy) = state.ship.room(CARGO_HOLD).map(|r| r.at).unwrap();
+    let cell = |x: usize, y: usize| cell_center(hx.saturating_add(x), hy.saturating_add(y));
+    state.cleared |= 1 << CARGO_HOLD.0;
+    place(&mut state, cell(3, 3));
+    for (x, y) in [(8, 3), (3, 10)] {
+        state.enemies.insert(Enemy {
+            spawn_ticks: 0,
+            ..Enemy::rusher(cell(x, y))
+        });
+    }
+    let mut auto = TickInputs::default();
+    auto.players[0] = PlayerInput {
+        buttons: Buttons::FIRE | Buttons::AUTO_AIM,
+        ..PlayerInput::default()
+    };
+    run(&mut state, 1, &auto);
+    // The one 5 cells right is behind the pillar: it shoots the one 7 cells down.
+    assert_eq!(state.players[0].unwrap().facing, 16384);
+}
+
+#[test]
+fn bullets_fly_over_pits_and_stop_at_walls() {
+    // The cargo hold's pit strip is at its cells (10..=13, 9..=10), its west wall at x = 0.
+    let mut state = SimState::new(SEED, RunConfig::default());
+    let (hx, hy) = state.ship.room(CARGO_HOLD).map(|r| r.at).unwrap();
+    state.cleared |= 1 << CARGO_HOLD.0;
+    place(
+        &mut state,
+        cell_center(hx.saturating_add(16), hy.saturating_add(9)),
+    );
     let mut fire_left = TickInputs::default();
     fire_left.players[0] = PlayerInput {
         aim: LEFT,
@@ -613,15 +642,18 @@ fn bullets_fly_over_pits_and_stop_at_walls() {
         ..PlayerInput::default()
     };
     run(&mut state, 1, &fire_left);
-    run(&mut state, 7, &TickInputs::default());
-    let past_pit = CELL.saturating_mul_int(55);
-    let wall = CELL.saturating_mul_int(53);
-    let bullet = state.bullets.iter().next().map(|(_, b)| b.pos.x);
-    assert!(
-        bullet.is_some_and(|x| x < past_pit && x > wall),
-        "{bullet:?}"
-    );
-    run(&mut state, 4, &TickInputs::default());
+    let wall = CELL.saturating_mul_int(i64::try_from(hx.saturating_add(1)).unwrap());
+    let pit_start = CELL.saturating_mul_int(i64::try_from(hx.saturating_add(10)).unwrap());
+    let mut over_pit = false;
+    for _ in 0..60 {
+        run(&mut state, 1, &TickInputs::default());
+        let Some((_, b)) = state.bullets.iter().next() else {
+            break;
+        };
+        assert!(b.pos.x > wall, "through the wall: {:?}", b.pos.x);
+        over_pit |= b.pos.x < pit_start;
+    }
+    assert!(over_pit, "flew on past the pit");
     assert!(
         state.bullets.is_empty(),
         "stopped by the wall, not lifetime"
@@ -629,7 +661,7 @@ fn bullets_fly_over_pits_and_stop_at_walls() {
 }
 
 /// The crawlspace's access panel, and the middle of the dead-end passage below it (floor
-/// cells 22..=23, 12..=13, off the engine room's north hatch).
+/// cells 22..=23, 11..=12, off the engine room's north hatch).
 fn at_the_panel() -> (SimState, HatchId) {
     let mut state = SimState::new(SEED, RunConfig::default());
     let panel = (state.ship.hatches().iter())
@@ -640,7 +672,7 @@ fn at_the_panel() -> (SimState, HatchId) {
         &mut state,
         FxVec2 {
             x: CELL.saturating_mul_int(23), // centered on the 2-cell gap
-            y: cell_center(0, 13).y,
+            y: cell_center(0, 12).y,
         },
     );
     (state, panel)
@@ -659,7 +691,7 @@ fn an_access_panel_stops_everything_until_a_shot_reveals_it_then_it_opens_like_a
     run(&mut state, 30, &walk(NORTH));
     assert_eq!(
         pos(&state).y,
-        CELL.saturating_mul_int(12).saturating_add(PLAYER_RADIUS)
+        CELL.saturating_mul_int(11).saturating_add(PLAYER_RADIUS)
     );
     assert!(pos(&state).y < before.y, "walked up to it, and no further");
 

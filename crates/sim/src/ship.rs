@@ -196,12 +196,13 @@ impl Ship {
             }
         }
 
-        // Airlock slots are never left out. The party starts at a random one's center,
-        // where the room's hatch points line up.
+        // Hull airlocks are never left out. The party starts at a random one's center,
+        // where the room's hatch points line up; never on the bridge, behind its outer
+        // hatch.
         let airlocks: Vec<_> = (0..)
             .map(RoomId)
             .zip(&filled)
-            .filter(|(_, (slot, _))| slot.airlock.is_some())
+            .filter(|(_, (slot, _))| slot.airlock.is_some() && slot.zone == Zone::Hull)
             .collect();
         let pick = rng.below(u32::try_from(airlocks.len()).unwrap_or(u32::MAX));
         let start = usize::try_from(pick)

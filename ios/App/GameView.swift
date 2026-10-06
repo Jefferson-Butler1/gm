@@ -94,7 +94,7 @@ final class GameUIView: UIView {
         let peek = model.camera.tiltPeek > 0
         gyro.run(peek)
         let orientation = window?.windowScene?.interfaceOrientation ?? .landscapeRight
-        game.setTilt(gravity: peek ? gyro.gravity(orientation) : nil)
+        game.setTilt(angles: peek ? gyro.tilt(orientation) : nil)
         let hud = game.frame(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         // Sounds and mood are per frame, not gated on `seq`.
         model.audio.frame(sounds: hud.sounds, mood: hud.mood)

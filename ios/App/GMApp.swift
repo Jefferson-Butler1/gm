@@ -53,6 +53,15 @@ final class GameModel {
     }
     /// The layout editor is open over the paused game.
     var editingLayout = false { didSet { syncPause() } }
+    /// The view boxes (landscape, portrait): where on screen the player always stays.
+    var viewBoxes: [ViewBox] = ViewBoxStore.load() {
+        didSet {
+            ViewBoxStore.save(viewBoxes)
+            applyViewBoxes()
+        }
+    }
+    /// The view box editor is open over the paused game.
+    var editingViewBox = false { didSet { syncPause() } }
     /// The viewport GameUIView last laid out: what the layout editor places controls on.
     var viewport: Viewport?
     var scheme: Scheme { (Self.controls.first { $0.key == controlsKey } ?? Self.controls[0]).scheme }
@@ -71,7 +80,6 @@ final class GameModel {
                 "look": Self.looks.first { $0.look == camera.look }?.key ?? "aim",
                 "lead": Double(camera.lead),
                 "smoothingSecs": Double(camera.smoothingSecs),
-                "thumbClearance": Double(camera.thumbClearance),
                 "tiltPeek": Double(camera.tiltPeek),
             ], forKey: Self.cameraKey)
             game?.setCamera(settings: camera)
@@ -106,6 +114,8 @@ final class GameModel {
     var settingsOpen = false { didSet { syncPause() } }
     var appActive = true { didSet { syncPause() } }
     @ObservationIgnored private var game: Game?
+    /// The current run's seed and ship class, for playtest reports.
+    var runLabel: String { game?.runLabel() ?? "" }
     @ObservationIgnored private var paused = false
 
     init() {
@@ -128,12 +138,22 @@ final class GameModel {
         game.setAssistStrength(strength: assist)
         game.setCamera(settings: camera)
         game.setMinimap(visible: minimap)
+        applyViewBoxes()
         if paused { game.pause() }
+    }
+
+    /// Sends `viewBoxes` (or `preview`, while editing one orientation) to the game.
+    func applyViewBoxes(preview: (portrait: Bool, box: ViewBox)? = nil) {
+        for (i, box) in viewBoxes.enumerated() {
+            let portrait = i == 1
+            let shown = preview.flatMap { $0.portrait == portrait ? $0.box : nil } ?? box
+            game?.setViewBox(portrait: portrait, viewBox: shown)
+        }
     }
 
     /// Only acts on transitions: `resume` resyncs the sim clock.
     private func syncPause() {
-        let shouldPause = settingsOpen || editingLayout || !appActive
+        let shouldPause = settingsOpen || editingLayout || editingViewBox || !appActive
         guard shouldPause != paused else { return }
         paused = shouldPause
         if paused { game?.pause() } else { game?.resume() }
@@ -182,7 +202,6 @@ final class GameModel {
         }
         if let value = saved["lead"] as? Double { camera.lead = Float(value) }
         if let value = saved["smoothingSecs"] as? Double { camera.smoothingSecs = Float(value) }
-        if let value = saved["thumbClearance"] as? Double { camera.thumbClearance = Float(value) }
         if let value = saved["tiltPeek"] as? Double { camera.tiltPeek = Float(value) }
         return camera
     }
@@ -206,9 +225,20 @@ struct ContentView: View {
                         .foregroundStyle(.green)
                         .padding(6)
                         .background(.black.opacity(0.5))
+                    // HP is in half hearts: a heart per two, the last one half full on an
+                    // odd count.
                     HStack(spacing: 3) {
-                        ForEach(0..<Int(hud.maxHp), id: \.self) { i in
-                            Image(systemName: i < Int(hud.hp) ? "heart.fill" : "heart")
+                        ForEach(0..<Int(hud.maxHp) / 2, id: \.self) { i in
+                            let left = Int(hud.hp) - 2 * i
+                            Image(systemName: "heart")
+                                .overlay(alignment: .leading) {
+                                    GeometryReader { geo in
+                                        Image(systemName: "heart.fill")
+                                            .mask(alignment: .leading) {
+                                                Rectangle().frame(width: geo.size.width * min(max(CGFloat(left), 0), 2) / 2)
+                                            }
+                                    }
+                                }
                         }
                     }
                     .font(.system(size: 16))
@@ -264,6 +294,8 @@ struct ContentView: View {
             }
             if model.editingLayout, let viewport = model.viewport {
                 LayoutEditor(model: model, viewport: viewport)
+            } else if model.editingViewBox, let viewport = model.viewport {
+                ViewBoxEditor(model: model, viewport: viewport)
             } else {
                 Button { model.settingsOpen = true } label: {
                     Image(systemName: "gearshape.fill")
@@ -342,6 +374,9 @@ struct ControlsSettings: View {
                 Section("Display") {
                     Toggle("Minimap", isOn: $model.minimap)
                 }
+                Section("This run") {
+                    Text(model.runLabel).textSelection(.enabled)
+                }
                 Section("Camera") {
                     Picker("Camera look", selection: $model.camera.look) {
                         ForEach(GameModel.looks, id: \.key) { option in
@@ -358,12 +393,15 @@ struct ControlsSettings: View {
                             String(format: "%.2f s", $0)
                         }
                     }
-                    SliderRow(label: "Thumb clearance", value: $model.camera.thumbClearance, range: 0...120, step: 5) {
-                        "\(Int($0)) pt"
+                    SliderRow(label: "Tilt peek (gyro)", value: $model.camera.tiltPeek, range: 0...300, step: 10) {
+                        $0 == 0 ? "off" : "\(Int($0)) pt"
                     }
-                    SliderRow(label: "Tilt peek (gyro)", value: $model.camera.tiltPeek, range: 0...800, step: 50) {
-                        $0 == 0 ? "off" : "\(Int($0)) pt/g"
+                    // Pause holds across the handoff, as for the layout editor.
+                    Button("Edit view box") {
+                        model.editingViewBox = true
+                        dismiss()
                     }
+                    .disabled(model.viewport == nil)
                 }
                 Section("Sound") {
                     SliderRow(label: "Master", value: $model.masterVolume, range: 0...1, step: 0.05) {

@@ -6,8 +6,8 @@ use sim::room::{Category, Derelict, Placed, PrototypeRoom, Theme, cell_center, c
 use sim::ship::{Body, Tiles};
 use sim::{
     Arrival, Awareness, Behavior, Bullet, Buttons, DEATH_TICKS, Difficulty, ENEMY_RADIUS, Enemy,
-    Event, Fx, FxVec2, MAX_HP, Pattern, PickupKind, PlayerInput, RUSHER_HP, Rng, RoomId, Run,
-    RunConfig, Ship, SimState, TickInputs, Tuning, step, trig,
+    Event, Fx, FxVec2, HEART, MAX_HP, Pattern, PickupKind, PlayerInput, RUSHER_DAMAGE, RUSHER_HP,
+    Rng, RoomId, Run, RunConfig, Ship, SimState, TickInputs, Tuning, step, trig,
 };
 use std::sync::Arc;
 
@@ -230,24 +230,29 @@ fn each_hit_an_enemy_lands_halves_its_scrap() {
 }
 
 #[test]
-fn rusher_contact_hurts_then_post_hit_invulnerability_protects() {
+fn rusher_contact_hurts_half_a_heart_shoves_then_post_hit_invulnerability_protects() {
     let mut state = arena_with_rusher(10);
+    let start = state.players[0].unwrap().pos;
     let events = run(&mut state, 1, &TickInputs::default());
     assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
+    // Shoved left, away from the rusher on its right: most of a cell over a few ticks.
+    run(&mut state, 8, &TickInputs::default());
+    let shoved = start.x.saturating_sub(state.players[0].unwrap().pos.x);
+    assert!(shoved > Fx::from_num(24), "{shoved}");
     // Still in contact, but invulnerable for the rest of the hurt window.
-    let events = run(&mut state, 30, &TickInputs::default());
+    let events = run(&mut state, 22, &TickInputs::default());
     assert!(events.is_empty(), "{events:?}");
-    assert_eq!(state.players[0].unwrap().hp, MAX_HP - 1);
+    assert_eq!(state.players[0].unwrap().hp, MAX_HP - RUSHER_DAMAGE);
 }
 
 #[test]
 fn roll_iframes_block_contact_damage_but_the_landing_is_vulnerable() {
-    let mut state = arena_with_rusher(30); // in the roll's path (facing right)
+    let mut state = arena_with_rusher(100); // where the roll lands (facing right)
     let mut events = run(&mut state, 1, &press(Buttons::DODGE));
     // The i-frames: 55% of the 36-tick roll, rounded = 20 ticks.
     events.extend(run(&mut state, 19, &TickInputs::default()));
     assert!(events.is_empty(), "{events:?}");
-    // The rusher turns and catches the slowing landing.
+    // Rolled through the i-frames toward it, the slowing landing runs into it.
     let events = run(&mut state, 16, &TickInputs::default());
     assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
     assert!(
@@ -419,6 +424,10 @@ fn a_crowd_pressing_on_the_player_rings_it_and_holds_still() {
     // height (the player starts in its lower half).
     let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
     let mut state = rushers_at(column);
+    // Invulnerable throughout, so no contact hit shoves it and the ring can settle.
+    if let Some(player) = &mut state.players[0] {
+        player.hurt_ticks = u16::MAX;
+    }
     let mut last: Vec<FxVec2> = Vec::new();
     for tick in 0..360 {
         step(&mut state, &TickInputs::default());
@@ -450,6 +459,10 @@ fn in_blocking_tiles(tiles: Tiles<'_>, pos: FxVec2) -> bool {
 fn separation_never_pushes_a_rusher_into_walls_or_pits() {
     let column = (-150..).step_by(30).take(8).map(|y| point(200, y));
     let mut state = rushers_at(column);
+    // Invulnerable throughout, so no contact hit shoves it and the ring can settle.
+    if let Some(player) = &mut state.players[0] {
+        player.hurt_ticks = u16::MAX;
+    }
     // The player stands just below the arena's pit, near its west wall, so the ring the
     // crowd forms around it overlaps both.
     state.players[0].as_mut().unwrap().pos = arena_cell(3, 4);
@@ -524,7 +537,7 @@ fn shooter_telegraphs_stands_still_then_fires_a_bullet_that_hurts() {
 
     let events = run(&mut state, 40, &TickInputs::default());
     assert_eq!(events, [Event::PlayerHit { slot: 0 }]);
-    assert_eq!(state.players[0].unwrap().hp, MAX_HP - 1);
+    assert_eq!(state.players[0].unwrap().hp, MAX_HP - HEART);
     assert!(state.enemy_bullets.is_empty(), "spent on the hit");
 }
 
@@ -574,28 +587,54 @@ fn dodge_iframes_let_enemy_bullets_pass_through() {
 }
 
 #[test]
+fn a_roll_ghosts_through_an_enemy_without_shoving_it() {
+    let mut state = empty_arena();
+    // It can't walk, so only a shove could move it.
+    state.config.tuning.patrol_speed = 0;
+    state.config.tuning.rusher_speed = 0;
+    let at = point(40, 0);
+    let id = state.enemies.insert(Enemy {
+        spawn_ticks: 0,
+        ..Enemy::rusher(at)
+    });
+    // Roll right (the default facing), straight through it.
+    let mut events = run(&mut state, 1, &press(Buttons::DODGE));
+    events.extend(run(&mut state, 29, &TickInputs::default()));
+    assert_eq!(
+        events,
+        [Event::EnemyAlerted { enemy: id }],
+        "spotted, never hit"
+    );
+    assert_eq!(state.enemies.get(id).unwrap().pos, at, "not shoved aside");
+    assert!(
+        state.players[0].unwrap().pos.x > at.x,
+        "came out the far side"
+    );
+}
+
+#[test]
 fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
-    // In the Corvette's bridge (room 5, from floor cell (74, 13)), its southwest pillar
-    // covers floor cells (80..=81, 21..=22), x 2560..2624; the player hides west of it at
+    // In the Corvette's bridge (room 5, from floor cell (72, 12)), its southwest pillar
+    // covers floor cells (78..=79, 20..=21), x 2496..2560; the player hides west of it at
     // its height. The bridge counts as cleared, so no fight starts.
     let row = |x: i32| FxVec2 {
         x: Fx::from_num(x),
-        y: Fx::from_num(704),
+        y: Fx::from_num(672),
     };
     let behind_the_pillar = || {
         let mut state = SimState::new(SEED, RunConfig::default());
-        state.cleared = 1 << 5;
-        state.players[0].as_mut().unwrap().pos = row(2480);
+        state.cleared |= 1 << 5;
+        state.players[0].as_mut().unwrap().pos = row(2416);
         state
     };
     let mut state = behind_the_pillar();
-    bullet_flying_left(&mut state, row(2700));
+    bullet_flying_left(&mut state, row(2636));
     let events = run(&mut state, 60, &TickInputs::default());
     assert!(events.is_empty(), "{events:?}");
     assert!(state.enemy_bullets.is_empty(), "the pillar ate it");
 
     let mut state = behind_the_pillar();
-    add_shooter(&mut state, row(2660), 1);
+    add_shooter(&mut state, row(2596), 1);
     run(&mut state, 1, &TickInputs::default());
     assert_eq!(
         first_enemy(&state).unwrap().aiming(AIM_TICKS),
@@ -768,14 +807,14 @@ fn spread_placements_follow_the_experiment_toggle() {
         let mut config = RunConfig::default();
         config.tuning.spread_shooter = on;
         let mut state = SimState::new(SEED, config);
-        // The bridge (the Corvette's fore slot, from floor cell (74, 13)) with its base
+        // The bridge (the Corvette's fore slot, from floor cell (72, 12)) with its base
         // wave dead: the next tick spawns its second wave, two shooters of which one is a
         // spread placement.
         state.run = Run::Encounter {
             room: RoomId(5),
             wave: 0,
         };
-        state.players[0].as_mut().unwrap().pos = cell_center(74 + 7, 13 + 6);
+        state.players[0].as_mut().unwrap().pos = cell_center(72 + 7, 12 + 6);
         step(&mut state, &TickInputs::default());
         let patterns: Vec<Pattern> = state
             .enemies

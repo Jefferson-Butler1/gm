@@ -48,7 +48,11 @@ fn in_an_outer_hatch() -> SimState {
 fn every_airlock_starts_locked_and_the_bridges_last_wave_unlocks_them_all() {
     let state = SimState::new(SEED, RunConfig::default());
     let hatches = outer_hatches(&state);
-    assert_eq!(hatches.len(), 3);
+    assert_eq!(
+        hatches.len(),
+        2,
+        "the Corvette's aft airlock and its bridge's"
+    );
     assert!(hatches.iter().all(|&(_, s)| s == HatchState::AirlockLocked));
     assert!(!state.airlocks_unlocked());
 
@@ -451,16 +455,14 @@ fn a_scripted_player_clears_every_room_kills_the_captain_and_escapes() {
         let fights: Vec<RoomId> = (0..)
             .map(RoomId)
             .zip(ship.rooms())
-            .filter_map(|(id, r)| r.room.has_enemies().then_some(id))
+            .filter_map(|(id, r)| (r.room.has_enemies() && id != ship.start().0).then_some(id))
             .collect();
         let mut sorted = cleared.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, fights, "every fight, once");
         assert_eq!(cleared.last(), Some(&bridge(ship)), "the bridge last");
-        let placed: usize = ship
-            .rooms()
-            .iter()
-            .map(|r| r.room)
+        let placed: usize = (ship.rooms().iter().zip(0..))
+            .filter_map(|(r, id)| (RoomId(id) != ship.start().0).then_some(r.room))
             .flat_map(|r| {
                 std::iter::once(r.base).chain(r.reinforcements.iter().map(|l| l.placements))
             })

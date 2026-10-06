@@ -7,7 +7,7 @@
 use crate::arena::{Arena, Id};
 use crate::config::{RunConfig, Tuning, per_tick};
 use crate::path::{FlowField, FlowFields, walk_clear};
-use crate::player::{PLAYER_RADIUS, Player, dist_sq, scale};
+use crate::player::{HEART, KNOCKBACK, PLAYER_RADIUS, Player, RUSHER_DAMAGE, dist_sq, scale};
 use crate::rng::Rng;
 use crate::room::{cell_center, cell_of};
 use crate::ship::{Body, HatchId, Spot, Tiles};
@@ -538,7 +538,7 @@ fn enemy_bullets(state: &mut SimState, tiles: Tiles<'_>, events: &mut TickEvents
         let reach = ENEMY_BULLET_RADIUS.saturating_add(PLAYER_RADIUS);
         let hit = players.iter_mut().enumerate().find_map(|(slot, player)| {
             let player = player.as_mut()?;
-            (overlaps(bullet.pos, player.pos, reach) && player.hurt(hurt_ticks))
+            (overlaps(bullet.pos, player.pos, reach) && player.hurt(hurt_ticks, HEART))
                 .then_some((slot, player))
         });
         let Some((slot, player)) = hit else {
@@ -782,9 +782,12 @@ fn telegraphs_and_contact(state: &mut SimState, events: &mut TickEvents) {
         for (slot, player) in state.players.iter_mut().enumerate() {
             if let Some(player) = player
                 && overlaps(player.pos, enemy.pos, reach)
-                && player.hurt(config.tuning.hurt_ticks)
+                && player.hurt(config.tuning.hurt_ticks, RUSHER_DAMAGE)
             {
                 *contact_cooldown = CONTACT_COOLDOWN;
+                // Shoved straight away from the rusher (or along its facing, if on top).
+                let away = trig::angle_of(sub(player.pos, enemy.pos)).unwrap_or(enemy.facing);
+                player.knock = scale(trig::unit(away), KNOCKBACK);
                 enemy.scrap /= 2;
                 events.events.push(Event::PlayerHit { slot });
                 if !player.alive() {
@@ -1065,7 +1068,7 @@ fn steer(tiles: Tiles<'_>, pos: FxVec2, angle: u16, speed: Fx, side: &mut i8) ->
 
 /// Whether a shot from `from` to `to` would clear every wall, void and shut hatch on the
 /// way (pits don't block shots).
-fn line_of_fire(tiles: Tiles<'_>, from: FxVec2, to: FxVec2) -> bool {
+pub fn line_of_fire(tiles: Tiles<'_>, from: FxVec2, to: FxVec2) -> bool {
     let offset = sub(to, from);
     let steps = dist(from, to)
         .checked_div(LINE_STEP)
@@ -1084,14 +1087,18 @@ fn line_of_fire(tiles: Tiles<'_>, from: FxVec2, to: FxVec2) -> bool {
 }
 
 /// Resolves overlaps among active enemies: pushes them apart and out of targetable
-/// players.
+/// players that aren't rolling.
 /// Every push slides through `tiles` like a walk, so nobody is shoved into a wall, pit,
 /// void, hatch or another room; a body pinned against one leaves the rest of the
 /// correction to later passes and to its neighbors. Pairs resolve in slot order, each
 /// pass building on the last, so the result is deterministic, and a crowd pressing on a
 /// player settles into a still ring around it instead of stacking.
 fn separate(state: &mut SimState, tiles: Tiles<'_>) {
-    let players = targetable(state);
+    // A rolling player ghosts through the crowd: it pushes nobody aside.
+    let players: Vec<FxVec2> = (state.players.iter().flatten())
+        .filter(|p| p.targetable() && !p.rolling())
+        .map(|p| p.pos)
+        .collect();
     // Each body with the view that keeps it in its room.
     let mut bodies: Vec<(FxVec2, Tiles<'_>)> = state
         .enemies

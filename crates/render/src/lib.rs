@@ -16,7 +16,7 @@ use sim::room::{Cell, Dir};
 use sim::ship::Spot;
 use sim::{
     Behavior, Enemy, EnemyId, Event, Fx, FxVec2, HatchKind, HatchState, Pattern, PickupKind,
-    Player, RoomId, Ship, SimState,
+    Player, RoomId, SimState,
 };
 use std::f32::consts::TAU;
 use std::ffi::c_void;
@@ -536,10 +536,11 @@ impl Renderer {
                 })
             })
             .collect();
-        let focus = players.iter().flatten().next().map_or([0.0, 0.0], |p| {
+        // The screen center sits on the player plus the look, never clamped to the floor:
+        // the host keeps the player inside its view box, even by the hull's edge.
+        self.camera = players.iter().flatten().next().map_or([0.0, 0.0], |p| {
             [p.0[0] + self.look[0], p.0[1] + self.look[1]]
         });
-        self.camera = self.camera_for(&current.ship, focus);
         self.push_floor(current, alpha);
         self.push_pickups(prev, current, alpha);
         let telegraph = current.config.tuning.shooter_telegraph;
@@ -802,26 +803,6 @@ impl Renderer {
             };
             self.push_screen(d.center, d.radius, [r, g, b, a], CIRCLE);
         }
-    }
-
-    /// Where the screen center sits in floor space: on the focus (the player plus the look), clamped so
-    /// the view stays over the floor. An axis where the floor fits on screen centers it.
-    fn camera_for(&self, ship: &Ship, focus: [f32; 2]) -> [f32; 2] {
-        let cell = sim::room::CELL.to_num::<f32>();
-        let extent = |cells: usize| f32::from(u16::try_from(cells).unwrap_or(u16::MAX)) * cell;
-        let axis = |floor: f32, screen: f32, focus: f32| {
-            if floor <= screen {
-                floor / 2.0
-            } else {
-                focus.clamp(screen / 2.0, floor - screen / 2.0)
-            }
-        };
-        let [w, h] = self.size_pt;
-        let (width, height) = ship.size();
-        [
-            axis(extent(width), w, focus[0]),
-            axis(extent(height), h, focus[1]),
-        ]
     }
 
     /// Every revealed room and corridor, the hatches in their walls by state (an airlock's

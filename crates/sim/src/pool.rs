@@ -4,7 +4,7 @@
 //!
 //! | Room          | Size | Theme       | Fight                                            |
 //! |---------------|------|-------------|--------------------------------------------------|
-//! | airlock       | S    | Airlock     | none: the entrance, to get your hands on things  |
+//! | airlock       | S    | Airlock     | a boarding party; none in the one you board      |
 //! | galley        | S    | Crew        | rushers and a shooter among the tables           |
 //! | crew quarters | S    | Crew        | a shooter and rushers between the bunks          |
 //! | engine room   | M    | Engineering | shooter-heavy, pillars to hide behind            |
@@ -82,7 +82,7 @@ const fn then(placements: &'static [Placement]) -> Reinforcement {
     }
 }
 
-/// Empty: the party boards here. Its pit is the first one you meet.
+/// A boarding party in the corners. The airlock the party boards through starts cleared.
 const AIRLOCK: PrototypeRoom = PrototypeRoom {
     name: "airlock",
     category: Category::Entrance,
@@ -91,7 +91,7 @@ const AIRLOCK: PrototypeRoom = PrototypeRoom {
         "#####..#####",
         "#..........#",
         "#..........#",
-        "#..oo......#",
+        "#..........#",
         "............",
         "............",
         "#..........#",
@@ -100,9 +100,9 @@ const AIRLOCK: PrototypeRoom = PrototypeRoom {
         "#####..#####",
     ],
     exits: Size::S.hatches(),
-    base: &[],
+    base: &[shooter(2, 1), rusher(9, 1), rusher(2, 8)],
     reinforcements: &[],
-    events: &[],
+    events: LOCKDOWN,
 }
 .valid();
 

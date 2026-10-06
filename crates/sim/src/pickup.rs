@@ -65,29 +65,37 @@ fn roll_total(rng: &mut Rng) -> u16 {
 /// Each enemy placement's share of [`scrap_total`], in the floor's placement order (see
 /// [`first_share`]).
 ///
-/// Captains take [`CAPTAIN_SCRAP`] each; the rest splits evenly across
-/// the other placements, the remainder going 1 at a time to random ones. Sums to the
-/// total unless the floor has nobody to carry it.
+/// Captains take [`CAPTAIN_SCRAP`] each, and the boarding airlock's placements (never
+/// fought) nothing; the rest splits evenly across the other placements, the remainder
+/// going 1 at a time to random ones. Sums to the total unless the floor has nobody to
+/// carry it.
 #[must_use]
 pub fn budget(seed: u64, ship: &Ship) -> Vec<u8> {
     let mut rng = Rng::from_seed(seed ^ BUDGET_STREAM);
     let total = roll_total(&mut rng);
-    let captain: Vec<bool> = (ship.rooms().iter())
-        .flat_map(|p| layers(&p.room))
-        .flatten()
-        .map(|p| p.kind == EnemyKind::Captain)
+    let start = usize::from(ship.start().0.0);
+    let kinds: Vec<Option<EnemyKind>> = (ship.rooms().iter().enumerate())
+        .flat_map(|(i, p)| layers(&p.room).map(move |layer| (i, layer)))
+        .flat_map(|(i, layer)| layer.iter().map(move |p| (i != start).then_some(p.kind)))
         .collect();
     let others: Vec<usize> = (0..)
-        .zip(&captain)
-        .filter_map(|(i, &c)| (!c).then_some(i))
+        .zip(&kinds)
+        .filter_map(|(i, &k)| k.is_some_and(|k| k != EnemyKind::Captain).then_some(i))
         .collect();
-    let captains = captain.len().saturating_sub(others.len());
+    let captains = kinds
+        .iter()
+        .filter(|&&k| k == Some(EnemyKind::Captain))
+        .count();
     let captains = u16::try_from(captains).unwrap_or(u16::MAX);
     let rest = total.saturating_sub(captains.saturating_mul(CAPTAIN_SCRAP.into()));
     let n = u16::try_from(others.len()).unwrap_or(u16::MAX);
     let each = u8::try_from(rest.checked_div(n).unwrap_or(0)).unwrap_or(u8::MAX);
-    let mut shares: Vec<u8> = (captain.iter())
-        .map(|&c| if c { CAPTAIN_SCRAP } else { each })
+    let mut shares: Vec<u8> = (kinds.iter())
+        .map(|&k| match k {
+            None => 0,
+            Some(EnemyKind::Captain) => CAPTAIN_SCRAP,
+            Some(_) => each,
+        })
         .collect();
     for _ in 0..rest.checked_rem(n).unwrap_or(0) {
         let pick = usize::try_from(rng.below(n.into())).ok();
