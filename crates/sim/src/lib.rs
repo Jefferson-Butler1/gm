@@ -22,6 +22,7 @@ mod gun;
 pub mod hull;
 mod input;
 mod path;
+pub mod pickup;
 mod player;
 mod pool;
 mod rng;
@@ -41,6 +42,7 @@ pub use gun::PhasePistol;
 pub use hull::{CLASSES, CORVETTE, FREIGHTER, GUNSHIP, Template};
 pub use input::{Buttons, MOVE_BUCKETS, PlayerInput, TickInputs};
 pub use path::FlowField;
+pub use pickup::{Pickup, PickupKind};
 pub use player::{ASSIST_CONE, MAX_HP, PLAYER_RADIUS, Player};
 pub use pool::POOL;
 pub use rng::Rng;
@@ -111,6 +113,13 @@ pub struct SimState {
     /// The players' bullets.
     pub bullets: Arena<Bullet>,
     pub enemy_bullets: Arena<Bullet>,
+    /// Scrap on the floor, dropped by dead enemies.
+    pub pickups: Arena<Pickup>,
+    /// The party's shared Scrap wallet, for this run.
+    pub scrap: u32,
+    /// Each enemy placement's share of the floor's Scrap ([`pickup::budget`]), in the
+    /// floor's placement order: rolled with the ship, handed out as enemies spawn.
+    pub scrap_shares: Vec<u8>,
     /// Bit `i` set = room `i` is revealed (ETG fog): a player started in it or opened a
     /// hatch into it. The future minimap's explored set.
     pub visited: u64,
@@ -127,13 +136,15 @@ impl SimState {
     /// A fresh single-player run: a ship of the seed's class ([`Template::for_seed`])
     /// generated from `seed`, the party standing in
     /// its start airlock with every hatch in its [`HatchKind::initial`] state: closed, but
-    /// airlocks locked and crawlspaces behind panels. `config` is clamped to what the sim
-    /// handles (see [`RunConfig::sanitized`]).
+    /// airlocks locked and crawlspaces behind panels, and the floor's Scrap budget rolled
+    /// ([`pickup::budget`]). `config` is clamped to what the sim handles (see
+    /// [`RunConfig::sanitized`]).
     #[must_use]
     pub fn new(seed: u64, config: RunConfig) -> Self {
         let config = config.sanitized();
         let ship = Ship::generate(Template::for_seed(seed), seed);
         let (room, at) = ship.start();
+        let scrap_shares = pickup::budget(seed, &ship);
         let player = Player {
             pos: at,
             solid: at,
@@ -150,6 +161,9 @@ impl SimState {
             enemies: Arena::default(),
             bullets: Arena::default(),
             enemy_bullets: Arena::default(),
+            pickups: Arena::default(),
+            scrap: 0,
+            scrap_shares,
             visited: bit(room),
             cleared: 0,
             chests: 0,
@@ -280,6 +294,11 @@ pub enum Event {
     },
     /// A player stepped out through an unlocked airlock: the run is won.
     Won,
+    /// A player picked up `value` Scrap.
+    ScrapCollected {
+        slot: usize,
+        value: u8,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
