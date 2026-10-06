@@ -569,7 +569,7 @@ fn an_enemy_never_sees_through_a_closed_hatch_nor_leaves_its_room_through_an_ope
     // two cells above the hatch, a hunting-range rusher four cells below it, standing
     // still (no patrol) looking straight at the hatch.
     let mut state = above_the_hold();
-    state.cleared = 1 << CARGO_HOLD.0;
+    state.cleared |= 1 << CARGO_HOLD.0;
     state.config.tuning.patrol_speed = 0;
     let player = pos(&state);
     let rusher = state.enemies.insert(Enemy {

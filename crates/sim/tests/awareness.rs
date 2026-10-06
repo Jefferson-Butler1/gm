@@ -58,7 +58,7 @@ fn hatch(state: &SimState, side: Dir) -> Option<(HatchId, FxVec2)> {
 /// counts as cleared, so no fight starts.
 fn hold(at: (usize, usize)) -> SimState {
     let mut state = fresh();
-    state.cleared = 1 << CARGO_HOLD.0;
+    state.cleared |= 1 << CARGO_HOLD.0;
     move_player(&mut state, at);
     state
 }
@@ -368,7 +368,7 @@ const NEAR_HATCH: (usize, usize) = (11, 8);
 /// sight behind the airlock's own closed hatch. The hold counts as cleared, so no fight
 /// starts. Returns that tick's events.
 fn bang_the_hatch_open(state: &mut SimState) -> Vec<Event> {
-    state.cleared = 1 << CARGO_HOLD.0;
+    state.cleared |= 1 << CARGO_HOLD.0;
     let start = player_pos(state);
     let spot = hatch(state, Dir::North).map(|(_, spot)| spot);
     put_player(state, spot.unwrap_or_default());

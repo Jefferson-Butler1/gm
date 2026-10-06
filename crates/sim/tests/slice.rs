@@ -455,16 +455,14 @@ fn a_scripted_player_clears_every_room_kills_the_captain_and_escapes() {
         let fights: Vec<RoomId> = (0..)
             .map(RoomId)
             .zip(ship.rooms())
-            .filter_map(|(id, r)| r.room.has_enemies().then_some(id))
+            .filter_map(|(id, r)| (r.room.has_enemies() && id != ship.start().0).then_some(id))
             .collect();
         let mut sorted = cleared.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, fights, "every fight, once");
         assert_eq!(cleared.last(), Some(&bridge(ship)), "the bridge last");
-        let placed: usize = ship
-            .rooms()
-            .iter()
-            .map(|r| r.room)
+        let placed: usize = (ship.rooms().iter().zip(0..))
+            .filter_map(|(r, id)| (RoomId(id) != ship.start().0).then_some(r.room))
             .flat_map(|r| {
                 std::iter::once(r.base).chain(r.reinforcements.iter().map(|l| l.placements))
             })

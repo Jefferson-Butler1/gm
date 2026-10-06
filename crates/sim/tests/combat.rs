@@ -623,7 +623,7 @@ fn pillars_stop_enemy_bullets_and_block_a_shooters_aim() {
     };
     let behind_the_pillar = || {
         let mut state = SimState::new(SEED, RunConfig::default());
-        state.cleared = 1 << 5;
+        state.cleared |= 1 << 5;
         state.players[0].as_mut().unwrap().pos = row(2416);
         state
     };

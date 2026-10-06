@@ -165,7 +165,8 @@ impl SimState {
             scrap: 0,
             scrap_shares,
             visited: bit(room),
-            cleared: 0,
+            // The boarding airlock: its boarding party is never fought.
+            cleared: bit(room),
             chests: 0,
             config,
         }
