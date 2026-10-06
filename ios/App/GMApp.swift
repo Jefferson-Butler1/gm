@@ -34,6 +34,7 @@ final class GameModel {
     private static let cameraKey = "camera"
     private static let volumeKey = "audio.volume.v2"  // v2: sound starts off
     private static let hapticsKey = "haptics"
+    private static let minimapKey = "minimap"
 
     var hud: HudData?
     var controlsKey: String = UserDefaults.standard.string(forKey: GameModel.controlsKey)
@@ -80,6 +81,13 @@ final class GameModel {
     var haptics: Bool = UserDefaults.standard.object(forKey: GameModel.hapticsKey) as? Bool ?? true {
         didSet { UserDefaults.standard.set(haptics, forKey: Self.hapticsKey) }
     }
+    /// The minimap over the top of the screen; applies live.
+    var minimap: Bool = UserDefaults.standard.object(forKey: GameModel.minimapKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(minimap, forKey: Self.minimapKey)
+            game?.setMinimap(visible: minimap)
+        }
+    }
     /// Difficulty and tuning; the game applies them live.
     var runSettings: RunSettings = RunSettingsStore.load() {
         didSet {
@@ -119,6 +127,7 @@ final class GameModel {
         game.setLayout(layout: layouts[controlsKey])
         game.setAssistStrength(strength: assist)
         game.setCamera(settings: camera)
+        game.setMinimap(visible: minimap)
         if paused { game.pause() }
     }
 
@@ -325,6 +334,9 @@ struct ControlsSettings: View {
                 }
                 Section("Feedback") {
                     Toggle("Haptics", isOn: $model.haptics)
+                }
+                Section("Display") {
+                    Toggle("Minimap", isOn: $model.minimap)
                 }
                 Section("Camera") {
                     Picker("Camera look", selection: $model.camera.look) {
