@@ -27,6 +27,7 @@ final class HapticsPlayer {
             case .enemyKilled: medium.impactOccurred()
             case .waveStart: notification.notificationOccurred(.warning)
             case .hatchSeal: rigid.impactOccurred(intensity: 1)
+            case .emp: heavy.impactOccurred(intensity: 0.9)
             case .playerHurt: heavy.impactOccurred()
             case .won: notification.notificationOccurred(.success)
             case .playerDied: notification.notificationOccurred(.error)

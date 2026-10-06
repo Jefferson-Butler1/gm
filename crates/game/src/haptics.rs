@@ -26,6 +26,8 @@ pub enum Haptic {
     WaveStart,
     /// An encounter started: the room's hatches sealed.
     HatchSeal,
+    /// An EMP went off.
+    Emp,
     /// Slot 0 took a hit or fell into a pit.
     PlayerHurt,
     Won,
@@ -54,6 +56,7 @@ impl Haptics {
                 Event::PlayerHit { slot: 0 } | Event::PlayerFell { slot: 0 } => Haptic::PlayerHurt,
                 Event::PlayerDied { slot: 0 } => Haptic::PlayerDied,
                 Event::WaveStarted { .. } => Haptic::WaveStart,
+                Event::EmpDetonated { .. } => Haptic::Emp,
                 Event::Won => Haptic::Won,
                 _ => continue,
             };

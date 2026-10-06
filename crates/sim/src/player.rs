@@ -11,6 +11,7 @@
 
 use crate::combat::line_of_fire;
 use crate::config::{Tuning, per_tick};
+use crate::emp::EMP_START;
 use crate::gun::PhasePistol;
 use crate::input::{Buttons, MOVE_BUCKETS, PlayerInput};
 use crate::room::CELL;
@@ -60,6 +61,8 @@ pub struct Player {
     pub gun: PhasePistol,
     /// A shove still moving the player, pt per tick; it halves every tick.
     pub knock: FxVec2,
+    /// EMPs carried.
+    pub emps: u8,
 }
 
 impl Player {
@@ -87,6 +90,7 @@ impl Player {
                 x: Fx::ZERO,
                 y: Fx::ZERO,
             },
+            emps: EMP_START,
         }
     }
 
@@ -309,7 +313,7 @@ pub fn dist_sq(a: FxVec2, b: FxVec2) -> i128 {
 }
 
 /// Angle of the center of a move bucket.
-fn bucket_angle(bucket: u8) -> u16 {
+pub fn bucket_angle(bucket: u8) -> u16 {
     let per_bucket = (1_u32 << 16)
         .checked_div(u32::from(MOVE_BUCKETS))
         .unwrap_or(0);

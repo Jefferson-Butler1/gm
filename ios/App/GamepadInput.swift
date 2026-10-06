@@ -2,7 +2,8 @@ import GameController
 
 /// The current game controller as the game's input, polled once per frame: left stick
 /// moves, right stick aims, right trigger fires, left trigger or B (circle) dodges, X
-/// (square) vents. Menu opens and closes settings.
+/// (square) vents, Y (triangle) or the right shoulder uses an EMP. Menu opens and closes
+/// settings.
 final class GamepadInput {
     var onMenu: () -> Void = {}
 
@@ -27,7 +28,8 @@ final class GamepadInput {
             aimX: pad.rightThumbstick.xAxis.value, aimY: -pad.rightThumbstick.yAxis.value,
             fire: pad.rightTrigger.isPressed,
             dodge: pad.leftTrigger.isPressed || pad.buttonB.isPressed,
-            vent: pad.buttonX.isPressed)
+            vent: pad.buttonX.isPressed,
+            emp: pad.buttonY.isPressed || pad.rightShoulder.isPressed)
     }
 
     private func watchMenu(_ controller: GCController?) {

@@ -17,6 +17,7 @@ mod arena;
 mod checksum;
 mod combat;
 mod config;
+mod emp;
 mod encounter;
 mod gun;
 pub mod hull;
@@ -37,6 +38,7 @@ pub use combat::{
     SPREAD_SHOOTER_HP, chase,
 };
 pub use config::{Difficulty, RunConfig, Tuning, VentStyle, per_tick};
+pub use emp::{BLAST_RADIUS, EMP_START, Emp, STUN_TICKS, THROW_TICKS};
 pub use encounter::reveal;
 pub use gun::PhasePistol;
 pub use hull::{CLASSES, CORVETTE, FREIGHTER, GUNSHIP, Template};
@@ -113,6 +115,8 @@ pub struct SimState {
     /// The players' bullets.
     pub bullets: Arena<Bullet>,
     pub enemy_bullets: Arena<Bullet>,
+    /// EMPs in flight.
+    pub emps: Arena<Emp>,
     /// Scrap on the floor, dropped by dead enemies.
     pub pickups: Arena<Pickup>,
     /// The party's shared Scrap wallet, for this run.
@@ -161,6 +165,7 @@ impl SimState {
             enemies: Arena::default(),
             bullets: Arena::default(),
             enemy_bullets: Arena::default(),
+            emps: Arena::default(),
             pickups: Arena::default(),
             scrap: 0,
             scrap_shares,
@@ -295,6 +300,14 @@ pub enum Event {
     },
     /// A player stepped out through an unlocked airlock: the run is won.
     Won,
+    /// A player used an EMP: thrown, or set off at its feet.
+    EmpThrown {
+        slot: usize,
+    },
+    /// An EMP went off at `pos` (see [`emp`]).
+    EmpDetonated {
+        pos: FxVec2,
+    },
     /// A player picked up `value` Scrap.
     ScrapCollected {
         slot: usize,

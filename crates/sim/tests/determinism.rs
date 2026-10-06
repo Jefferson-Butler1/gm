@@ -29,14 +29,14 @@ const AUTO_FIGHT: Range<u64> = 1355..TICKS;
 
 /// Update when a deliberate sim change alters results; never to paper over a mismatch
 /// between machines.
-const GOLDEN_TRACE: u64 = 0x4e2c_66fd_59f2_373b;
+const GOLDEN_TRACE: u64 = 0x71f7_ceed_1566_9817;
 
 /// A reproducible input script for two players: scripted restarts, walks into the
 /// reactor, and a stand-still death (see the phase constants); pseudo-random sticks, assist
 /// and buttons elsewhere (never RESTART, which would abandon the live run). Dodge is
 /// pressed on ~1 tick in 32 so rolls, dropped dodges and walking all show up; FIRE is held
 /// about half the time, so the pistol empties and auto-vents; VENT is pressed on ~1 tick
-/// in 256 for manual vents.
+/// in 256 for manual vents, and EMP on another (thrown or tapped at random).
 fn script() -> Vec<TickInputs> {
     let mut rng = Rng::from_seed(0x1A7);
     (0..TICKS)
@@ -49,6 +49,7 @@ fn script() -> Vec<TickInputs> {
                     move_mag: bits[1],
                     aim: u16::from_le_bytes([bits[2], bits[3]]),
                     assist: bits[5],
+                    throw: (bits[6] & 1 == 1).then_some(bits[0] % sim::MOVE_BUCKETS),
                     buttons: Buttons(bits[4] & !Buttons::DODGE.0 & !Buttons::RESTART.0 & 0b1_1111)
                         | if bits[6] < 8 {
                             Buttons::DODGE
@@ -57,6 +58,11 @@ fn script() -> Vec<TickInputs> {
                         }
                         | if bits[7] == 0 {
                             Buttons::VENT
+                        } else {
+                            Buttons::default()
+                        }
+                        | if bits[7] == 1 {
+                            Buttons::EMP
                         } else {
                             Buttons::default()
                         },
@@ -185,7 +191,7 @@ fn snapshots_share_the_ship_and_checksum_the_live_hatches() {
 /// mid-roll dodges, a hit on a vulnerable landing), falling into a pit, shooting, venting
 /// (auto and manual, and the refills), kills, opening a hatch into a sealed encounter
 /// with a second wave, shooters firing, Scrap dropped and collected (so rollback covers
-/// pickups), player deaths and restarts.
+/// pickups), EMPs going off, player deaths and restarts.
 #[test]
 fn script_exercises_movement_dodge_combat_and_rooms() {
     let mut state = start();
@@ -240,11 +246,12 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     let waves = count(|e| matches!(e, Event::WaveStarted { .. }));
     let cleared = count(|e| matches!(e, Event::RoomCleared { .. }));
     let collected = count(|e| matches!(e, Event::ScrapCollected { .. }));
+    let emps = count(|e| matches!(e, Event::EmpDetonated { .. }));
     println!(
         "rolls={rolls} dropped_dodges={dropped_dodges} landing_hits={landing_hits} \
          shots={shots} kills={kills} deaths={deaths} restarts={restarts} \
          entries={entries} waves={waves} cleared={cleared} sealed={sealed} \
-         enemy_shots={enemy_shots} falls={falls} collected={collected}"
+         enemy_shots={enemy_shots} falls={falls} collected={collected} emps={emps}"
     );
     println!("auto_vents={auto_vents} manual_vents={manual_vents} refills={refills}");
     assert!(
@@ -271,4 +278,6 @@ fn script_exercises_movement_dodge_combat_and_rooms() {
     assert!(falls >= 2, "falls={falls}");
     // Kills drop Scrap, collected (magnetized on the clear, or walked over).
     assert!(collected >= 1, "collected={collected}");
+    // EMPs go off (so rollback covers them in flight).
+    assert!(emps >= 2, "emps={emps}");
 }

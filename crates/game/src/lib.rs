@@ -74,6 +74,8 @@ pub struct HudData {
     pub vent_progress: f32,
     /// The party's Scrap.
     pub scrap: u32,
+    /// Slot 0's EMPs.
+    pub emps: u8,
     /// This frame's sounds, each at most once. Per frame: play them whether or not `seq`
     /// changed.
     pub sounds: Vec<Sound>,
@@ -406,7 +408,8 @@ impl Game {
         let roll_ready = player.is_none_or(|p| p.can_roll());
         let max_charges = g.current.config.tuning.charges;
         let vent_ready = player.is_some_and(|p| !p.gun.venting() && p.gun.charges < max_charges);
-        let overlay = g.controls.overlay(roll_ready, vent_ready);
+        let emp_ready = player.is_some_and(|p| p.emps > 0);
+        let overlay = g.controls.overlay(roll_ready, vent_ready, emp_ready);
         // The nearest enemy in slot 0's room that has noticed the party, as an offset from
         // it: what the enemy look leans toward. Unaware ones patrol, and the camera
         // shouldn't wander with them.
