@@ -92,6 +92,8 @@ pub struct Viewport {
 /// A connected game controller this frame, from Swift. Sticks are `-1..=1` in view axes
 /// (+x right, +y down), after the controller's own deadzone.
 #[derive(uniffi::Record, Clone, Copy, Debug, Default, PartialEq)]
+// One bool per pad button, as the host reads them.
+#[allow(clippy::struct_excessive_bools)]
 pub struct GamepadState {
     pub move_x: f32,
     pub move_y: f32,
@@ -103,6 +105,8 @@ pub struct GamepadState {
     pub dodge: bool,
     /// Vents on press.
     pub vent: bool,
+    /// Uses an EMP on press: thrown along the aim stick, or at the feet with it centered.
+    pub emp: bool,
 }
 
 struct Stick {
@@ -165,6 +169,14 @@ enum Shot {
     Auto,
 }
 
+/// An EMP button press: a swipe off it throws along the swipe's move bucket, a tap sets
+/// it off at the feet.
+#[derive(Clone, Copy)]
+enum EmpPress {
+    Throw(u8),
+    Drop,
+}
+
 /// A dodge waiting for the next sim tick.
 #[derive(Clone, Copy)]
 enum Dodge {
@@ -196,6 +208,10 @@ pub struct Controls {
     player_view: Option<[f32; 2]>,
     /// A vent tap waiting for the next sim tick.
     vent: bool,
+    /// A touch that started on the EMP button and hasn't swiped yet: (id, start).
+    emp_touch: Option<(u64, [f32; 2])>,
+    /// An EMP waiting for the next sim tick.
+    emp: Option<EmpPress>,
     /// A restart tap waiting for the next sim tick.
     restart: bool,
     /// While connected, the gamepad replaces the touch sticks and buttons.
@@ -221,6 +237,8 @@ impl Controls {
             shot: None,
             player_view: None,
             vent: false,
+            emp_touch: None,
+            emp: None,
             restart: false,
             gamepad: None,
             last_pad: GamepadState::default(),
@@ -272,6 +290,8 @@ impl Controls {
         self.fire_touch = None;
         self.shot = None;
         self.vent = false;
+        self.emp_touch = None;
+        self.emp = None;
     }
 
     pub fn set_scheme(&mut self, scheme: Scheme) {
@@ -298,6 +318,14 @@ impl Controls {
         match phase {
             TouchPhase::Began => self.begin(id, p),
             TouchPhase::Moved => {
+                if let Some((touch, start)) = self.emp_touch
+                    && touch == id
+                    && dist(p, start) > DODGE_SWIPE
+                {
+                    let [dx, dy] = sub(p, start);
+                    self.emp = Some(EmpPress::Throw(move_bucket(turns(dx, dy))));
+                    self.emp_touch = None;
+                }
                 if let Some((touch, start)) = self.dodge_touch
                     && touch == id
                     && dist(p, start) > DODGE_SWIPE
@@ -331,6 +359,10 @@ impl Controls {
                 if self.fire_touch == Some(id) {
                     self.fire_touch = None;
                 }
+                if self.emp_touch.is_some_and(|(touch, _)| touch == id) {
+                    self.emp = Some(EmpPress::Drop);
+                    self.emp_touch = None;
+                }
                 if self.dodge_touch.is_some_and(|(touch, _)| touch == id) {
                     self.dodge = Some(Dodge::Button);
                     self.dodge_touch = None;
@@ -358,6 +390,10 @@ impl Controls {
         let hits = |spot: Spot| dist(p, spot.at) < spot.hit;
         if hits(self.layout.vent) {
             self.vent = true;
+            return;
+        }
+        if hits(self.layout.emp) {
+            self.emp_touch = Some((id, p));
             return;
         }
         if self.scheme.uses(ControlKind::Fire) && hits(self.layout.fire) {
@@ -448,6 +484,13 @@ impl Controls {
         if std::mem::take(&mut self.vent) {
             input.buttons |= Buttons::VENT;
         }
+        if let Some(press) = self.emp.take() {
+            input.buttons |= Buttons::EMP;
+            input.throw = match press {
+                EmpPress::Throw(bucket) => Some(bucket),
+                EmpPress::Drop => None,
+            };
+        }
         let shot = match self.gamepad {
             Some(pad) => self.pad_sticks(pad, &mut input),
             None => self.touch_sticks(&mut input),
@@ -486,6 +529,11 @@ impl Controls {
         }
         if pad.vent && !last.vent {
             input.buttons |= Buttons::VENT;
+        }
+        if pad.emp && !last.emp {
+            input.buttons |= Buttons::EMP;
+            input.throw = (pad.aim_x.hypot(pad.aim_y) > AIM_DEADZONE)
+                .then(|| move_bucket(turns(pad.aim_x, pad.aim_y)));
         }
         let mag = pad.move_x.hypot(pad.move_y).min(1.0);
         if mag > MOVE_DEADZONE {
@@ -542,7 +590,7 @@ impl Controls {
     }
 
     /// The touch controls to draw: none while a gamepad is connected.
-    pub fn overlay(&self, roll_ready: bool, vent_ready: bool) -> Overlay {
+    pub fn overlay(&self, roll_ready: bool, vent_ready: bool, emp_ready: bool) -> Overlay {
         let mut overlay = Overlay::default();
         if self.gamepad.is_some() {
             return overlay;
@@ -582,6 +630,7 @@ impl Controls {
         overlay.dodge = button(ControlKind::Dodge, self.layout.dodge, roll_ready);
         overlay.fire = button(ControlKind::Fire, self.layout.fire, true);
         overlay.vent = button(ControlKind::Vent, self.layout.vent, vent_ready);
+        overlay.emp = button(ControlKind::Emp, self.layout.emp, emp_ready);
         overlay
     }
 }
@@ -884,10 +933,13 @@ mod tests {
         let [dx, dy] = c.layout.dodge.at;
         c.touch(2, TouchPhase::Began, dx, dy);
         assert!(!c.next_input().buttons.contains(Buttons::DODGE));
-        let overlay = c.overlay(true, true);
+        let overlay = c.overlay(true, true, true);
         assert!(overlay.sticks.iter().all(Option::is_none) && overlay.dodge.is_none());
         c.set_gamepad(None);
-        assert!(c.overlay(true, true).dodge.is_some(), "back on disconnect");
+        assert!(
+            c.overlay(true, true, true).dodge.is_some(),
+            "back on disconnect"
+        );
     }
 
     #[test]
@@ -917,13 +969,13 @@ mod tests {
         c.touch(2, TouchPhase::Began, x + STICK_RADIUS, y); // full right from the base
         let input = c.next_input();
         assert_eq!((input.move_dir, input.move_mag), (0, 255));
-        let overlay = c.overlay(true, true);
+        let overlay = c.overlay(true, true, true);
         assert!(overlay.sticks[1].is_none(), "the fire side floats");
     }
 
     #[test]
     fn the_default_layout_keeps_the_built_in_positions() {
-        use ControlKind::{AimStick, Dodge, Fire, MoveStick, Vent};
+        use ControlKind::{AimStick, Dodge, Emp, Fire, MoveStick, Vent};
         // Where the controls sat before layouts, on the test viewport.
         let close = |a: Spot, at: [f32; 2], radius: f32| {
             assert!(dist(a.at, at) < 1e-3, "{a:?} vs {at:?}");
@@ -946,9 +998,9 @@ mod tests {
         };
         assert_eq!(
             kinds(Scheme::Claw),
-            [MoveStick, AimStick, Dodge, Vent, Fire]
+            [MoveStick, AimStick, Dodge, Vent, Fire, Emp]
         );
-        assert_eq!(kinds(Scheme::FixedAutoAim), [MoveStick, Vent]);
+        assert_eq!(kinds(Scheme::FixedAutoAim), [MoveStick, Vent, Emp]);
     }
 
     #[test]

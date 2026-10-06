@@ -1,7 +1,7 @@
 import SwiftUI
 
 extension ControlKind {
-    static let all: [ControlKind] = [.moveStick, .aimStick, .dodge, .vent, .fire]
+    static let all: [ControlKind] = [.moveStick, .aimStick, .dodge, .vent, .fire, .emp]
 
     /// Stable key for persistence and the exported JSON.
     var key: String {
@@ -11,6 +11,7 @@ extension ControlKind {
         case .dodge: "dodge"
         case .vent: "vent"
         case .fire: "fire"
+        case .emp: "emp"
         }
     }
 
@@ -21,6 +22,7 @@ extension ControlKind {
         case .dodge: \.dodge
         case .vent: \.vent
         case .fire: \.fire
+        case .emp: \.emp
         }
     }
 
@@ -31,16 +33,18 @@ extension ControlKind {
         case .dodge: "Dodge"
         case .vent: "Vent"
         case .fire: "Fire"
+        case .emp: "EMP"
         }
     }
 
-    /// Matches the in-game button colors (render's DODGE/VENT/FIRE_COLOR).
+    /// Matches the in-game button colors (render's DODGE/VENT/FIRE/EMP_COLOR).
     var color: Color {
         switch self {
         case .moveStick, .aimStick: .white
         case .dodge: Color(red: 0.3, green: 0.9, blue: 1)
         case .vent: Color(red: 1, green: 0.75, blue: 0.25)
         case .fire: Color(red: 1, green: 0.35, blue: 0.3)
+        case .emp: Color(red: 0.55, green: 0.7, blue: 1)
         }
     }
 }
@@ -53,7 +57,8 @@ enum ControlLayoutStore {
     private static let key = "controls.layouts"
     private static let exportName = "control-layouts.json"
 
-    /// Saved as `[preset: [control: [x, y, size]]]`; a preset missing a control is dropped.
+    /// Saved as `[preset: [control: [x, y, size]]]`; a preset missing a control is dropped,
+    /// except the EMP, added later, which falls back to a spot left of the vent.
     static func load() -> [String: ControlLayout] {
         guard let saved = UserDefaults.standard.dictionary(forKey: key) as? [String: [String: [Double]]] else {
             return [:]
@@ -65,7 +70,8 @@ enum ControlLayoutStore {
             }
             guard let move = place(.moveStick), let aim = place(.aimStick), let dodge = place(.dodge),
                   let vent = place(.vent), let fire = place(.fire) else { return nil }
-            return ControlLayout(moveStick: move, aimStick: aim, dodge: dodge, vent: vent, fire: fire)
+            let emp = place(.emp) ?? ControlPlacement(x: max(vent.x - 0.1, 0), y: vent.y + 0.08, size: 1)
+            return ControlLayout(moveStick: move, aimStick: aim, dodge: dodge, vent: vent, fire: fire, emp: emp)
         }
     }
 

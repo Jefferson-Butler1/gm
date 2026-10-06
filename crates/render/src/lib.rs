@@ -115,6 +115,14 @@ const NUB_HALF: f32 = 4.0;
 const NUB_OFFSET: f32 = 22.0;
 const DODGE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
 const VENT_COLOR: [f32; 3] = [1.0, 0.75, 0.25];
+/// EMPs: the button, the thrown one, its blast and stunned enemies' sparks.
+const EMP_COLOR: [f32; 3] = [0.55, 0.7, 1.0];
+/// A thrown EMP's drawn radius.
+const EMP_R: f32 = 7.0;
+/// A stunned enemy's spark ring blinks on for this many ticks in every
+/// [`STUN_BLINK_PERIOD`].
+const STUN_BLINK_TICKS: u64 = 4;
+const STUN_BLINK_PERIOD: u64 = 8;
 const FIRE_COLOR: [f32; 3] = [1.0, 0.35, 0.3];
 const BUTTON_READY_ALPHA: f32 = 0.35;
 const BUTTON_UNREADY_ALPHA: f32 = 0.1;
@@ -217,6 +225,7 @@ pub struct Overlay {
     pub vent: Option<ButtonView>,
     /// A separate fire button (the claw grip's index finger).
     pub fire: Option<ButtonView>,
+    pub emp: Option<ButtonView>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -295,6 +304,8 @@ enum Flash {
     Muzzle(usize),
     /// An enemy died here.
     Puff(FxVec2),
+    /// An EMP went off here.
+    Emp(FxVec2),
 }
 
 impl Flash {
@@ -305,6 +316,7 @@ impl Flash {
             Self::Alert(_) | Self::Query(_) => 40,
             Self::Muzzle(_) => 3,
             Self::Puff(_) => 15,
+            Self::Emp(_) => 24,
         }
     }
 }
@@ -398,6 +410,7 @@ impl Renderer {
                 Event::PlayerHit { slot } | Event::PlayerFell { slot } => Flash::Player(slot),
                 Event::ShotFired { slot } => Flash::Muzzle(slot),
                 Event::EnemyKilled { pos, .. } => Flash::Puff(pos),
+                Event::EmpDetonated { pos } => Flash::Emp(pos),
                 Event::EnemyAlerted { enemy } => Flash::Alert(enemy),
                 Event::EnemyInvestigating { enemy } => Flash::Query(enemy),
                 Event::PlayerDied { .. }
@@ -408,6 +421,7 @@ impl Renderer {
                 | Event::RoomCleared { .. }
                 | Event::ChestOpened { .. }
                 | Event::ScrapCollected { .. }
+                | Event::EmpThrown { .. }
                 | Event::Won => continue,
             };
             if !self.flashes.contains(&(flash, tick)) {
@@ -567,6 +581,7 @@ impl Renderer {
                 enemy_color(e)
             };
             self.push_world(pos, [radius, radius], color, CIRCLE);
+            self.push_stun(pos, radius, e, current.tick);
             self.push_mark(id, [pos[0], pos[1] - radius]);
             if let Some(left) = e.aiming(telegraph) {
                 // 0 -> 1 over the telegraph, interpolated like `push_telegraph`.
@@ -610,6 +625,7 @@ impl Renderer {
             let core = enemy_bullet * 0.45;
             self.push_world(pos, [core, core], HIT_COLOR, CIRCLE);
         }
+        self.push_emps(prev, current, alpha);
         self.push_effects(&players, current.tick, alpha);
         if let Some((focus, _)) = players.iter().flatten().next() {
             // The way out is the minimap's glow; the caret stands in only with it hidden.
@@ -669,7 +685,7 @@ impl Renderer {
         }
     }
 
-    /// Muzzle flashes and death puffs, fading over their lifetimes. `players` are the
+    /// Muzzle flashes, death puffs and EMP blasts, fading over their lifetimes. `players` are the
     /// frame's interpolated positions (as [`Self::push_scene`] draws them) and states.
     fn push_effects(&mut self, players: &[Option<([f32; 2], Player)>], tick: u64, alpha: f32) {
         let rusher = sim::ENEMY_RADIUS.to_num::<f32>();
@@ -695,6 +711,15 @@ impl Renderer {
                     self.push_world(at, [ring, ring], [r, g, b, left], RING);
                     let core = rusher * left;
                     self.push_world(at, [core, core], [1.0, 1.0, 1.0, 0.6 * left], CIRCLE);
+                }
+                Flash::Emp(pos) => {
+                    // A ring out to the blast's edge, and a fading flash inside it.
+                    let at = [pos.x.to_num(), pos.y.to_num()];
+                    let [r, g, b] = EMP_COLOR;
+                    let blast = sim::BLAST_RADIUS.to_num::<f32>();
+                    let ring = blast * (1.0 - left).mul_add(0.7, 0.3);
+                    self.push_world(at, [ring, ring], [r, g, b, left], RING);
+                    self.push_world(at, [blast, blast], [r, g, b, 0.3 * left], CIRCLE);
                 }
                 Flash::Enemy(_) | Flash::Player(_) | Flash::Alert(_) | Flash::Query(_) => {}
             }
@@ -791,6 +816,7 @@ impl Renderer {
             (overlay.dodge, DODGE_COLOR),
             (overlay.vent, VENT_COLOR),
             (overlay.fire, FIRE_COLOR),
+            (overlay.emp, EMP_COLOR),
         ];
         for (button, [r, g, b]) in buttons {
             let Some(d) = button else {
@@ -860,6 +886,26 @@ impl Renderer {
             let [w, h] = CHEST_HALF;
             self.push_world(at, [w, h], color, SQUARE);
             self.push_world([at[0], at[1] - h / 3.0], [w, 1.0], lid, SQUARE);
+        }
+    }
+
+    /// A blinking spark ring round an EMP-stunned enemy drawn at `pos`.
+    fn push_stun(&mut self, pos: [f32; 2], radius: f32, e: &Enemy, tick: u64) {
+        if e.stun_ticks > 0 && tick.checked_rem(STUN_BLINK_PERIOD) < Some(STUN_BLINK_TICKS) {
+            let [r, g, b] = EMP_COLOR;
+            let ring = radius * 1.25;
+            self.push_world(pos, [ring, ring], [r, g, b, 0.9], RING);
+        }
+    }
+
+    /// EMPs in flight, interpolated like bullets.
+    fn push_emps(&mut self, prev: &SimState, current: &SimState, alpha: f32) {
+        let [r, g, b] = EMP_COLOR;
+        for (id, e) in current.emps.iter() {
+            let from = prev.emps.get(id).map_or(e.pos, |p| p.pos);
+            let pos = lerp(from, e.pos, alpha);
+            self.push_world(pos, [EMP_R, EMP_R], [r, g, b, 1.0], CIRCLE);
+            self.push_world(pos, [EMP_R * 0.45, EMP_R * 0.45], HIT_COLOR, CIRCLE);
         }
     }
 

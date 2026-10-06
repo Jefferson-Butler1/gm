@@ -66,6 +66,7 @@ impl Stats {
             1.0 - f32::from(g.vent_ticks) / f32::from(g.vent_length.max(1))
         });
         let scrap = state.scrap;
+        let emps = state.players[0].map_or(0, |p| p.emps);
         let h = &mut self.hud;
         let gun_changed = (h.charges, h.max_charges, h.venting) != (charges, max_charges, venting)
             || h.vent_progress.to_bits() != vent_progress.to_bits();
@@ -73,12 +74,12 @@ impl Stats {
             || h.room != name
             || h.hint != hint
             || gun_changed
-            || h.scrap != scrap
+            || (h.scrap, h.emps) != (scrap, emps)
         {
             (h.hp, h.max_hp, h.run, h.wave, h.waves) = (hp, MAX_HP, run, wave, waves);
             (h.charges, h.max_charges, h.venting, h.vent_progress) =
                 (charges, max_charges, venting, vent_progress);
-            h.scrap = scrap;
+            (h.scrap, h.emps) = (scrap, emps);
             h.room = name;
             hint.clone_into(&mut h.hint);
             h.seq = h.seq.wrapping_add(1);

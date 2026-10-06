@@ -11,7 +11,9 @@ use crate::player::{HEART, KNOCKBACK, PLAYER_RADIUS, Player, RUSHER_DAMAGE, dist
 use crate::rng::Rng;
 use crate::room::{cell_center, cell_of};
 use crate::ship::{Body, HatchId, Spot, Tiles};
-use crate::{Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, encounter, pickup, trig};
+use crate::{
+    Buttons, Event, Fx, FxVec2, Run, SimState, TickEvents, TickInputs, emp, encounter, pickup, trig,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -164,6 +166,9 @@ pub struct Enemy {
     /// Its share of the floor's Scrap, dropped where it dies; each hit it lands on a
     /// player halves it (see [`crate::pickup`]).
     pub scrap: u8,
+    /// EMP stun left (see [`crate::emp`]); nonzero = stunned: it doesn't notice, move,
+    /// fire or hurt on contact, but can be hit.
+    pub stun_ticks: u8,
 }
 
 /// An unaware enemy's patrol: stand looking around, walk slowly to a random nearby cell,
@@ -284,6 +289,7 @@ impl Enemy {
                 contact_cooldown: 0,
             },
             scrap: 0,
+            stun_ticks: 0,
         }
     }
 
@@ -311,6 +317,7 @@ impl Enemy {
                 strafe: 1,
             },
             scrap: 0,
+            stun_ticks: 0,
         }
     }
 
@@ -362,7 +369,8 @@ impl Enemy {
     }
 }
 
-/// One live tick, in order: players (move, fall, respawn, fire), their bullets, enemies
+/// One live tick, in order: players (move, fall, respawn, fire), EMPs (used, flying,
+/// going off), their bullets, enemies
 /// (notice, move, fire, separate, contact, telegraph countdown), enemy bullets, the death
 /// check, the access panels shot, the room (waves, hatches, chests, the airlocks), then
 /// the pickups (magnetized ones fly, touched ones are collected).
@@ -386,7 +394,14 @@ pub fn tick(state: &mut SimState, inputs: &TickInputs, events: &mut TickEvents) 
         })
         .collect();
     let shots = players(state, inputs, tiles, events);
-    let struck = bullets(state, tiles, events);
+    let mut struck = Vec::new();
+    for (slot, input) in inputs.players.iter().enumerate() {
+        if input.buttons.contains(Buttons::EMP) {
+            struck.extend(emp::press(state, slot, input.throw, tiles, events));
+        }
+    }
+    struck.extend(emp::tick(state, tiles, events));
+    struck.extend(bullets(state, tiles, events));
     let senses = Senses {
         tiles,
         tuning: state.config.tuning,
@@ -686,6 +701,10 @@ fn enemies(state: &mut SimState, senses: &Senses<'_>, events: &mut TickEvents) {
         if senses.players.is_empty() {
             continue;
         }
+        if enemy.stun_ticks > 0 {
+            enemy.stun_ticks = enemy.stun_ticks.saturating_sub(1);
+            continue;
+        }
         let seen = notice(enemy, id, senses, events);
         let Some(target) = hunt(enemy, seen, config.tuning.forget_ticks) else {
             off_hunt(enemy, senses, &mut fields, &mut state.rng);
@@ -776,7 +795,7 @@ fn telegraphs_and_contact(state: &mut SimState, events: &mut TickEvents) {
         let Behavior::Rusher { contact_cooldown } = &mut enemy.behavior else {
             continue;
         };
-        if *contact_cooldown > 0 {
+        if *contact_cooldown > 0 || enemy.stun_ticks > 0 {
             continue;
         }
         for (slot, player) in state.players.iter_mut().enumerate() {

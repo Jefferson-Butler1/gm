@@ -19,6 +19,12 @@ const VENT_RADIUS: f32 = 26.0;
 /// Vent button offset from the right stick base: up and inward, clear of the dodge
 /// button and the stick's travel.
 const VENT_OFFSET: [f32; 2] = [-50.0, -130.0];
+const EMP_RADIUS: f32 = 26.0;
+/// EMP button offset from the right stick base: up and inward past the vent button,
+/// clear of the stick's grab and the minimap.
+const EMP_OFFSET: [f32; 2] = [-130.0, -100.0];
+/// Claw: the EMP button, below the left index finger's dodge button.
+const CLAW_EMP_INSET: [f32; 2] = [90.0, 240.0];
 /// Claw: the right index finger's fire button, in from the top-right safe corner and clear
 /// of the settings button.
 const CLAW_FIRE_INSET: [f32; 2] = [90.0, 130.0];
@@ -50,6 +56,7 @@ pub struct ControlLayout {
     pub vent: ControlPlacement,
     /// The claw's fire button.
     pub fire: ControlPlacement,
+    pub emp: ControlPlacement,
 }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,15 +66,17 @@ pub enum ControlKind {
     Dodge,
     Vent,
     Fire,
+    Emp,
 }
 
 impl ControlKind {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::MoveStick,
         Self::AimStick,
         Self::Dodge,
         Self::Vent,
         Self::Fire,
+        Self::Emp,
     ];
 
     /// (drawn radius, touch radius) at size 1.
@@ -77,6 +86,7 @@ impl ControlKind {
             Self::Dodge => (DODGE_RADIUS, DODGE_RADIUS * HIT_SLOP),
             Self::Vent => (VENT_RADIUS, VENT_RADIUS * HIT_SLOP),
             Self::Fire => (CLAW_FIRE_RADIUS, CLAW_FIRE_RADIUS * HIT_SLOP),
+            Self::Emp => (EMP_RADIUS, EMP_RADIUS * HIT_SLOP),
         }
     }
 }
@@ -89,6 +99,7 @@ impl ControlLayout {
             ControlKind::Dodge => self.dodge,
             ControlKind::Vent => self.vent,
             ControlKind::Fire => self.fire,
+            ControlKind::Emp => self.emp,
         }
     }
 }
@@ -101,7 +112,7 @@ impl Scheme {
             ControlKind::MoveStick => self.fixed(0),
             ControlKind::AimStick => self.fixed(1),
             ControlKind::Dodge => !self.auto_aim(),
-            ControlKind::Vent => true,
+            ControlKind::Vent | ControlKind::Emp => true,
             ControlKind::Fire => matches!(self, Self::Claw),
         }
     }
@@ -116,7 +127,8 @@ fn safe_area(v: &Viewport) -> ([f32; 2], [f32; 2]) {
 }
 
 /// The built-in layout for `scheme` on `viewport`: stick bases in from the bottom safe
-/// corners, dodge and vent above the right one (the claw's dodge and fire up top).
+/// corners, dodge, vent and the EMP above the right one (the claw's dodge, EMP and fire
+/// up top).
 #[uniffi::export]
 #[must_use]
 pub fn default_control_layout(scheme: Scheme, viewport: Viewport) -> ControlLayout {
@@ -137,6 +149,14 @@ pub fn default_control_layout(scheme: Scheme, viewport: Viewport) -> ControlLayo
     } else {
         [right[0] + DODGE_OFFSET[0], right[1] + DODGE_OFFSET[1]]
     };
+    let emp = if scheme == Scheme::Claw {
+        [
+            v.safe_left + CLAW_EMP_INSET[0],
+            v.safe_top + CLAW_EMP_INSET[1],
+        ]
+    } else {
+        [right[0] + EMP_OFFSET[0], right[1] + EMP_OFFSET[1]]
+    };
     ControlLayout {
         move_stick: place([v.safe_left + BASE_INSET, y]),
         aim_stick: place(right),
@@ -146,6 +166,7 @@ pub fn default_control_layout(scheme: Scheme, viewport: Viewport) -> ControlLayo
             v.point_width - v.safe_right - CLAW_FIRE_INSET[0],
             v.safe_top + CLAW_FIRE_INSET[1],
         ]),
+        emp: place(emp),
     }
 }
 
@@ -210,6 +231,7 @@ pub struct Layout {
     pub dodge: Spot,
     pub vent: Spot,
     pub fire: Spot,
+    pub emp: Spot,
 }
 
 impl Layout {
@@ -233,6 +255,7 @@ impl Layout {
             dodge: spot(ControlKind::Dodge),
             vent: spot(ControlKind::Vent),
             fire: spot(ControlKind::Fire),
+            emp: spot(ControlKind::Emp),
         }
     }
 
@@ -243,6 +266,7 @@ impl Layout {
             ControlKind::Dodge => self.dodge,
             ControlKind::Vent => self.vent,
             ControlKind::Fire => self.fire,
+            ControlKind::Emp => self.emp,
         }
     }
 }

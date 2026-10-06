@@ -17,6 +17,9 @@ pub struct PlayerInput {
     pub aim: u16,
     /// Aim-assist strength: 0 = raw aim, 255 = snap to the target in the assist cone.
     pub assist: u8,
+    /// With `EMP`: the move bucket a swipe throws it along; `None`, a tap, sets it off
+    /// at the player's feet.
+    pub throw: Option<u8>,
     pub buttons: Buttons,
 }
 
@@ -37,6 +40,8 @@ impl Buttons {
     /// The aim stick is held but not firing (tap and release fire modes): face `aim`
     /// as is, without assist or a shot. `FIRE` takes precedence.
     pub const AIM: Self = Self(1 << 6);
+    /// Use an EMP (see `PlayerInput::throw`).
+    pub const EMP: Self = Self(1 << 7);
 
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {

@@ -259,10 +259,14 @@ struct ContentView: View {
                                 .foregroundStyle(.orange)
                         }
                     }
-                    // The party's Scrap.
-                    Label("\(hud.scrap)", systemImage: "diamond.fill")
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.orange)
+                    // The party's Scrap, and slot 0's EMPs.
+                    HStack(spacing: 10) {
+                        Label("\(hud.scrap)", systemImage: "diamond.fill")
+                            .foregroundStyle(.orange)
+                        Label("\(hud.emps)", systemImage: "bolt.circle.fill")
+                            .foregroundStyle(Color(red: 0.55, green: 0.7, blue: 1))
+                    }
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     // Room, and the wave while a fight is on.
                     Text(hud.wave > 0 ? "\(hud.room.capitalized) · wave \(hud.wave)/\(hud.waves)" : hud.room.capitalized)
                         .font(.system(size: 13, weight: .semibold))

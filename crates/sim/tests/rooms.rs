@@ -716,6 +716,16 @@ fn an_access_panel_stops_everything_until_a_shot_reveals_it_then_it_opens_like_a
 }
 
 #[test]
+fn an_emp_set_off_under_an_access_panel_reveals_it() {
+    let (mut state, panel) = at_the_panel();
+    run(&mut state, 30, &walk(NORTH));
+    let mut emp = TickInputs::default();
+    emp.players[0].buttons = Buttons::EMP;
+    run(&mut state, 1, &emp);
+    assert_eq!(state.hatches[usize::from(panel.0)], HatchState::Closed);
+}
+
+#[test]
 fn reveal_turns_only_a_panel_closed() {
     let (mut state, panel) = at_the_panel();
     assert!(reveal(&mut state, panel));
