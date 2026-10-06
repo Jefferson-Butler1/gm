@@ -177,10 +177,10 @@ const ENGINE_ROOM: PrototypeRoom = PrototypeRoom {
     exits: Size::M.hatches(),
     base: &[shooter(2, 10), shooter(15, 10), rusher(8, 5)],
     reinforcements: &[then(&[
-        shooter(6, 10),
-        shooter(11, 10),
-        rusher(1, 5),
-        rusher(16, 5),
+        shooter(5, 10),
+        shooter(12, 10),
+        rusher(3, 5),
+        rusher(14, 5),
     ])],
     events: LOCKDOWN,
 }
@@ -210,10 +210,10 @@ const CARGO_HOLD: PrototypeRoom = PrototypeRoom {
     exits: Size::L.hatches(),
     base: &[rusher(20, 8), rusher(20, 11), shooter(3, 2)],
     reinforcements: &[then(&[
-        rusher(22, 8),
+        rusher(22, 10),
         rusher(22, 12),
-        rusher(9, 12),
-        shooter(14, 1),
+        rusher(8, 12),
+        shooter(14, 3),
     ])],
     events: LOCKDOWN,
 }
@@ -243,8 +243,8 @@ const SHUTTLE_BAY: PrototypeRoom = PrototypeRoom {
     ],
     exits: Size::L.hatches(),
     base: &[
-        shooter(12, 1),
-        shooter(12, 12),
+        shooter(15, 1),
+        shooter(15, 12),
         rusher(20, 2),
         rusher(20, 11),
     ],
@@ -283,12 +283,12 @@ const BRIDGE: PrototypeRoom = PrototypeRoom {
         "###########..###########",
     ],
     exits: Size::L.hatches(),
-    base: &[rusher(3, 1), rusher(20, 1), shooter(11, 2), shooter(20, 11)],
+    base: &[rusher(3, 1), rusher(20, 1), shooter(11, 3), shooter(20, 11)],
     reinforcements: &[
         then(&[
             rusher(3, 6),
             rusher(20, 7),
-            rusher(11, 1),
+            rusher(8, 1),
             shooter(3, 1),
             spread_shooter(20, 2),
         ]),

@@ -85,17 +85,17 @@ const LINE_STEP: Fx = Fx::from_bits(4 << 32);
 /// is within 2 cells of the spot; then it starts to give up (see [`Awareness::Alert`]).
 const ARRIVED: Fx = Fx::from_bits(64 << 32);
 
-/// A patrolling enemy wanders among the floor cells up to 3 cells (either axis) from its
+/// A patrolling enemy wanders among the floor cells up to 6 cells (either axis) from its
 /// [`Patrol::home`].
-const PATROL_RANGE: u32 = 3;
+const PATROL_RANGE: u32 = 6;
 /// Random cells a patrol tries when picking where to walk next; if none is open and
 /// reachable, it stands a while longer.
 const PATROL_TRIES: u8 = 4;
 /// A patrol walk gives up after 6 s wherever it got to (another enemy in the way, say).
 const PATROL_WALK_TICKS: u16 = 360;
-/// A patrol stand lasts 1 s plus up to 2 s more.
-const PATROL_STAND_TICKS: u16 = 60;
-const PATROL_STAND_EXTRA: u32 = 121;
+/// A patrol stand lasts 0.5 s plus up to 1.5 s more.
+const PATROL_STAND_TICKS: u16 = 30;
+const PATROL_STAND_EXTRA: u32 = 91;
 /// Standing, it sweeps its gaze one way then the other, this many ticks each way, at half
 /// its turn rate: 50° at the default 150°/s.
 const PATROL_LOOK_TICKS: u16 = 40;
@@ -188,7 +188,7 @@ impl Patrol {
     }
 }
 
-/// A random patrol stand length, 1 to 3 s.
+/// A random patrol stand length, 0.5 to 2 s.
 pub fn stand_ticks(rng: &mut Rng) -> u16 {
     let extra = u16::try_from(rng.below(PATROL_STAND_EXTRA)).unwrap_or(0);
     PATROL_STAND_TICKS.saturating_add(extra)
